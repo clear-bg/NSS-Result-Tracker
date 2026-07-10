@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environment
+venv/
+
+# 生成されるデータファイル（Gitで管理しない場合）
+screenshots/
+*.csv
