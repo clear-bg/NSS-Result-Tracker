@@ -1,0 +1,8 @@
+[project]
+name = "nss-result-tracker"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.10"
+dependencies = [
+    "imageio-ffmpeg>=0.6.0",
+]
