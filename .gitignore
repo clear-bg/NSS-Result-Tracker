@@ -7,7 +7,7 @@ venv/
 .venv/
 
 # メディア
-fixtures/screenshots/*
+fixtures/screenshots/*.png
 fixtures/**/*.mp4
 
 # SQLite(実データは含めない方針)
