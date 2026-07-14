@@ -5,6 +5,5 @@ __pycache__/
 # Virtual Environment
 venv/
 
-# 生成されるデータファイル（Gitで管理しない場合）
-screenshots/
-*.csv
+# メディア
+*.mp4
