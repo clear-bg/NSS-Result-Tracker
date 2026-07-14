@@ -76,7 +76,19 @@ CREATE TABLE matches (
 
 ## セットアップ
 
-<!-- TODO: 依存関係管理(pip+requirements.txt / poetry / uv)を確定次第記載 -->
+依存関係管理には [uv](https://docs.astral.sh/uv/) を使用する。
+
+```bash
+# uv自体のインストール(Windows PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 依存関係のインストール(pyproject.toml / uv.lock から環境を再現)
+uv sync
+
+# 実行例(仮想環境のactivateは不要)
+uv run python main.py
+```
+
 <!-- TODO: 初回セットアップ手順(OBS設定、Virtual Camera有効化手順など)を記載 -->
 
 ## フォルダ構成(ドラフト)
