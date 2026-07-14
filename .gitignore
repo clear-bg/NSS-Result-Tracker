@@ -9,6 +9,7 @@ venv/
 # メディア
 fixtures/screenshots/*.png
 fixtures/**/*.mp4
+test_frame_ffmpeg.png
 
 # SQLite(実データは含めない方針)
 *.db
