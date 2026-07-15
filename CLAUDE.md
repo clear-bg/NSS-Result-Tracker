@@ -133,6 +133,7 @@ src/
 
 - [`docs/screen_states.md`](docs/screen_states.md): 画面状態の一覧(Obsidianのメモから移行)。チェック済み項目 = 参照画像が `fixtures/screenshots/` に用意済み(状態遷移確認用の動画は `fixtures/videos/` に配置)
 - [`docs/git_workflow.md`](docs/git_workflow.md): コミット・ブランチ運用・開発フロー
+- [`docs/capture_verification.md`](docs/capture_verification.md): OBS Virtual Camera実機での動作確認手順
 - [`README.md`](README.md): プロジェクト概要とアーキテクチャ図
 
 ## Claude Codeへの依頼時の注意
