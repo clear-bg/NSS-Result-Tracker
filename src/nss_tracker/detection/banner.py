@@ -22,7 +22,9 @@ from typing import Literal, Optional
 import cv2
 import numpy as np
 
-BannerResult = Optional[Literal["win", "lose"]]
+BannerResult = Optional[Literal["win", "lose", "draw"]]
+# "draw"(引き分け)は今後判定用の参照映像が揃い次第対応する。現時点では
+# classify_banner()が"draw"を返すことはない(型としてのみ将来に備えている)
 
 # バナー帯のうち、テキストや選手モデルにかぶらない右上寄りの領域 (x1, y1, x2, y2)
 # 帯の太さ・角度は配信によって差があるため、画面最上部寄りの薄い帯にして
