@@ -2,8 +2,10 @@ import json
 from pathlib import Path
 
 import cv2
+import numpy as np
 import pytest
 
+import nss_tracker.state.match_state as match_state_module
 from conftest import requires_video_fixtures
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import RANK_ROI
@@ -101,3 +103,61 @@ def test_match_state_machine_matches_expected_metadata(videos_dir):
             assert result_frame is not None and low <= result_frame <= high, (
                 f"{path.name}: 結果確定フレーム={result_frame} 期待範囲={result_range}"
             )
+
+
+def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
+    """ゴール検知の統合ロジック(バッファリング→試合終了時にMatchResultへ payoutされる)を
+    実映像に依存せず検証する。個々の検知関数(is_goal_event等)は
+    tests/test_goal.py・tests/test_banner.py等で別途検証済みのため、ここではモックする。
+    """
+    calls = {"n": 0}
+
+    def fake_is_goal_event(frame):
+        # 最初の2フレームだけゴールバナーが出ているとみなす
+        return calls["n"] < 2
+
+    def fake_classify_banner(frame):
+        n = calls["n"]
+        calls["n"] += 1
+        return None if n < 5 else "win"
+
+    monkeypatch.setattr(match_state_module, "is_goal_event", fake_is_goal_event)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: "Alice")
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_rank", lambda frame: 10)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        goal_confirm_frames=2,
+        league_change_grace_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(15):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert len(result.goals) == 1
+    assert result.goals[0].scorer_name == "Alice"
+    assert result.goals[0].assist_name is None
+
+
+def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
+    """同じゴールバナーが表示され続けている間、複数回記録されない(デバウンス)ことを確認する。"""
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: "Alice")
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+
+    machine = MatchStateMachine(goal_confirm_frames=2)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    for _ in range(10):
+        machine.process_frame(frame)
+
+    assert len(machine._pending_goals) == 1

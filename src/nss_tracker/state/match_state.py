@@ -22,9 +22,17 @@ banner判定は単体だと試合中のゴール演出等で一瞬誤検知し�
 した直後にすぐ確定させず、league_change_grace_frames分だけ様子を見て、
 その間に演出が現れたら演出が終わるまで待ち、再度安定するのを待ってから
 確定する(detection.league_change参照)。
+
+ゴール(得点・アシスト)はWATCHING中(試合結果バナーを待っている=まさに
+プレイ中の期間)にのみ起こりうるため、_watch_for_banner()と並行して
+毎フレームチェックする。検知したゴールは試合単位でメモリ上にバッファし
+(_pending_goals)、_finalize()でMatchResult.goalsとして払い出す。
+得点者が許可リスト(config.is_allowed_player)に無い場合に記録すら
+しないという方針は、この状態機械ではなく永続化層(database.db.save_goal)
+の責務とする(検知層はポリシーを持たず、見えたものをそのまま報告する)。
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
 from typing import Optional
@@ -32,12 +40,14 @@ from typing import Optional
 import numpy as np
 
 from nss_tracker.detection.banner import BannerResult, classify_banner
+from nss_tracker.detection.goal import is_goal_event, read_assist_name, read_scorer_name
 from nss_tracker.detection.league_change import is_league_change_screen
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import RANK_ROI, read_rank
 
 DEFAULT_BANNER_CONFIRM_FRAMES = 30
 DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES = 30
+DEFAULT_GOAL_CONFIRM_FRAMES = 30
 # 実測(fixtures/videos/01_win_blue_2-1.mp4, 60fps):
 # ランク数値が一旦静止してから昇格演出が始まるまで約270フレーム(4.5秒)の間があった
 DEFAULT_LEAGUE_CHANGE_GRACE_FRAMES = 150
@@ -60,12 +70,20 @@ class _RankPhase(Enum):
 
 
 @dataclass
+class GoalEvent:
+    scorer_name: Optional[str]
+    assist_name: Optional[str]
+    detected_at: datetime
+
+
+@dataclass
 class MatchResult:
     result: BannerResult
     rank_before: Optional[int]
     rank_after: Optional[int]
     league_changed: Optional[str]  # "up" / "down" / None
     detected_at: datetime
+    goals: list[GoalEvent] = field(default_factory=list)
 
 
 class MatchStateMachine:
@@ -77,11 +95,13 @@ class MatchStateMachine:
         banner_confirm_frames: int = DEFAULT_BANNER_CONFIRM_FRAMES,
         banner_absence_confirm_frames: int = DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES,
         league_change_grace_frames: int = DEFAULT_LEAGUE_CHANGE_GRACE_FRAMES,
+        goal_confirm_frames: int = DEFAULT_GOAL_CONFIRM_FRAMES,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
     ) -> None:
         self._banner_confirm_frames = banner_confirm_frames
         self._banner_absence_confirm_frames = banner_absence_confirm_frames
         self._league_change_grace_frames = league_change_grace_frames
+        self._goal_confirm_frames = goal_confirm_frames
         self._rank_monitor = rank_stability_monitor or StabilityMonitor(roi=rank_roi)
 
         self._state = _State.WATCHING
@@ -93,6 +113,9 @@ class MatchStateMachine:
         self._pending_result: BannerResult = None
         self._pending_rank_before: Optional[int] = None
         self._grace_candidate_rank: Optional[int] = None
+        self._goal_streak = 0
+        self._goal_recorded_this_event = False
+        self._pending_goals: list[GoalEvent] = []
 
     @property
     def current_state(self) -> str:
@@ -101,10 +124,28 @@ class MatchStateMachine:
 
     def process_frame(self, frame: np.ndarray) -> Optional[MatchResult]:
         if self._state is _State.WATCHING:
+            self._check_for_goal(frame)
             return self._watch_for_banner(frame)
         if self._state is _State.TRACKING_RANK:
             return self._track_rank(frame)
         return self._watch_for_banner_absence(frame)
+
+    def _check_for_goal(self, frame: np.ndarray) -> None:
+        if not is_goal_event(frame):
+            self._goal_streak = 0
+            self._goal_recorded_this_event = False
+            return
+
+        self._goal_streak += 1
+        if self._goal_streak >= self._goal_confirm_frames and not self._goal_recorded_this_event:
+            self._pending_goals.append(
+                GoalEvent(
+                    scorer_name=read_scorer_name(frame),
+                    assist_name=read_assist_name(frame),
+                    detected_at=datetime.now(timezone.utc),
+                )
+            )
+            self._goal_recorded_this_event = True
 
     def _watch_for_banner(self, frame: np.ndarray) -> Optional[MatchResult]:
         result = classify_banner(frame)
@@ -191,9 +232,13 @@ class MatchStateMachine:
             rank_after=rank_after,
             league_changed=league_changed,
             detected_at=datetime.now(timezone.utc),
+            goals=self._pending_goals,
         )
         self._pending_result = None
         self._pending_rank_before = None
+        self._pending_goals = []
+        self._goal_streak = 0
+        self._goal_recorded_this_event = False
         self._absence_streak = 0
         self._state = _State.COOLDOWN
         return match_result
