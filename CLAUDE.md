@@ -69,7 +69,7 @@ src/
     ├── capture/       # ffmpegサブプロセス起動・生フレームの継続読み取り/バッファリング
     ├── detection/      # 画像解析ロジック(banner.py: 勝敗バナー判定, rank_ocr.py: ランクOCR, motion.py: ピクセル差分監視)
     ├── state/          # 試合の状態遷移(バナー表示→ランクアニメ→確定→暗転→マッチング)の管理
-    ├── storage/        # SQLiteへの読み書き
+    ├── database/       # SQLiteへの読み書き
     └── web/            # 将来のグラフ表示用(今は空、境界だけ確保)
 ```
 
@@ -80,7 +80,7 @@ src/
 - `tests/`に`pytest`を導入し、`fixtures/screenshots/*.png`を入力に`detection/`配下の関数(banner判定・OCR・motion監視)を検証する
 - ファイル名は`docs/screen_states.md`の命名規則に対応させ、パラメータ化テストで期待値(勝敗・ランク値など)を検証する
 - `fixtures/screenshots/`は`.gitignore`対象でリモートに含まれないため、**fixtureディレクトリが存在しない環境ではこれらのテストを自動でskipする**(`pytest.mark.skipif`等でディレクトリの有無をチェック)
-- 状態遷移(`state/`)やDB読み書き(`storage/`)など実画像に依存しないロジックは合成データ/モックでテストし、CI・クローン直後でも常に実行できるようにする
+- 状態遷移(`state/`)やDB読み書き(`database/`)など実画像に依存しないロジックは合成データ/モックでテストし、CI・クローン直後でも常に実行できるようにする
 - OCR(EasyOCR)は重い処理のため`@pytest.mark.slow`などで分離し、デフォルトの`pytest`実行では回さず明示的に指定したときのみ実行する
 
 ### ログ方針
