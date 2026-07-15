@@ -110,7 +110,7 @@ uv run python main.py
 │       ├── capture/            # ffmpeg+dshowによる継続フレーム取得
 │       ├── detection/          # banner(勝敗判定) / rank_ocr(ランクOCR) / motion(状態監視)
 │       ├── state/              # 試合の状態遷移管理
-│       ├── storage/            # SQLite読み書き
+│       ├── database/           # SQLite読み書き
 │       └── web/                # 将来のグラフ表示用(未実装)
 └── tests/                      # pytest(fixtures/screenshotsを使った検知ロジックのテスト)
 ```
