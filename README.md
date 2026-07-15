@@ -102,7 +102,8 @@ uv run python main.py
 │   ├── screen_states.md      # 画面状態の一覧(スクショ対象.mdより)
 │   └── git_workflow.md       # Git/GitHub運用ルール
 ├── fixtures/
-│   └── screenshots/          # 状態ごとの参照画像(.gitignore対象、ローカルのみ)
+│   ├── screenshots/          # 状態ごとの参照画像(.gitignore対象、ローカルのみ)
+│   └── videos/               # 状態遷移確認用の参照動画(.gitignore対象、ローカルのみ)
 ├── scripts/                   # 手動実行の診断・検証用スクリプト
 ├── src/
 │   └── nss_tracker/

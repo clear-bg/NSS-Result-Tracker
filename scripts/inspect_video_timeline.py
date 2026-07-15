@@ -1,6 +1,6 @@
 """試合結果付き動画.mp4 の状態遷移タイムラインを把握するための診断スクリプト。
 
-fixtures/screenshots/試合結果付き動画.mp4 (1280x720) を1920x1080にリサイズしつつ
+fixtures/videos/試合結果付き動画.mp4 (1280x720) を1920x1080にリサイズしつつ
 5フレームごとにサンプリングし、全体平均輝度(暗転検知用)・ランクROIの
 直前サンプルとの差分(ピクセル差分監視用)・バナー判定を出力する。
 motion.py の閾値決定とテストのための一次データ収集用(自動テストではない)。
@@ -13,7 +13,7 @@ import numpy as np
 
 from nss_tracker.detection.banner import classify_banner
 
-VIDEO_PATH = Path(__file__).parent.parent / "fixtures" / "screenshots" / "試合結果付き動画.mp4"
+VIDEO_PATH = Path(__file__).parent.parent / "fixtures" / "videos" / "試合結果付き動画.mp4"
 TARGET_SIZE = (1920, 1080)
 RANK_ROI = (90, 600, 420, 930)
 SAMPLE_STEP = 5

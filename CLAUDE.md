@@ -123,7 +123,7 @@ src/
 
 ## 参照ドキュメント
 
-- [`docs/screen_states.md`](docs/screen_states.md): 画面状態の一覧(Obsidianのメモから移行)。チェック済み項目 = 参照画像が `fixtures/screenshots/` に用意済み
+- [`docs/screen_states.md`](docs/screen_states.md): 画面状態の一覧(Obsidianのメモから移行)。チェック済み項目 = 参照画像が `fixtures/screenshots/` に用意済み(状態遷移確認用の動画は `fixtures/videos/` に配置)
 - [`docs/git_workflow.md`](docs/git_workflow.md): コミット・ブランチ運用・開発フロー
 - [`README.md`](README.md): プロジェクト概要とアーキテクチャ図
 
@@ -131,5 +131,5 @@ src/
 
 - 本ファイルに書かれた「確定している設計方針」は覆さないこと。変更が必要な場合は提案として提示し、実装前に確認を取る
 - 「未確定・要相談」の項目は、着手前にユーザーに確認してから進める
-- `fixtures/screenshots/` の画像は実機キャプチャの参照データなので、テストや検知ロジックの調整に積極的に使ってよい
-- ただし **`fixtures/screenshots/` は `.gitignore` 対象(ローカルのみ、リモートには含めない)**。他プレイヤーの映り込みやプレイヤー名が理由なので、この画像群を誤ってコミットしたりリモートに送信する処理を書かないこと。ファイル名の一覧・命名規則は `docs/screen_states.md` を参照すること
+- `fixtures/screenshots/` の画像・`fixtures/videos/` の動画は実機キャプチャの参照データなので、テストや検知ロジックの調整に積極的に使ってよい
+- ただし **`fixtures/` 配下(`screenshots/`・`videos/`とも)は `.gitignore` 対象(ローカルのみ、リモートには含めない)**。他プレイヤーの映り込みやプレイヤー名が理由なので、この画像・動画群を誤ってコミットしたりリモートに送信する処理を書かないこと。画像のファイル名の一覧・命名規則は `docs/screen_states.md` を参照すること
