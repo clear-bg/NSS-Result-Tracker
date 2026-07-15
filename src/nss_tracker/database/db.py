@@ -1,22 +1,23 @@
-"""試合結果のSQLiteへの保存。
-
-CLAUDE.md記載の方針どおり、現在のスコープは勝敗・ランクの記録のみ
-(ゴール・アシストの記録は将来段階で未実装)。将来ゴール・アシスト等を
-記録する際は、matches.id を match_id として参照する別テーブル(例: goals)を
-追加する形で拡張する想定のため、matchesテーブル自体には将来項目を
-先回りして持たせていない。
+"""試合結果・ゴールのSQLiteへの保存。
 
 日時カラムは2種類ある:
-- detected_at: 試合結果を検知した実時刻(ドメイン上の日時)。期間で絞り込む
-  グラフ集計等はこちらを使う
+- detected_at: 試合結果/ゴールを検知した実時刻(ドメイン上の日時)。期間で
+  絞り込むグラフ集計等はこちらを使う
 - created_at / updated_at: レコード自体の作成・更新時刻(監査用の一般的な
   カラム)。今後追加するテーブルにも同様に持たせる想定
+
+goalsテーブルはmatches.idをmatch_idとして参照する(matchesテーブル自体には
+先回りして将来項目を持たせない、という既存方針どおり)。得点者が
+config.is_allowed_player()で許可されていない場合、save_goal()は何も
+挿入せずNoneを返す(記録すらしないというプライバシー方針)。
 """
 
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
+from nss_tracker.config import is_allowed_player
 from nss_tracker.state.match_state import MatchResult
 
 DEFAULT_DB_PATH = Path("nss_tracker.db")
@@ -32,14 +33,24 @@ CREATE TABLE IF NOT EXISTS matches (
     created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601)
     updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601)
 );
+
+CREATE TABLE IF NOT EXISTS goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id INTEGER NOT NULL REFERENCES matches(id),
+    detected_at TEXT NOT NULL,      -- ゴール検知時刻(ISO8601)
+    scorer_name TEXT NOT NULL,
+    assist_name TEXT,               -- アシスト無しの場合NULL
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
 def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
-    """DBに接続し、matchesテーブルが無ければ作成して返す。"""
+    """DBに接続し、テーブルが無ければ作成して返す。"""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    conn.execute(_SCHEMA)
+    conn.executescript(_SCHEMA)
     conn.commit()
     return conn
 
@@ -68,3 +79,34 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult) -> int:
 def fetch_all_matches(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """保存済みの試合結果を記録順(id昇順)ですべて取得する。"""
     return conn.execute("SELECT * FROM matches ORDER BY id").fetchall()
+
+
+def save_goal(
+    conn: sqlite3.Connection,
+    match_id: int,
+    scorer_name: Optional[str],
+    assist_name: Optional[str],
+    detected_at: datetime,
+) -> Optional[int]:
+    """ゴールを1件goalsテーブルに保存する。
+
+    得点者が許可リストに無い(scorer_nameがNone、またはis_allowed_player()が
+    Falseを返す)場合は何も保存せずNoneを返す。アシスト者が許可リストに
+    無くても、得点者が許可されていればassist_nameはそのまま保存する。
+    """
+    if not scorer_name or not is_allowed_player(scorer_name):
+        return None
+
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = conn.execute(
+        "INSERT INTO goals (match_id, detected_at, scorer_name, assist_name, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (match_id, detected_at.isoformat(), scorer_name, assist_name, now, now),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def fetch_all_goals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """保存済みのゴールを記録順(id昇順)ですべて取得する。"""
+    return conn.execute("SELECT * FROM goals ORDER BY id").fetchall()
