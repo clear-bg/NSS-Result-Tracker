@@ -6,13 +6,15 @@ FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "screenshots"
 VIDEOS_DIR = Path(__file__).parent.parent / "fixtures" / "videos"
 
 requires_fixtures = pytest.mark.skipif(
-    not FIXTURES_DIR.is_dir(),
-    reason="fixtures/screenshots が存在しません(.gitignore対象のためローカルにのみ配置)",
+    not any(FIXTURES_DIR.glob("*.png")),
+    reason="fixtures/screenshots に画像が存在しません(.gitignore対象のためローカルにのみ配置。"
+    ".gitkeepのみのCI環境ではこのテストはskipされる想定)",
 )
 
 requires_video_fixtures = pytest.mark.skipif(
-    not VIDEOS_DIR.is_dir(),
-    reason="fixtures/videos が存在しません(.gitignore対象のためローカルにのみ配置)",
+    not any(VIDEOS_DIR.glob("*.mp4")),
+    reason="fixtures/videos に動画が存在しません(.gitignore対象のためローカルにのみ配置。"
+    "metadata.jsonのみのCI環境ではこのテストはskipされる想定)",
 )
 
 
