@@ -64,7 +64,7 @@ Claude Codeでタスクに着手する際は、以下の流れに沿って進め
 
 [Conventional Commits](https://www.conventionalcommits.org/) 形式を採用する。
 
-```
+```txt
 <type>: <説明>
 
 例:
@@ -77,7 +77,7 @@ chore: 依存パッケージを更新
 主な `type`:
 
 | type | 用途 |
-|---|---|
+| --- | --- |
 | feat | 新機能 |
 | fix | バグ修正 |
 | docs | ドキュメントのみの変更 |
