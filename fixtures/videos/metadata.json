@@ -4,31 +4,31 @@
     "expected_rank_before": 40,
     "expected_rank_after": 40,
     "expected_league_changed": null,
-    "banner_confirmed_frame_range": null,
-    "match_result_frame_range": null
+    "banner_confirmed_frame_range": [997, 1057],
+    "match_result_frame_range": [1256, 1316]
   },
   "01_win_blue_2-1.mp4": {
     "expected_result": "win",
     "expected_rank_before": 39,
     "expected_rank_after": 40,
     "expected_league_changed": "up",
-    "banner_confirmed_frame_range": null,
-    "match_result_frame_range": null
+    "banner_confirmed_frame_range": [950, 1010],
+    "match_result_frame_range": [1556, 1616]
   },
   "02_lose_red_1-2.mp4": {
     "expected_result": "lose",
     "expected_rank_before": 39,
     "expected_rank_after": 39,
     "expected_league_changed": null,
-    "banner_confirmed_frame_range": null,
-    "match_result_frame_range": null
+    "banner_confirmed_frame_range": [464, 524],
+    "match_result_frame_range": [718, 778]
   },
   "03_lose_blue_2-3.mp4": {
     "expected_result": "lose",
     "expected_rank_before": 40,
     "expected_rank_after": 39,
     "expected_league_changed": "down",
-    "banner_confirmed_frame_range": null,
-    "match_result_frame_range": null
+    "banner_confirmed_frame_range": [793, 853],
+    "match_result_frame_range": [1114, 1174]
   }
 }
