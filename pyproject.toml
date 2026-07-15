@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.10"
 dependencies = [
+    "easyocr>=1.7.2",
     "imageio-ffmpeg>=0.6.0",
     "opencv-python>=5.0.0.93",
 ]
@@ -16,6 +17,7 @@ build-backend = "hatchling.build"
 packages = ["src/nss_tracker"]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not slow'"
 markers = [
     "slow: 重い処理(OCR等)のテスト。デフォルトのpytest実行では回さない",
 ]
