@@ -11,6 +11,7 @@ venv/
 fixtures/screenshots/*.png
 fixtures/**/*.mp4
 test_frame_ffmpeg.png
+capture_stream_test_last_frame.png
 
 # プレイヤー実名を含む正解データ(得点者・アシスト名OCRの検証用など)
 fixtures/screenshots/*.json
