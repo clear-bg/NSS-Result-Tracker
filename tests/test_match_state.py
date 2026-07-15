@@ -1,4 +1,4 @@
-import re
+import json
 from pathlib import Path
 
 import cv2
@@ -10,7 +10,10 @@ from nss_tracker.detection.rank_ocr import RANK_ROI
 from nss_tracker.state.match_state import MatchStateMachine
 
 TARGET_SIZE = (1920, 1080)
-NAME_PATTERN = re.compile(r"^\d+_(win|lose)_(blue|red)_?")
+
+
+def _discover_videos_with_metadata(videos_dir: Path) -> list[Path]:
+    return [path for path in sorted(videos_dir.glob("*.mp4")) if path.with_suffix(".json").is_file()]
 
 
 def _read_frames(path: Path):
@@ -28,6 +31,7 @@ def _read_frames(path: Path):
 
 
 def _run_state_machine(path: Path):
+    """動画を最後まで流し、状態が切り替わったフレーム番号とMatchResultを収集する。"""
     cap = cv2.VideoCapture(str(path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     cap.release()
@@ -39,47 +43,55 @@ def _run_state_machine(path: Path):
         league_change_grace_frames=round(fps * 5.0),
         rank_stability_monitor=StabilityMonitor(roi=RANK_ROI, stable_frames_required=round(fps * 0.5)),
     )
+
+    state_change_frames: dict[str, int] = {}
     results = []
-    for frame in _read_frames(path):
+    prev_state = machine.current_state
+    for idx, frame in enumerate(_read_frames(path)):
         result = machine.process_frame(frame)
+        if machine.current_state != prev_state:
+            transition = f"{prev_state}->{machine.current_state}"
+            state_change_frames.setdefault(transition, idx)
+            prev_state = machine.current_state
         if result is not None:
             results.append(result)
-    return results
+    return results, state_change_frames
 
 
 @pytest.mark.slow
 @requires_video_fixtures
-def test_original_clip_records_a_single_win(videos_dir):
-    results = _run_state_machine(videos_dir / "試合結果付き動画.mp4")
+def test_match_state_machine_matches_expected_metadata(videos_dir):
+    videos = _discover_videos_with_metadata(videos_dir)
+    assert videos, "正解データ(.json)を持つ動画がfixtures/videos/に見つからない"
 
-    assert len(results) == 1
-    match = results[0]
-    assert match.result == "win"
-    assert match.rank_before == 39
-    assert match.rank_after == 39
-    assert match.league_changed is None
+    for path in videos:
+        expected = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        results, state_change_frames = _run_state_machine(path)
 
-
-@pytest.mark.slow
-@requires_video_fixtures
-def test_real_stream_clips_record_matching_result(videos_dir):
-    videos = [
-        (path, m.group(1))
-        for path in sorted(videos_dir.glob("*.mp4"))
-        if (m := NAME_PATTERN.match(path.name))
-    ]
-    assert videos, "命名規則に沿った動画がfixtures/videos/に見つからない"
-
-    for path, expected in videos:
-        results = _run_state_machine(path)
         assert len(results) == 1, f"{path.name}: 検知された試合数が{len(results)}件(期待は1件)"
         match = results[0]
-        assert match.result == expected, f"{path.name}: 期待={expected} 実際={match.result}"
-        assert match.rank_before is not None, f"{path.name}: rank_beforeがNone(OCR失敗)"
-        assert match.rank_after is not None, f"{path.name}: rank_afterがNone(OCR失敗)"
-        if match.rank_after > match.rank_before:
-            assert match.league_changed == "up", f"{path.name}: ランクが増加したのにleague_changedが'up'でない"
-        elif match.rank_after < match.rank_before:
-            assert match.league_changed == "down", f"{path.name}: ランクが減少したのにleague_changedが'down'でない"
-        else:
-            assert match.league_changed is None, f"{path.name}: ランクが変化していないのにleague_changedが設定されている"
+
+        assert match.result == expected["expected_result"], (
+            f"{path.name}: result 期待={expected['expected_result']} 実際={match.result}"
+        )
+        assert match.rank_before == expected["expected_rank_before"], (
+            f"{path.name}: rank_before 期待={expected['expected_rank_before']} 実際={match.rank_before}"
+        )
+        assert match.rank_after == expected["expected_rank_after"], (
+            f"{path.name}: rank_after 期待={expected['expected_rank_after']} 実際={match.rank_after}"
+        )
+        assert match.league_changed == expected["expected_league_changed"], (
+            f"{path.name}: league_changed 期待={expected['expected_league_changed']} 実際={match.league_changed}"
+        )
+
+        banner_frame = state_change_frames.get("watching->tracking_rank")
+        low, high = expected["banner_confirmed_frame_range"]
+        assert banner_frame is not None and low <= banner_frame <= high, (
+            f"{path.name}: banner確定フレーム={banner_frame} 期待範囲={expected['banner_confirmed_frame_range']}"
+        )
+
+        result_frame = state_change_frames.get("tracking_rank->cooldown")
+        low, high = expected["match_result_frame_range"]
+        assert result_frame is not None and low <= result_frame <= high, (
+            f"{path.name}: 結果確定フレーム={result_frame} 期待範囲={expected['match_result_frame_range']}"
+        )
