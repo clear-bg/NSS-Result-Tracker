@@ -10,10 +10,11 @@ from nss_tracker.detection.rank_ocr import RANK_ROI
 from nss_tracker.state.match_state import MatchStateMachine
 
 TARGET_SIZE = (1920, 1080)
+METADATA_FILENAME = "metadata.json"
 
 
-def _discover_videos_with_metadata(videos_dir: Path) -> list[Path]:
-    return [path for path in sorted(videos_dir.glob("*.mp4")) if path.with_suffix(".json").is_file()]
+def _load_metadata(videos_dir: Path) -> dict:
+    return json.loads((videos_dir / METADATA_FILENAME).read_text(encoding="utf-8"))
 
 
 def _read_frames(path: Path):
@@ -61,11 +62,11 @@ def _run_state_machine(path: Path):
 @pytest.mark.slow
 @requires_video_fixtures
 def test_match_state_machine_matches_expected_metadata(videos_dir):
-    videos = _discover_videos_with_metadata(videos_dir)
-    assert videos, "正解データ(.json)を持つ動画がfixtures/videos/に見つからない"
+    metadata = _load_metadata(videos_dir)
+    videos = [(videos_dir / name, expected) for name, expected in metadata.items() if (videos_dir / name).is_file()]
+    assert videos, f"{METADATA_FILENAME}に記載の動画がfixtures/videos/に見つからない"
 
-    for path in videos:
-        expected = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+    for path, expected in videos:
         results, state_change_frames = _run_state_machine(path)
 
         assert len(results) == 1, f"{path.name}: 検知された試合数が{len(results)}件(期待は1件)"
@@ -84,14 +85,19 @@ def test_match_state_machine_matches_expected_metadata(videos_dir):
             f"{path.name}: league_changed 期待={expected['expected_league_changed']} 実際={match.league_changed}"
         )
 
-        banner_frame = state_change_frames.get("watching->tracking_rank")
-        low, high = expected["banner_confirmed_frame_range"]
-        assert banner_frame is not None and low <= banner_frame <= high, (
-            f"{path.name}: banner確定フレーム={banner_frame} 期待範囲={expected['banner_confirmed_frame_range']}"
-        )
+        # フレーム範囲は動画を見ながら手動で確認した値のみ検証する(metadata.jsonでnullの間は未検証)
+        banner_range = expected["banner_confirmed_frame_range"]
+        if banner_range is not None:
+            banner_frame = state_change_frames.get("watching->tracking_rank")
+            low, high = banner_range
+            assert banner_frame is not None and low <= banner_frame <= high, (
+                f"{path.name}: banner確定フレーム={banner_frame} 期待範囲={banner_range}"
+            )
 
-        result_frame = state_change_frames.get("tracking_rank->cooldown")
-        low, high = expected["match_result_frame_range"]
-        assert result_frame is not None and low <= result_frame <= high, (
-            f"{path.name}: 結果確定フレーム={result_frame} 期待範囲={expected['match_result_frame_range']}"
-        )
+        result_range = expected["match_result_frame_range"]
+        if result_range is not None:
+            result_frame = state_change_frames.get("tracking_rank->cooldown")
+            low, high = result_range
+            assert result_frame is not None and low <= result_frame <= high, (
+                f"{path.name}: 結果確定フレーム={result_frame} 期待範囲={result_range}"
+            )

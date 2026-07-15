@@ -2,9 +2,13 @@
 
 動画を1本指定すると、フレームを流しながらcurrent_stateが切り替わった
 フレーム番号と、process_frame()がMatchResultを返したフレーム番号を出力する。
-新しい動画を追加した際、この出力をもとに対応するJSON(fixtures/videos/*.json)
-の banner_confirmed_frame_range / match_result_frame_range を決めるために使う
-(自動テストではない)。
+
+注意: この出力はMatchStateMachine自身の判定結果であり、それをそのまま
+fixtures/videos/metadata.json の banner_confirmed_frame_range /
+match_result_frame_range に転記してはいけない(実装のバグをそのまま
+「正解」として固定してしまい、テストとして意味がなくなるため)。
+あくまで「だいたいこのあたりのフレームを見ればよい」という当たりを
+つけるための補助として使い、実際の期待値は動画を目で見て確認すること。
 
 使い方: uv run python scripts/inspect_match_state_timeline.py <動画ファイル名>
        (fixtures/videos/ 配下のファイル名を指定する)

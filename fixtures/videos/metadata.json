@@ -1,0 +1,34 @@
+{
+  "00_lose_red_2-3.mp4": {
+    "expected_result": "lose",
+    "expected_rank_before": 40,
+    "expected_rank_after": 40,
+    "expected_league_changed": null,
+    "banner_confirmed_frame_range": null,
+    "match_result_frame_range": null
+  },
+  "01_win_blue_2-1.mp4": {
+    "expected_result": "win",
+    "expected_rank_before": 39,
+    "expected_rank_after": 40,
+    "expected_league_changed": "up",
+    "banner_confirmed_frame_range": null,
+    "match_result_frame_range": null
+  },
+  "02_lose_red_1-2.mp4": {
+    "expected_result": "lose",
+    "expected_rank_before": 39,
+    "expected_rank_after": 39,
+    "expected_league_changed": null,
+    "banner_confirmed_frame_range": null,
+    "match_result_frame_range": null
+  },
+  "03_lose_blue_2-3.mp4": {
+    "expected_result": "lose",
+    "expected_rank_before": 40,
+    "expected_rank_after": 39,
+    "expected_league_changed": "down",
+    "banner_confirmed_frame_range": null,
+    "match_result_frame_range": null
+  }
+}
