@@ -67,8 +67,8 @@ CREATE TABLE matches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     detected_at TEXT NOT NULL,      -- 結果バナー検知時刻(ISO8601)
     result TEXT NOT NULL,           -- 'win' / 'lose' / 'draw'
-    rank_before REAL,               -- 結果バナー表示時点のランク値
-    rank_after REAL,                -- ランク変動確定後の値
+    rank_before REAL,               -- 結果バナー表示時点のランク値(帯番号+ゲージ溜まり具合の小数値。表示時に丸める)
+    rank_after REAL,                -- ランク変動確定後の値(同上)
     league_changed TEXT,            -- 'up' / 'down' / NULL
     created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601)
     updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601)

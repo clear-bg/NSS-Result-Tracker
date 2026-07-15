@@ -61,6 +61,17 @@ def _run_state_machine(path: Path):
     return results, state_change_frames
 
 
+def _assert_rank_matches_tier(rank: float | None, expected_tier: int, label: str) -> None:
+    """rankはtier(整数)+ゲージの溜まり具合(0.0以上1.0以下)の小数値なので、
+    期待する帯番号に対しておおよそその範囲に収まっているかで検証する
+    (ゲージの正確な溜まり具合はmetadata.jsonでは正解データ化していない)。
+    """
+    assert rank is not None, f"{label}: Noneだった(期待は帯{expected_tier})"
+    assert expected_tier <= rank <= expected_tier + 1.0, (
+        f"{label}: 期待帯={expected_tier} 実際={rank}"
+    )
+
+
 @pytest.mark.slow
 @requires_video_fixtures
 def test_match_state_machine_matches_expected_metadata(videos_dir):
@@ -77,12 +88,8 @@ def test_match_state_machine_matches_expected_metadata(videos_dir):
         assert match.result == expected["expected_result"], (
             f"{path.name}: result 期待={expected['expected_result']} 実際={match.result}"
         )
-        assert match.rank_before == expected["expected_rank_before"], (
-            f"{path.name}: rank_before 期待={expected['expected_rank_before']} 実際={match.rank_before}"
-        )
-        assert match.rank_after == expected["expected_rank_after"], (
-            f"{path.name}: rank_after 期待={expected['expected_rank_after']} 実際={match.rank_after}"
-        )
+        _assert_rank_matches_tier(match.rank_before, expected["expected_rank_before"], f"{path.name}: rank_before")
+        _assert_rank_matches_tier(match.rank_after, expected["expected_rank_after"], f"{path.name}: rank_after")
         assert match.league_changed == expected["expected_league_changed"], (
             f"{path.name}: league_changed 期待={expected['expected_league_changed']} 実際={match.league_changed}"
         )
@@ -125,7 +132,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: "Alice")
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame: 10)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
 
     machine = MatchStateMachine(
@@ -146,6 +153,90 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     assert len(result.goals) == 1
     assert result.goals[0].scorer_name == "Alice"
     assert result.goals[0].assist_name is None
+
+
+def test_track_rank_grace_recheck_catches_slow_drift(monkeypatch):
+    """GRACE中にゲージがピクセル差分の閾値を下回る速度で緩やかに変化し続けても、
+    定期的な再読み取りで真の最終値まで追従できることを確認する
+    (fixtures/videos/00_lose_red_2-3.mp4で見つかった、早すぎる確定による誤検知の回帰防止)。
+    値は目視ではなくこのテストのために意図的に用意した架空のシーケンスであり、
+    実装の出力を転記したものではない。
+    """
+    call_count = {"n": 0}
+
+    def fake_read_precise_rank(frame):
+        call_count["n"] += 1
+        # 1回目("結果バナー時点"の読み取り)・2回目(GRACE突入直後の読み取り)は
+        # まだ遷移途中の値、3回目以降は真の最終値を返す
+        if call_count["n"] <= 2:
+            return (40, 40.77)
+        return (40, 40.43)
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=10,
+        rank_recheck_interval_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_after == pytest.approx(40.43), (
+        f"古い過渡的な値(40.77)のまま確定してしまっている: {result.rank_after}"
+    )
+
+
+def test_track_rank_grace_recheck_catches_tier_change(monkeypatch):
+    """GRACE突入直後の読み取りでは帯番号の変化(降格)がまだ反映されていない場合でも、
+    定期的な再読み取りで正しい帯番号・league_changedにたどり着けることを確認する
+    (fixtures/videos/03_lose_blue_2-3.mp4のような、降格演出が専用の全画面演出として
+    出ないケースの回帰防止)。
+    """
+    call_count = {"n": 0}
+
+    def fake_read_precise_rank(frame):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return (40, 40.09)  # 結果バナー時点(before)
+        if call_count["n"] <= 3:
+            return (40, 40.16)  # GRACE突入直後、まだ降格前の帯のまま
+        return (39, 40.0)  # 真の最終値(降格後)
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=10,
+        rank_recheck_interval_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_after == pytest.approx(40.0)
+    assert result.league_changed == "down", (
+        f"降格を見逃している(帯の変化が反映される前の値で確定した): {result.league_changed}"
+    )
 
 
 def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
