@@ -92,7 +92,7 @@ uv run python main.py
 
 <!-- TODO: 初回セットアップ手順(OBS設定、Virtual Camera有効化手順など)を記載 -->
 
-## フォルダ構成(ドラフト)
+## フォルダ構成
 
 ```txt
 .
@@ -103,8 +103,15 @@ uv run python main.py
 │   └── git_workflow.md       # Git/GitHub運用ルール
 ├── fixtures/
 │   └── screenshots/          # 状態ごとの参照画像(.gitignore対象、ローカルのみ)
-├── src/                       <!-- TODO: 内部構成はClaude Codeと相談して確定 -->
-└── tests/                     <!-- TODO -->
+├── scripts/                   # 手動実行の診断・検証用スクリプト
+├── src/
+│   └── nss_tracker/
+│       ├── capture/            # ffmpeg+dshowによる継続フレーム取得
+│       ├── detection/          # banner(勝敗判定) / rank_ocr(ランクOCR) / motion(状態監視)
+│       ├── state/              # 試合の状態遷移管理
+│       ├── storage/            # SQLite読み書き
+│       └── web/                # 将来のグラフ表示用(未実装)
+└── tests/                      # pytest(fixtures/screenshotsを使った検知ロジックのテスト)
 ```
 
 ## ステータス
