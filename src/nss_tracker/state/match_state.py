@@ -48,6 +48,10 @@ class _State(Enum):
     TRACKING_RANK = auto()
     COOLDOWN = auto()
 
+    @property
+    def label(self) -> str:
+        return self.name.lower()
+
 
 class _RankPhase(Enum):
     WAITING_STABLE = auto()
@@ -89,6 +93,11 @@ class MatchStateMachine:
         self._pending_result: BannerResult = None
         self._pending_rank_before: Optional[int] = None
         self._grace_candidate_rank: Optional[int] = None
+
+    @property
+    def current_state(self) -> str:
+        """現在の状態("watching" / "tracking_rank" / "cooldown")。テスト等での観測用。"""
+        return self._state.label
 
     def process_frame(self, frame: np.ndarray) -> Optional[MatchResult]:
         if self._state is _State.WATCHING:
