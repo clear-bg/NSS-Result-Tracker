@@ -240,6 +240,7 @@ class MatchStateMachine:
             return None
 
         if classify_banner(frame) is None:
+            self._fill_grace_candidate_if_missing(frame)
             return self._finalize(self._grace_candidate_rank_tier, self._grace_candidate_rank)
 
         self._grace_counter += 1
@@ -262,7 +263,23 @@ class MatchStateMachine:
 
         if self._grace_counter < self._league_change_grace_frames:
             return None
+        self._fill_grace_candidate_if_missing(frame)
         return self._finalize(self._grace_candidate_rank_tier, self._grace_candidate_rank)
+
+    def _fill_grace_candidate_if_missing(self, frame: np.ndarray) -> None:
+        """確定直前の時点で候補値が一度も読めていない場合のみ、最後にもう一度読み取りを試みる。
+
+        実キャプチャ(FfmpegFrameReader)は処理が追いつかない間のフレームを間引くため、
+        GRACE突入直後にたまたまサンプリングしたフレームがバッジの遷移中で
+        読み取れず、そのまま候補が更新されないままバナーが消える(または
+        猶予期間が満了する)ことがありうる。既に有効な候補があればここでは
+        何もしない(古い正常値を上書きしない)。
+        """
+        if self._grace_candidate_rank_tier is not None:
+            return
+        precise_result = read_precise_rank(frame)
+        if precise_result is not None:
+            self._grace_candidate_rank_tier, self._grace_candidate_rank = precise_result
 
     def _finalize(self, rank_after_tier: Optional[int], rank_after: Optional[float]) -> MatchResult:
         # league_changedはゲージの溜まり具合を含まない帯番号(整数)同士で判定する。

@@ -108,6 +108,9 @@ src/
 
 - 現段階では手動でターミナルから`uv run python main.py`を実行する運用のみを想定し、タスクスケジューラ等の自動起動・自動復旧の仕組みは作らない
 - 実際に配信で運用してみて自動復旧などの必要性が具体化した段階で改めて検討する
+- `main.py`でcapture(`FfmpegFrameReader`)→state(`MatchStateMachine`)→database(`db`)の配線を実装済み。OBS/Switchが無い段階でも配線を確認できるよう、`--video path/to/file.mp4`で動画ファイルをOBS Virtual Cameraの代わりに読み込める(動作確認は完了、実機での疎通確認は別途`docs/capture_verification.md`参照)
+  - `MatchStateMachine`のフレーム数ベースの閾値(`banner_confirm_frames`等)は30fps想定のデフォルト値のため、呼び出し側(`main.py`)で実際のfpsに応じてスケーリングする必要がある(`state/match_state.py`のdocstring参照)。`--video`指定時はファイルのfpsを自動検出、実キャプチャ時は30fps想定
+  - EasyOCR・PaddleOCRは初回呼び出し時にモデル読み込みで数秒かかる(実測: 約3.8秒、2回目以降は0.2秒未満)。キャプチャループ開始前に一度呼び出して済ませておかないと、ちょうどランクバッジの安定待ちが始まる直後にこの数秒間が重なり、`FfmpegFrameReader`の「追いつかない間は古いフレームを破棄する」設計と組み合わさって肝心の区間のフレームを丸ごと読み飛ばしてしまう(`main.py`の`_warmup_ocr_engines`で対応済み)
 
 ## フォルダの位置づけ
 
