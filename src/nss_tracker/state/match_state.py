@@ -43,7 +43,7 @@ from nss_tracker.detection.banner import BannerResult, classify_banner
 from nss_tracker.detection.goal import is_goal_event, read_assist_name, read_scorer_name
 from nss_tracker.detection.league_change import is_league_change_screen
 from nss_tracker.detection.motion import StabilityMonitor
-from nss_tracker.detection.rank_ocr import RANK_ROI, read_rank
+from nss_tracker.detection.rank_ocr import RANK_ROI, read_precise_rank
 
 DEFAULT_BANNER_CONFIRM_FRAMES = 30
 DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES = 30
@@ -79,8 +79,8 @@ class GoalEvent:
 @dataclass
 class MatchResult:
     result: BannerResult
-    rank_before: Optional[int]
-    rank_after: Optional[int]
+    rank_before: Optional[float]
+    rank_after: Optional[float]
     league_changed: Optional[str]  # "up" / "down" / None
     detected_at: datetime
     goals: list[GoalEvent] = field(default_factory=list)
@@ -111,8 +111,13 @@ class MatchStateMachine:
         self._banner_streak = 0
         self._absence_streak = 0
         self._pending_result: BannerResult = None
-        self._pending_rank_before: Optional[int] = None
-        self._grace_candidate_rank: Optional[int] = None
+        # 帯番号(int)はleague_changed判定に、小数のランク値(float)はMatchResultの
+        # 報告値に使う。ゲージの溜まり具合による僅かな変動をリーグ変動と
+        # 誤検知しないよう、判定には必ず帯番号(整数)側を使うこと
+        self._pending_rank_before_tier: Optional[int] = None
+        self._pending_rank_before: Optional[float] = None
+        self._grace_candidate_rank_tier: Optional[int] = None
+        self._grace_candidate_rank: Optional[float] = None
         self._goal_streak = 0
         self._goal_recorded_this_event = False
         self._pending_goals: list[GoalEvent] = []
@@ -160,11 +165,17 @@ class MatchStateMachine:
 
         if self._banner_streak >= self._banner_confirm_frames:
             self._pending_result = self._banner_candidate
-            self._pending_rank_before = read_rank(frame)
+            precise_result = read_precise_rank(frame)
+            if precise_result is not None:
+                self._pending_rank_before_tier, self._pending_rank_before = precise_result
+            else:
+                self._pending_rank_before_tier = None
+                self._pending_rank_before = None
             self._banner_candidate = None
             self._banner_streak = 0
             self._rank_phase = _RankPhase.WAITING_STABLE
             self._grace_counter = 0
+            self._grace_candidate_rank_tier = None
             self._grace_candidate_rank = None
             self._rank_monitor.reset()
             self._rank_monitor.update(frame)
@@ -197,9 +208,9 @@ class MatchStateMachine:
                 # 微小なノイズで安定が何度か途切れて再試行することがあるが、
                 # 直近の試行がたまたま失敗しても直前までの正常な読み取り結果を
                 # 上書きしないよう、Noneの場合は前回値を保持する
-                candidate = read_rank(frame)
-                if candidate is not None:
-                    self._grace_candidate_rank = candidate
+                precise_result = read_precise_rank(frame)
+                if precise_result is not None:
+                    self._grace_candidate_rank_tier, self._grace_candidate_rank = precise_result
             return None
 
         # _RankPhase.GRACE: 安定はしたが、直後に昇格/降格演出が始まらないか
@@ -211,19 +222,22 @@ class MatchStateMachine:
             return None
 
         if classify_banner(frame) is None:
-            return self._finalize(self._grace_candidate_rank)
+            return self._finalize(self._grace_candidate_rank_tier, self._grace_candidate_rank)
 
         self._grace_counter += 1
         if self._grace_counter < self._league_change_grace_frames:
             return None
-        return self._finalize(self._grace_candidate_rank)
+        return self._finalize(self._grace_candidate_rank_tier, self._grace_candidate_rank)
 
-    def _finalize(self, rank_after: Optional[int]) -> MatchResult:
+    def _finalize(self, rank_after_tier: Optional[int], rank_after: Optional[float]) -> MatchResult:
+        # league_changedはゲージの溜まり具合を含まない帯番号(整数)同士で判定する。
+        # 小数のランク値同士で比較すると、帯は変わっていないのにゲージが
+        # 僅かに増減しただけで昇格/降格と誤判定してしまうため
         league_changed = None
-        if self._pending_rank_before is not None and rank_after is not None:
-            if rank_after > self._pending_rank_before:
+        if self._pending_rank_before_tier is not None and rank_after_tier is not None:
+            if rank_after_tier > self._pending_rank_before_tier:
                 league_changed = "up"
-            elif rank_after < self._pending_rank_before:
+            elif rank_after_tier < self._pending_rank_before_tier:
                 league_changed = "down"
 
         match_result = MatchResult(
@@ -236,6 +250,7 @@ class MatchStateMachine:
         )
         self._pending_result = None
         self._pending_rank_before = None
+        self._pending_rank_before_tier = None
         self._pending_goals = []
         self._goal_streak = 0
         self._goal_recorded_this_event = False

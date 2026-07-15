@@ -61,6 +61,17 @@ def _run_state_machine(path: Path):
     return results, state_change_frames
 
 
+def _assert_rank_matches_tier(rank: float | None, expected_tier: int, label: str) -> None:
+    """rankはtier(整数)+ゲージの溜まり具合(0.0以上1.0以下)の小数値なので、
+    期待する帯番号に対しておおよそその範囲に収まっているかで検証する
+    (ゲージの正確な溜まり具合はmetadata.jsonでは正解データ化していない)。
+    """
+    assert rank is not None, f"{label}: Noneだった(期待は帯{expected_tier})"
+    assert expected_tier <= rank <= expected_tier + 1.0, (
+        f"{label}: 期待帯={expected_tier} 実際={rank}"
+    )
+
+
 @pytest.mark.slow
 @requires_video_fixtures
 def test_match_state_machine_matches_expected_metadata(videos_dir):
@@ -77,12 +88,8 @@ def test_match_state_machine_matches_expected_metadata(videos_dir):
         assert match.result == expected["expected_result"], (
             f"{path.name}: result 期待={expected['expected_result']} 実際={match.result}"
         )
-        assert match.rank_before == expected["expected_rank_before"], (
-            f"{path.name}: rank_before 期待={expected['expected_rank_before']} 実際={match.rank_before}"
-        )
-        assert match.rank_after == expected["expected_rank_after"], (
-            f"{path.name}: rank_after 期待={expected['expected_rank_after']} 実際={match.rank_after}"
-        )
+        _assert_rank_matches_tier(match.rank_before, expected["expected_rank_before"], f"{path.name}: rank_before")
+        _assert_rank_matches_tier(match.rank_after, expected["expected_rank_after"], f"{path.name}: rank_after")
         assert match.league_changed == expected["expected_league_changed"], (
             f"{path.name}: league_changed 期待={expected['expected_league_changed']} 実際={match.league_changed}"
         )
@@ -125,7 +132,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: "Alice")
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame: 10)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
 
     machine = MatchStateMachine(
