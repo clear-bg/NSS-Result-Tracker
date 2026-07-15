@@ -2,7 +2,7 @@ import cv2
 import pytest
 
 from conftest import requires_video_fixtures
-from nss_tracker.detection.motion import StabilityMonitor
+from nss_tracker.detection.motion import StabilityMonitor, find_confirmed_value
 
 VIDEO_NAME = "試合結果付き動画.mp4"
 TARGET_SIZE = (1920, 1080)
@@ -87,3 +87,15 @@ def test_stability_monitor_reset():
 
     monitor.reset()
     assert not monitor.is_stable
+
+
+def test_find_confirmed_value_requires_consecutive_run():
+    assert find_confirmed_value(["lose", "lose", "win", "win", "win"], min_run_length=3) == "win"
+
+
+def test_find_confirmed_value_none_breaks_the_run():
+    assert find_confirmed_value(["win", "win", None, "win", "win"], min_run_length=3) is None
+
+
+def test_find_confirmed_value_returns_none_when_nothing_confirmed():
+    assert find_confirmed_value([None, "lose", "win", None], min_run_length=3) is None
