@@ -1,7 +1,7 @@
 import cv2
 import pytest
 
-from conftest import requires_fixtures
+from conftest import requires_video_fixtures
 from nss_tracker.detection.motion import StabilityMonitor
 
 VIDEO_NAME = "試合結果付き動画.mp4"
@@ -30,9 +30,9 @@ def _read_frames(path):
         cap.release()
 
 
-@requires_fixtures
-def test_stability_monitor_distinguishes_stable_from_changing(fixtures_dir):
-    video_path = fixtures_dir / VIDEO_NAME
+@requires_video_fixtures
+def test_stability_monitor_distinguishes_stable_from_changing(videos_dir):
+    video_path = videos_dir / VIDEO_NAME
     monitor = StabilityMonitor(roi=RANK_ROI)
 
     stable_during_gameplay = False
