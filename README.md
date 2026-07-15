@@ -60,20 +60,24 @@ Switch(有線コントローラー操作) → キャプチャーボード(HDMI I
 
 詳細な画面状態の一覧は [`docs/screen_states.md`](docs/screen_states.md) を参照。
 
-## データ設計(ドラフト、未確定)
+## データ設計
 
 ```sql
 CREATE TABLE matches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     detected_at TEXT NOT NULL,      -- 結果バナー検知時刻(ISO8601)
-    result TEXT NOT NULL,           -- 'win' or 'lose'
-    rank_before INTEGER,            -- 結果バナー表示時点のランク値
-    rank_after INTEGER,             -- ランク変動確定後の値
-    league_changed TEXT             -- 'up' / 'down' / NULL
+    result TEXT NOT NULL,           -- 'win' / 'lose' / 'draw'
+    rank_before REAL,               -- 結果バナー表示時点のランク値
+    rank_after REAL,                -- ランク変動確定後の値
+    league_changed TEXT,            -- 'up' / 'down' / NULL
+    created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601)
+    updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601)
 );
 ```
 
-<!-- TODO: フィールドの過不足、型、インデックス設計はClaude Codeでの実装着手時に確定 -->
+- `detected_at`は試合結果を検知した実時刻(期間で絞り込む集計・グラフ表示等に使う)、`created_at`/`updated_at`はレコード自体の作成・更新時刻(監査用)。今後追加するテーブルにも`created_at`/`updated_at`は同様に持たせる
+- `result`には引き分け(`draw`)も将来含まれる想定(現時点では検知未実装)
+- 実装は`src/nss_tracker/database/db.py`を参照
 
 ## セットアップ
 
