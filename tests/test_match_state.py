@@ -132,7 +132,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: "Alice")
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
 
     machine = MatchStateMachine(
@@ -164,7 +164,7 @@ def test_track_rank_grace_recheck_catches_slow_drift(monkeypatch):
     """
     call_count = {"n": 0}
 
-    def fake_read_precise_rank(frame):
+    def fake_read_precise_rank(frame, gauge_roi):
         call_count["n"] += 1
         # 1回目("結果バナー時点"の読み取り)・2回目(GRACE突入直後の読み取り)は
         # まだ遷移途中の値、3回目以降は真の最終値を返す
@@ -205,7 +205,7 @@ def test_track_rank_grace_recheck_catches_tier_change(monkeypatch):
     """
     call_count = {"n": 0}
 
-    def fake_read_precise_rank(frame):
+    def fake_read_precise_rank(frame, gauge_roi):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return (40, 40.09)  # 結果バナー時点(before)
