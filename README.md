@@ -111,7 +111,18 @@ uv run python main.py --video fixtures/videos/01_win_blue_2-1.mp4
 
 得点・アシストを記録する場合は、`.env.example`をコピーして`.env`を作成し、`ALLOWED_PLAYERS`に記録対象のプレイヤー名(カンマ区切り)を設定する。`.env`は`.gitignore`対象(他プレイヤーの実名を含みうるため)。
 
-<!-- TODO: 初回セットアップ手順(OBS設定、Virtual Camera有効化手順など)を記載 -->
+### OBS Virtual Cameraのセットアップ(初回のみ)
+
+実機キャプチャ(`--video`オプション無しでの実行)には、事前にOBS Studio側の設定が必要。
+
+1. Switchとキャプチャーボード(I-O DATA GV-USB3HDS/E)を接続し、いつも通りプレイできる状態にする
+2. OBS Studioを起動し、キャプチャーボードの映像をソースとして追加する(通常の配信・録画設定と同じでよい)
+3. OBSの映像設定(基本解像度・出力解像度)を**1920x1080**に設定する
+   - コードは1920x1080固定で生バイト列を画像として組み立てているため、解像度が異なると映像が壊れる
+4. OBSの「仮想カメラを開始」ボタンを押す
+   - これを押さないと、ffmpegが掴もうとする`"OBS Virtual Camera"`というdshowデバイス自体が存在しない状態になる
+
+設定後、`uv run python main.py`を実行する。疎通確認だけ先に行いたい場合は[`docs/capture_verification.md`](docs/capture_verification.md)を参照。
 
 ## フォルダ構成
 
