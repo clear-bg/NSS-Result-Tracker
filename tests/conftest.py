@@ -1,6 +1,11 @@
+import sys
 from pathlib import Path
 
 import pytest
+
+# main.pyはプロジェクトルート直下(パッケージ外)にあるため、
+# tests/test_main.pyから`import main`できるようにルートをsys.pathへ追加する
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "screenshots"
 VIDEOS_DIR = Path(__file__).parent.parent / "fixtures" / "videos"

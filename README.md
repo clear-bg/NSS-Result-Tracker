@@ -101,8 +101,12 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 # 依存関係のインストール(pyproject.toml / uv.lock から環境を再現)
 uv sync
 
-# 実行例(仮想環境のactivateは不要)
+# 実行例(仮想環境のactivateは不要。OBS Virtual Cameraからの実キャプチャ)
 uv run python main.py
+
+# OBS/Switchを用意していない段階でも配線を確認したい場合、
+# 動画ファイルをOBS Virtual Cameraの代わりに読み込める
+uv run python main.py --video fixtures/videos/01_win_blue_2-1.mp4
 ```
 
 得点・アシストを記録する場合は、`.env.example`をコピーして`.env`を作成し、`ALLOWED_PLAYERS`に記録対象のプレイヤー名(カンマ区切り)を設定する。`.env`は`.gitignore`対象(他プレイヤーの実名を含みうるため)。
@@ -134,4 +138,4 @@ uv run python main.py
 
 ## ステータス
 
-現在: 方針・技術スタック検討フェーズ。実装は Claude Code で行う。
+現在: capture(ffmpeg+dshow) → detection → state → database の一連の配線を`main.py`で実装済み。動画ファイルを入力に差し替えた動作確認は完了(`--video`オプション)。OBS Virtual Camera実機での疎通確認は未実施(`docs/capture_verification.md`参照)。

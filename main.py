@@ -1,5 +1,208 @@
-def main():
-    print("Hello from nss-result-tracker!")
+"""アプリケーションのエントリーポイント。
+
+capture(FfmpegFrameReader) → state(MatchStateMachine) → database(db)を
+つなぎ、常時稼働する検知ループとして実行する。ログ設定もここで一箇所に
+まとめる(CLAUDE.md記載のログ方針: コンソール+ローテーティングファイルの
+両方に出力、レベルは環境変数NSS_TRACKER_LOG_LEVELで切り替え)。
+
+`uv run python main.py` で実行するとOBS Virtual Camera(dshow)からの
+実キャプチャを試みる。OBS/Switchをまだ用意していない段階でも配線全体を
+確認できるよう、`uv run python main.py --video path/to/file.mp4` を渡すと
+fixtures/videos等の動画ファイルを入力に差し替えて同じループを試せる。
+"""
+
+import argparse
+import logging
+import logging.handlers
+import os
+import sqlite3
+import time
+from pathlib import Path
+from typing import Optional
+
+import cv2
+
+from nss_tracker.capture.ffmpeg_capture import FfmpegFrameReader
+from nss_tracker.database import db
+from nss_tracker.detection.goal import _get_name_reader
+from nss_tracker.detection.motion import StabilityMonitor
+from nss_tracker.detection.rank_ocr import RANK_ROI, _get_reader
+from nss_tracker.state.match_state import MatchResult, MatchStateMachine
+
+LOG_DIR = Path("logs")
+LOG_FILE = LOG_DIR / "tracker.log"
+FRAME_READ_TIMEOUT_SECONDS = 5.0
+# OBS Virtual Cameraのキャプチャは30fps想定(CLAUDE.md)。--videoでの動作確認時は
+# 実ファイルのfpsを自動検出するため、これは実キャプチャ時のみ使うデフォルト値
+DEFAULT_CAPTURE_FPS = 30.0
+
+logger = logging.getLogger("nss_tracker")
+
+
+def _setup_logging() -> None:
+    level_name = os.environ.get("NSS_TRACKER_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    LOG_DIR.mkdir(exist_ok=True)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    file_handler.setFormatter(formatter)
+
+    logger.handlers.clear()
+    logger.setLevel(level)
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+    # 依存ライブラリ(torch等)がroot loggerに独自のhandlerを設定していることがあり、
+    # propagateしたままだと同じメッセージが二重・三重に出力されてしまう
+    logger.propagate = False
+
+
+def _make_reader(video_path: Optional[Path]) -> FfmpegFrameReader:
+    if video_path is None:
+        return FfmpegFrameReader()
+    # -re: 動画をファイルの本来のfpsで(実時間と同じ速さで)読み込む。
+    # 付けない場合ffmpegはデコードできる限り高速に全フレームを吐き出してしまい、
+    # FfmpegFrameReaderの「追いつかない間の古いフレームは破棄する」設計と組み合わさると
+    # 実際にはほとんどのフレームが読み飛ばされてしまい、実キャプチャの動作を再現できない
+    return FfmpegFrameReader(input_args=["-re", "-i", str(video_path)])
+
+
+def _detect_fps(video_path: Path) -> float:
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+    finally:
+        cap.release()
+    return fps if fps and fps > 0 else DEFAULT_CAPTURE_FPS
+
+
+def _make_match_state_machine(fps: float) -> MatchStateMachine:
+    """fpsに応じてスケーリングした閾値でMatchStateMachineを構築する。
+
+    state/match_state.pyのdocstring・クラスのデフォルト値は30fps想定のため、
+    60fps等の入力ではここで呼び出し側からスケーリングする必要がある
+    (CLAUDE.md・tests/test_match_state.pyの_run_state_machineと同じ考え方)。
+    """
+    confirm_frames = round(fps * 1.0)
+    return MatchStateMachine(
+        banner_confirm_frames=confirm_frames,
+        banner_absence_confirm_frames=confirm_frames,
+        goal_confirm_frames=confirm_frames,
+        league_change_grace_frames=round(fps * 5.0),
+        rank_recheck_interval_frames=round(fps * 0.25),
+        rank_stability_monitor=StabilityMonitor(roi=RANK_ROI, stable_frames_required=round(fps * 0.5)),
+    )
+
+
+def _record_match_result(conn: sqlite3.Connection, result: MatchResult) -> None:
+    match_id = db.save_match_result(conn, result)
+    logger.info(
+        "試合結果を記録しました: id=%d result=%s rank=%s->%s league_changed=%s goals=%d",
+        match_id,
+        result.result,
+        result.rank_before,
+        result.rank_after,
+        result.league_changed,
+        len(result.goals),
+    )
+    for goal in result.goals:
+        goal_id = db.save_goal(conn, match_id, goal.scorer_name, goal.assist_name, goal.detected_at)
+        if goal_id is not None:
+            logger.info(
+                "ゴールを記録しました: match_id=%d scorer=%s assist=%s", match_id, goal.scorer_name, goal.assist_name
+            )
+
+
+def _warmup_ocr_engines() -> None:
+    """OCRエンジン(EasyOCR・PaddleOCR)を事前に構築しておく。
+
+    実測: モデル読み込みを伴う初回構築は約3.8秒かかる(2回目以降は0.2秒未満)。
+    ループ中に初めて呼び出すと、その数秒間フレーム取得側が実時間で進み続け、
+    FfmpegFrameReaderの「追いつかない間は古いフレームを破棄する」設計と
+    組み合わさって、ちょうどランクバッジの安定待ちが始まる直後というもっとも
+    重要な数秒間分のフレームを丸ごと読み飛ばしてしまう。ループ開始前に
+    済ませておくことでこれを避ける。
+    """
+    logger.info("OCRエンジンを初期化しています(数秒かかります)")
+    _get_reader()
+    _get_name_reader()
+    logger.info("OCRエンジンの初期化が完了しました")
+
+
+def run(reader: FfmpegFrameReader, machine: MatchStateMachine, conn: sqlite3.Connection) -> None:
+    prev_state = machine.current_state
+
+    _warmup_ocr_engines()
+
+    logger.info("フレーム取得を開始します")
+    reader.start()
+    try:
+        while True:
+            frame = reader.read(timeout=FRAME_READ_TIMEOUT_SECONDS)
+            if frame is None:
+                if reader.is_running:
+                    logger.warning("フレーム取得が%.0f秒以内に来ませんでした。継続します", FRAME_READ_TIMEOUT_SECONDS)
+                    # 入力終了直後はread()が待機せず即座にNoneを返し続けることがあるため、
+                    # is_running(プロセスの終了検知)が追いつくまでの間ビジーループしないよう
+                    # 一呼吸置く
+                    time.sleep(0.1)
+                    continue
+                if reader.error is not None:
+                    logger.error("ffmpegの読み取りでエラーが発生しました: %s", reader.error)
+                else:
+                    logger.error("ffmpegプロセスが終了し、フレームが取得できなくなりました")
+                break
+
+            result = machine.process_frame(frame)
+
+            if machine.current_state != prev_state:
+                logger.info("状態遷移: %s -> %s", prev_state, machine.current_state)
+                prev_state = machine.current_state
+
+            if result is not None:
+                _record_match_result(conn, result)
+    except KeyboardInterrupt:
+        logger.info("Ctrl+Cを受け取ったため終了します")
+    finally:
+        reader.stop()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--video",
+        type=Path,
+        default=None,
+        help="OBS Virtual Cameraの代わりに読み込む動画ファイル(配線確認用。未指定時は実キャプチャ)",
+    )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="キャプチャのfps(状態機械の閾値スケーリングに使用)。"
+        "--video指定時は未指定ならファイルから自動検出、実キャプチャ時は未指定なら30fps想定",
+    )
+    args = parser.parse_args()
+
+    _setup_logging()
+    fps = args.fps
+    if fps is None:
+        fps = _detect_fps(args.video) if args.video is not None else DEFAULT_CAPTURE_FPS
+    logger.info("fps=%.2fとして状態機械の閾値をスケーリングします", fps)
+
+    reader = _make_reader(args.video)
+    machine = _make_match_state_machine(fps)
+    conn = db.connect()
+    try:
+        run(reader, machine, conn)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
