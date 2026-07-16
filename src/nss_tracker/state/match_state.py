@@ -53,7 +53,7 @@ from nss_tracker.detection.banner import BannerResult, classify_banner
 from nss_tracker.detection.goal import is_goal_event, read_assist_name, read_scorer_name
 from nss_tracker.detection.league_change import is_league_change_screen
 from nss_tracker.detection.motion import StabilityMonitor
-from nss_tracker.detection.rank_ocr import RANK_ROI, read_precise_rank
+from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED, RANK_ROI, read_precise_rank
 
 DEFAULT_BANNER_CONFIRM_FRAMES = 30
 DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES = 30
@@ -183,7 +183,8 @@ class MatchStateMachine:
 
         if self._banner_streak >= self._banner_confirm_frames:
             self._pending_result = self._banner_candidate
-            precise_result = read_precise_rank(frame)
+            # バナー確定直後 = ランク変動アニメーションが始まる前 = 常にコンパクト表示
+            precise_result = read_precise_rank(frame, GAUGE_ROI_COMPACT)
             if precise_result is not None:
                 self._pending_rank_before_tier, self._pending_rank_before = precise_result
             else:
@@ -225,8 +226,9 @@ class MatchStateMachine:
                 # なりOCRが失敗しうるため、値はここで確定させて使い回す。
                 # 微小なノイズで安定が何度か途切れて再試行することがあるが、
                 # 直近の試行がたまたま失敗しても直前までの正常な読み取り結果を
-                # 上書きしないよう、Noneの場合は前回値を保持する
-                precise_result = read_precise_rank(frame)
+                # 上書きしないよう、Noneの場合は前回値を保持する。
+                # TRACKING_RANK中(アニメーション開始後)は常に拡大表示
+                precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED)
                 if precise_result is not None:
                     self._grace_candidate_rank_tier, self._grace_candidate_rank = precise_result
             return None
@@ -248,7 +250,7 @@ class MatchStateMachine:
         # 一定間隔で読み直して候補値が古くなっていないか確認する。
         # 変化していれば、まだ表示が動き続けている途中とみなし猶予期間をやり直す
         if self._grace_counter % self._rank_recheck_interval_frames == 0:
-            precise_result = read_precise_rank(frame)
+            precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED)
             if precise_result is not None:
                 tier, precise = precise_result
                 candidate = self._grace_candidate_rank
