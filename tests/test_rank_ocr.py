@@ -2,7 +2,13 @@ import cv2
 import pytest
 
 from conftest import requires_fixtures
-from nss_tracker.detection.rank_ocr import read_precise_rank, read_rank, read_rank_gauge_fill
+from nss_tracker.detection.rank_ocr import (
+    GAUGE_ROI_COMPACT,
+    GAUGE_ROI_ENLARGED,
+    read_precise_rank,
+    read_rank,
+    read_rank_gauge_fill,
+)
 
 # 同一プレイ記録からのfixtureのため全て同じランク値(38)になっているが、
 # バッジの表示有無・通常表示/昇格・降格アニメ中の拡大表示それぞれで
@@ -30,27 +36,47 @@ def test_read_rank(fixtures_dir, filename, expected):
     assert read_rank(frame) == expected
 
 
-# scripts/inspect_gauge_fill.pyで実測した塗りつぶし割合(色ベースの判定のみで
-# OCRは使わないため、こちらは通常のpytest実行対象)
-EXPECTED_GAUGE_FILL = {
-    "44_result_lose_with_rank_blue.png": 0.78,
-    "45_result_lose_in_rank_decrease_blue.png": 1.00,
-    "46_result_lose_after_rank_decrease_blue.png": 0.78,
-    "50_result_win_with_rank_red.png": 0.02,
-    "51_result_in_rank_increase_red.png": 0.42,
-    "52_result_after_rank_increase_red.png": 0.42,
-    "54_result_lose_with_rank_red.png": 0.21,
-    "55_result_lose_in_rank_decrease_red.png": 0.32,
-    "56_result_lose_after_rank_decrease_red.png": 0.07,
+# バッジはコンパクト表示(結果バナー確定直後、アニメーション開始前)と
+# 拡大表示(アニメーション開始後〜暗転まで)でバーの実寸(幅・位置)が異なるため、
+# GAUGE_ROI_COMPACT/GAUGE_ROI_ENLARGEDそれぞれに対応するfixtureで別々に検証する。
+# 実測(fixtures/screenshotsの行ごとのHSV値を直接スキャンして確認、
+# scripts/inspect_gauge_fill.py参照): 同一の勝敗ペアでもコンパクト表示と
+# 拡大表示では塗りつぶし率が明確に異なる値になる(例: 44は0.75だが対応する
+# 46は0.56。勝敗による塗りつぶし量の増減が正しく反映されている)。
+#
+# "_in_rank_increase_"/"_in_rank_decrease_"のfixture(docs/screen_states.md参照:
+# ランク増加中/減少中、すなわち拡大表示に切り替わった直後の遷移演出の途中)は
+# 含めない。read_rank_gauge_fillは「安定している瞬間」にのみ呼び出す前提の
+# 関数であり、遷移演出中はゲージの見た目自体がグラデーション表示になり
+# 塗りつぶし割合として意味を持たないため、この状態に対して期待値を固定する
+# テストは前提と矛盾する
+EXPECTED_GAUGE_FILL_COMPACT = {
+    "44_result_lose_with_rank_blue.png": 0.75,
+    "50_result_win_with_rank_red.png": 0.06,
+    "54_result_lose_with_rank_red.png": 0.24,
+}
+
+EXPECTED_GAUGE_FILL_ENLARGED = {
+    "46_result_lose_after_rank_decrease_blue.png": 0.56,
+    "52_result_after_rank_increase_red.png": 0.32,
+    "56_result_lose_after_rank_decrease_red.png": 0.08,
 }
 
 
 @requires_fixtures
-@pytest.mark.parametrize("filename, expected", sorted(EXPECTED_GAUGE_FILL.items()))
-def test_read_rank_gauge_fill(fixtures_dir, filename, expected):
+@pytest.mark.parametrize("filename, expected", sorted(EXPECTED_GAUGE_FILL_COMPACT.items()))
+def test_read_rank_gauge_fill_compact(fixtures_dir, filename, expected):
     frame = cv2.imread(str(fixtures_dir / filename))
     assert frame is not None, f"failed to load {filename}"
-    assert read_rank_gauge_fill(frame) == pytest.approx(expected, abs=0.02)
+    assert read_rank_gauge_fill(frame, GAUGE_ROI_COMPACT) == pytest.approx(expected, abs=0.02)
+
+
+@requires_fixtures
+@pytest.mark.parametrize("filename, expected", sorted(EXPECTED_GAUGE_FILL_ENLARGED.items()))
+def test_read_rank_gauge_fill_enlarged(fixtures_dir, filename, expected):
+    frame = cv2.imread(str(fixtures_dir / filename))
+    assert frame is not None, f"failed to load {filename}"
+    assert read_rank_gauge_fill(frame, GAUGE_ROI_ENLARGED) == pytest.approx(expected, abs=0.02)
 
 
 @pytest.mark.slow
@@ -58,9 +84,9 @@ def test_read_rank_gauge_fill(fixtures_dir, filename, expected):
 def test_read_precise_rank_combines_tier_and_gauge_fill(fixtures_dir):
     frame = cv2.imread(str(fixtures_dir / "44_result_lose_with_rank_blue.png"))
     assert frame is not None
-    tier, precise = read_precise_rank(frame)
+    tier, precise = read_precise_rank(frame, GAUGE_ROI_COMPACT)
     assert tier == 38
-    assert precise == pytest.approx(38.78, abs=0.02)
+    assert precise == pytest.approx(38.75, abs=0.02)
 
 
 @pytest.mark.slow
@@ -68,4 +94,4 @@ def test_read_precise_rank_combines_tier_and_gauge_fill(fixtures_dir):
 def test_read_precise_rank_returns_none_without_badge(fixtures_dir):
     frame = cv2.imread(str(fixtures_dir / "43_result_win_without_rank_blue.png"))
     assert frame is not None
-    assert read_precise_rank(frame) is None
+    assert read_precise_rank(frame, GAUGE_ROI_COMPACT) is None
