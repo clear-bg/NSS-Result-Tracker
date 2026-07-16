@@ -276,10 +276,13 @@ class MatchStateMachine:
         読み取れず、そのまま候補が更新されないままバナーが消える(または
         猶予期間が満了する)ことがありうる。既に有効な候補があればここでは
         何もしない(古い正常値を上書きしない)。
+
+        呼び出し元はいずれも_RankPhase.GRACE中(ランク変動アニメーション開始後)
+        のため、常に拡大表示のROIを使う。
         """
         if self._grace_candidate_rank_tier is not None:
             return
-        precise_result = read_precise_rank(frame)
+        precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED)
         if precise_result is not None:
             self._grace_candidate_rank_tier, self._grace_candidate_rank = precise_result
 

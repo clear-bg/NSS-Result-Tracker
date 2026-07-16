@@ -8,7 +8,7 @@ import pytest
 import nss_tracker.state.match_state as match_state_module
 from conftest import requires_video_fixtures
 from nss_tracker.detection.motion import StabilityMonitor
-from nss_tracker.detection.rank_ocr import RANK_ROI
+from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED, RANK_ROI
 from nss_tracker.state.match_state import MatchStateMachine
 
 TARGET_SIZE = (1920, 1080)
@@ -236,6 +236,58 @@ def test_track_rank_grace_recheck_catches_tier_change(monkeypatch):
     assert result.rank_after == pytest.approx(40.0)
     assert result.league_changed == "down", (
         f"降格を見逃している(帯の変化が反映される前の値で確定した): {result.league_changed}"
+    )
+
+
+def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
+    """GRACE中に候補値が一度も読み取れないまま確定に至った場合の最後のリトライ
+    (_fill_grace_candidate_if_missing)は、常に拡大表示用のROI(GAUGE_ROI_ENLARGED)を
+    使うことを確認する。GRACE中はランク変動アニメーション開始後の文脈のため、
+    結果バナー確定直後専用のGAUGE_ROI_COMPACTを誤って使うとバー幅がずれて
+    誤ったゲージ値を返してしまう。
+    """
+    rois_used: list[tuple[int, int, int, int]] = []
+    banner_call_count = {"n": 0}
+
+    def fake_classify_banner(frame):
+        banner_call_count["n"] += 1
+        # 最初の2回(banner_confirm_frames分)は"lose"を返してTRACKING_RANKへ遷移させ、
+        # GRACE突入後の最初の呼び出しでNoneを返してバナー消失(即確定)を発生させる
+        return "lose" if banner_call_count["n"] <= 2 else None
+
+    def fake_read_precise_rank(frame, gauge_roi):
+        rois_used.append(gauge_roi)
+        # 結果バナー確定直後(コンパクト表示)・GRACE突入直後(拡大表示)の読み取りは
+        # いずれも失敗させ、候補が一度も埋まらない状況を再現する。
+        # _fill_grace_candidate_if_missingによる最後のリトライだけ成功させる
+        if len(rois_used) <= 2:
+            return None
+        return (40, 40.5)
+
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=10,
+        rank_recheck_interval_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_after == pytest.approx(40.5)
+    assert rois_used[0] == GAUGE_ROI_COMPACT, "結果バナー確定直後の読み取りはコンパクト表示ROIのはず"
+    assert rois_used[-1] == GAUGE_ROI_ENLARGED, (
+        f"_fill_grace_candidate_if_missingが拡大表示ROIを使っていない: {rois_used[-1]}"
     )
 
 
