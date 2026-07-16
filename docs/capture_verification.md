@@ -41,3 +41,10 @@ uv run python scripts/capture_stream_test.py 10
 ## 結果を確認したら
 
 このドキュメントの内容自体は今後も使うため、確認結果(成功/失敗、発生した問題と対処)はCLAUDE.mdの該当箇所に反映すること(「実装時の注意」を参照)。
+
+## 確認結果(2026-07-17)
+
+- 手順通りSwitch+キャプチャーボード+OBS(仮想カメラ起動)を用意し、`uv run python scripts/capture_stream_test.py 10`を実行
+- **成功**。取得フレーム数573(10.0秒、実測57.2fps)、エラーなし
+- 保存された`capture_stream_test_last_frame.png`もOBSに映っていたゲーム画面と一致。斜め流れ・色崩れ・アスペクト比の異常なし
+- 発生した問題・対処: なし(手順通りで一発成功)
