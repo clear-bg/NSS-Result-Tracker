@@ -21,7 +21,7 @@ import cv2
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from nss_tracker.detection.motion import StabilityMonitor, region_diff
-from nss_tracker.detection.rank_ocr import RANK_ROI, read_precise_rank
+from nss_tracker.detection.rank_ocr import GAUGE_ROI_ENLARGED, RANK_ROI, read_precise_rank
 
 VIDEOS_DIR = Path(__file__).parent.parent / "fixtures" / "videos"
 TARGET_SIZE = (1920, 1080)
@@ -57,7 +57,8 @@ def main(video_name: str, start: int, end: int, ocr_every: int = 5) -> None:
 
         ocr = ""
         if idx % ocr_every == 0:
-            result = read_precise_rank(frame)
+            # TRACKING_RANK区間の調査用スクリプトのため、常に拡大表示のROIを使う
+            result = read_precise_rank(frame, GAUGE_ROI_ENLARGED)
             ocr = f" ocr={result}"
         print(f"frame={idx:5d} diff={diff:6.2f} stable={is_stable}{ocr}")
 
