@@ -15,10 +15,13 @@ from typing import Iterable, Optional, TypeVar
 
 import numpy as np
 
+from nss_tracker.detection_config import get_detection_value
+
 T = TypeVar("T")
 
-DEFAULT_DIFF_THRESHOLD = 6.0
-DEFAULT_STABLE_FRAMES_REQUIRED = 10
+# config/detection.tomlの[motion]で上書き可能
+DEFAULT_DIFF_THRESHOLD = get_detection_value("motion", "DEFAULT_DIFF_THRESHOLD", 6.0)
+DEFAULT_STABLE_FRAMES_REQUIRED = get_detection_value("motion", "DEFAULT_STABLE_FRAMES_REQUIRED", 10)
 
 
 def region_diff(prev_frame: np.ndarray, curr_frame: np.ndarray, roi: tuple[int, int, int, int]) -> float:

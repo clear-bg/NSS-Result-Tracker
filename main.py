@@ -26,7 +26,12 @@ from typing import Optional
 import cv2
 
 from nss_tracker.capture.ffmpeg_capture import FfmpegFrameReader
-from nss_tracker.config import ConfigError, get_capture_device_name, get_capture_resolution
+from nss_tracker.config import (
+    ConfigError,
+    get_capture_device_name,
+    get_capture_resolution,
+    get_frame_read_timeout_seconds,
+)
 from nss_tracker.database import db
 from nss_tracker.detection.goal import _get_name_reader
 from nss_tracker.detection.motion import StabilityMonitor
@@ -36,7 +41,6 @@ from nss_tracker.timeutil import JST
 
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "tracker.log"
-FRAME_READ_TIMEOUT_SECONDS = 5.0
 # OBS Virtual Cameraのキャプチャは30fps想定(CLAUDE.md)。--videoでの動作確認時は
 # 実ファイルのfpsを自動検出するため、これは実キャプチャ時のみ使うデフォルト値
 DEFAULT_CAPTURE_FPS = 30.0
@@ -158,6 +162,7 @@ def _warmup_ocr_engines() -> None:
 
 def run(reader: FfmpegFrameReader, machine: MatchStateMachine, conn: sqlite3.Connection) -> None:
     prev_state = machine.current_state
+    frame_read_timeout_seconds = get_frame_read_timeout_seconds()
 
     _warmup_ocr_engines()
 
@@ -165,10 +170,10 @@ def run(reader: FfmpegFrameReader, machine: MatchStateMachine, conn: sqlite3.Con
     reader.start()
     try:
         while True:
-            frame = reader.read(timeout=FRAME_READ_TIMEOUT_SECONDS)
+            frame = reader.read(timeout=frame_read_timeout_seconds)
             if frame is None:
                 if reader.is_running:
-                    logger.warning("フレーム取得が%.0f秒以内に来ませんでした。継続します", FRAME_READ_TIMEOUT_SECONDS)
+                    logger.warning("フレーム取得が%.0f秒以内に来ませんでした。継続します", frame_read_timeout_seconds)
                     # 入力終了直後はread()が待機せず即座にNoneを返し続けることがあるため、
                     # is_running(プロセスの終了検知)が追いつくまでの間ビジーループしないよう
                     # 一呼吸置く

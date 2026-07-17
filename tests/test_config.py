@@ -1,6 +1,15 @@
+from pathlib import Path
+
 import pytest
 
-from nss_tracker.config import ConfigError, get_capture_device_name, get_capture_resolution, is_allowed_player
+from nss_tracker.config import (
+    ConfigError,
+    get_capture_device_name,
+    get_capture_resolution,
+    get_db_path,
+    get_frame_read_timeout_seconds,
+    is_allowed_player,
+)
 
 
 def test_is_allowed_player_true_for_listed_name(monkeypatch):
@@ -54,3 +63,23 @@ def test_get_capture_resolution_uses_env_values(monkeypatch):
     monkeypatch.setenv("CAPTURE_WIDTH", "1280")
     monkeypatch.setenv("CAPTURE_HEIGHT", "720")
     assert get_capture_resolution() == (1280, 720)
+
+
+def test_get_db_path_falls_back_to_default_when_unset(monkeypatch):
+    monkeypatch.delenv("DB_PATH", raising=False)
+    assert get_db_path() == Path("nss_tracker.db")
+
+
+def test_get_db_path_uses_env_value(monkeypatch):
+    monkeypatch.setenv("DB_PATH", "custom/dir/tracker.db")
+    assert get_db_path() == Path("custom/dir/tracker.db")
+
+
+def test_get_frame_read_timeout_seconds_falls_back_to_default_when_unset(monkeypatch):
+    monkeypatch.delenv("FRAME_READ_TIMEOUT_SECONDS", raising=False)
+    assert get_frame_read_timeout_seconds() == 5.0
+
+
+def test_get_frame_read_timeout_seconds_uses_env_value(monkeypatch):
+    monkeypatch.setenv("FRAME_READ_TIMEOUT_SECONDS", "10.5")
+    assert get_frame_read_timeout_seconds() == 10.5

@@ -63,10 +63,11 @@ from nss_tracker.detection.banner import BannerResult, classify_banner
 from nss_tracker.detection.goal import is_goal_event, read_assist_name, read_scorer_name
 from nss_tracker.detection.league_change import is_league_change_screen
 from nss_tracker.detection.motion import StabilityMonitor
+from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED, RANK_ROI, read_precise_rank
+from nss_tracker.detection_config import get_detection_value
 from nss_tracker.timeutil import now_jst
 
 logger = getLogger("nss_tracker.state")
-from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED, RANK_ROI, read_precise_rank
 
 DEFAULT_BANNER_CONFIRM_FRAMES = 30
 DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES = 30
@@ -79,7 +80,8 @@ DEFAULT_RANK_RECHECK_INTERVAL_FRAMES = 15
 # 再読み取りで「値が変わった」とみなす閾値。ゲージ読み取り自体の測定誤差
 # (tests/test_rank_ocr.pyでabs=0.02を許容)より大きく取り、ノイズで
 # 猶予期間を無駄に延長し続けないようにする
-RANK_RECHECK_CHANGE_TOLERANCE = 0.05
+# (config/detection.tomlの[match_state]で上書き可能)
+RANK_RECHECK_CHANGE_TOLERANCE = get_detection_value("match_state", "RANK_RECHECK_CHANGE_TOLERANCE", 0.05)
 
 
 class _State(Enum):
