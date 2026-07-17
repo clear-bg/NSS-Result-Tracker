@@ -30,5 +30,13 @@
     "expected_league_changed": "down",
     "banner_confirmed_frame_range": [793, 853],
     "match_result_frame_range": [1114, 1174]
+  },
+  "10_RankDown_red.mp4": {
+    "expected_result": "lose",
+    "expected_rank_before": 39,
+    "expected_rank_after": 38,
+    "expected_league_changed": "down",
+    "banner_confirmed_frame_range": null,
+    "match_result_frame_range": null
   }
 }
