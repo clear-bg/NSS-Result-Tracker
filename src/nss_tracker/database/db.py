@@ -1,5 +1,8 @@
 """試合結果・ゴールのSQLiteへの保存。
 
+DBファイルの保存先は`.env`の`DB_PATH`で上書き可能(未設定時はカレント
+ディレクトリの`nss_tracker.db`にフォールバック。config.get_db_path参照)。
+
 日時カラムは2種類ある:
 - detected_at: 試合結果/ゴールを検知した実時刻(ドメイン上の日時)。期間で
   絞り込むグラフ集計等はこちらを使う
@@ -27,13 +30,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from nss_tracker.config import is_allowed_player
+from nss_tracker.config import get_db_path, is_allowed_player
 from nss_tracker.state.match_state import MatchResult
 from nss_tracker.timeutil import now_jst
 
 logger = logging.getLogger("nss_tracker.database")
 
-DEFAULT_DB_PATH = Path("nss_tracker.db")
+# .envのDB_PATHで上書き可能(未設定時はnss_tracker.dbにフォールバック。config.py参照)
+DEFAULT_DB_PATH = get_db_path()
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS matches (

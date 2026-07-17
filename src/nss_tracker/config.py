@@ -8,9 +8,13 @@
 キャプチャデバイス名・解像度(`CAPTURE_DEVICE_NAME`/`CAPTURE_WIDTH`/`CAPTURE_HEIGHT`)も
 同様に`.env`から読み込む。フォールバック用のデフォルト値は持たず、未設定の場合は
 ConfigErrorを送出する(`.env.example`を必ずコピーして値を埋めてもらう運用)。
+
+`DB_PATH`・`FRAME_READ_TIMEOUT_SECONDS`は上記と異なり、未設定でも動作に支障が
+無い値のため、フォールバック用のデフォルト値を持つ(ConfigErrorは送出しない)。
 """
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -52,3 +56,15 @@ def get_capture_resolution() -> tuple[int, int]:
     if not height_raw:
         raise ConfigError("CAPTURE_HEIGHTが.envに設定されていません。.env.exampleを参考に設定してください。")
     return int(width_raw), int(height_raw)
+
+
+def get_db_path() -> Path:
+    """DBファイルの保存先を取得する。未設定時はカレントディレクトリのnss_tracker.dbにフォールバックする。"""
+    value = os.environ.get("DB_PATH")
+    return Path(value) if value else Path("nss_tracker.db")
+
+
+def get_frame_read_timeout_seconds() -> float:
+    """フレーム取得のタイムアウト秒数を取得する。未設定時は5.0にフォールバックする。"""
+    value = os.environ.get("FRAME_READ_TIMEOUT_SECONDS")
+    return float(value) if value else 5.0

@@ -18,6 +18,8 @@ fixtures/screenshots/*.json
 
 # SQLite(実データは含めない方針)
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
