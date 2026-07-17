@@ -3,7 +3,9 @@
 capture(FfmpegFrameReader) → state(MatchStateMachine) → database(db)を
 つなぎ、常時稼働する検知ループとして実行する。ログ設定もここで一箇所に
 まとめる(CLAUDE.md記載のログ方針: コンソール+ローテーティングファイルの
-両方に出力、レベルは環境変数NSS_TRACKER_LOG_LEVELで切り替え)。
+両方に出力、レベルは環境変数NSS_TRACKER_LOG_LEVELで切り替え)。ログの
+タイムスタンプはOSのタイムゾーン設定によらず常にJST表記で出力する
+(DB側もtimeutil.now_jstで統一済み、本ファイルの_jst_converter参照)。
 
 `uv run python main.py` で実行するとOBS Virtual Camera(dshow)からの
 実キャプチャを試みる。OBS/Switchをまだ用意していない段階でも配線全体を
@@ -30,6 +32,7 @@ from nss_tracker.detection.goal import _get_name_reader
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import RANK_ROI, _get_reader
 from nss_tracker.state.match_state import MatchResult, MatchStateMachine
+from nss_tracker.timeutil import JST
 
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "tracker.log"
@@ -41,12 +44,27 @@ DEFAULT_CAPTURE_FPS = 30.0
 logger = logging.getLogger("nss_tracker")
 
 
+_JST_OFFSET_SECONDS = JST.utcoffset(None).total_seconds()
+
+
+def _jst_converter(secs: float) -> time.struct_time:
+    """ログのタイムスタンプ変換を、OSのタイムゾーン設定に依存せず常にJSTにする。
+
+    logging.Formatter.converterのデフォルト(time.localtime)はOS設定に従うため、
+    OS側がJST以外の場合にログとDB(timeutil.now_jst参照、常にJST)の表記が
+    ズレてしまう。gmtime基準にtimeutil.JSTのオフセット分ずらすことで、OS設定に
+    よらず常にJSTのカレンダー時刻を計算する(zoneinfo等のタイムゾーンDBは不要)。
+    """
+    return time.gmtime(secs + _JST_OFFSET_SECONDS)
+
+
 def _setup_logging() -> None:
     level_name = os.environ.get("NSS_TRACKER_LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
 
     LOG_DIR.mkdir(exist_ok=True)
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    formatter = logging.Formatter("%(asctime)s JST [%(levelname)s] %(name)s: %(message)s")
+    formatter.converter = _jst_converter
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
@@ -204,6 +222,14 @@ def main() -> None:
     except ConfigError as exc:
         logger.error("設定エラー: %s", exc)
         sys.exit(1)
+    if args.video is None:
+        logger.info(
+            "キャプチャ設定: device=%s resolution=%dx%d",
+            get_capture_device_name(),
+            *get_capture_resolution(),
+        )
+    else:
+        logger.info("動画ファイルを入力として使用します: %s", args.video)
     machine = _make_match_state_machine(fps)
     conn = db.connect()
     try:

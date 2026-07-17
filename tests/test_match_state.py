@@ -161,6 +161,52 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     assert result.goals[0].assist_name is None
 
 
+def test_rank_read_failure_is_logged(monkeypatch, caplog):
+    """ランクバッジのOCRが常に失敗するケースで、結果バナー確定時・試合終了時
+    それぞれでログが出ることを確認する(Issue #47)。バッジが表示されていない
+    のか読み取りに失敗したのかを、記録結果だけでなくログからも追えるようにする。
+    """
+    calls = {"n": 0}
+
+    def fake_classify_banner(frame):
+        n = calls["n"]
+        calls["n"] += 1
+        if n < 3:
+            return None
+        if n < 6:
+            return "lose"
+        return None
+
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: None)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        banner_absence_confirm_frames=2,
+        goal_confirm_frames=2,
+        league_change_grace_frames=1,
+        rank_recheck_interval_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(30):
+            r = machine.process_frame(frame)
+            if r is not None:
+                result = r
+                break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_before is None
+    assert result.rank_after is None
+    assert "結果バナー確定時点で" in caplog.text
+    assert "試合終了時点でも" in caplog.text
+
+
 def test_track_rank_grace_recheck_catches_slow_drift(monkeypatch):
     """GRACE中にゲージがピクセル差分の閾値を下回る速度で緩やかに変化し続けても、
     定期的な再読み取りで真の最終値まで追従できることを確認する
