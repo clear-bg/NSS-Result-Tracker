@@ -65,19 +65,19 @@ Switch(有線コントローラー操作) → キャプチャーボード(HDMI I
 ```sql
 CREATE TABLE matches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    detected_at TEXT NOT NULL,      -- 結果バナー検知時刻(ISO8601)
+    detected_at TEXT NOT NULL,      -- 結果バナー検知時刻(ISO8601, JST)
     result TEXT NOT NULL,           -- 'win' / 'lose' / 'draw'
     rank_before REAL,               -- 結果バナー表示時点のランク値(帯番号+ゲージ溜まり具合の小数値。表示時に丸める)
     rank_after REAL,                -- ランク変動確定後の値(同上)
     league_changed TEXT,            -- 'up' / 'down' / NULL
-    created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601)
-    updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601)
+    created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601, JST)
+    updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601, JST)
 );
 
 CREATE TABLE goals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id INTEGER NOT NULL REFERENCES matches(id),
-    detected_at TEXT NOT NULL,      -- ゴール検知時刻(ISO8601)
+    detected_at TEXT NOT NULL,      -- ゴール検知時刻(ISO8601, JST)
     scorer_name TEXT NOT NULL,
     assist_name TEXT,               -- アシスト無しの場合NULL
     created_at TEXT NOT NULL,
@@ -86,6 +86,7 @@ CREATE TABLE goals (
 ```
 
 - `detected_at`は試合結果/ゴールを検知した実時刻(期間で絞り込む集計・グラフ表示等に使う)、`created_at`/`updated_at`はレコード自体の作成・更新時刻(監査用)。今後追加するテーブルにも`created_at`/`updated_at`は同様に持たせる
+- 全ての日時カラムはJST(日本標準時、`src/nss_tracker/timeutil.py`の`now_jst()`)で保存する。個人利用(日本国内)のみを想定しており、UTCで保存すると目視確認時に9時間ズレて分かりにくいため。ログ(`logs/tracker.log`)のタイムスタンプもJSTで統一している
 - `result`には引き分け(`draw`)も将来含まれる想定(現時点では検知未実装)
 - `goals`は`matches.id`を`match_id`として参照する。得点者がプレイヤー許可リスト(`.env`の`ALLOWED_PLAYERS`)に無い場合、そのゴールは保存されない
 - 実装は`src/nss_tracker/database/db.py`を参照

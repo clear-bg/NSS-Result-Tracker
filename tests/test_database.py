@@ -273,3 +273,89 @@ def test_save_goal_without_scorer_name_is_skipped_even_when_assist_allowed(monke
 
     assert goal_id is None
     assert fetch_all_goals(conn) == []
+
+
+def test_save_match_result_created_at_is_jst():
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=1,
+        rank_after=1,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    save_match_result(conn, match)
+
+    row = fetch_all_matches(conn)[0]
+    assert row["created_at"].endswith("+09:00")
+    assert row["updated_at"].endswith("+09:00")
+
+
+def test_save_goal_created_at_is_jst(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    conn = connect(":memory:")
+    match_id = save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=1,
+            rank_after=1,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+
+    save_goal(conn, match_id=match_id, scorer_name="Alice", assist_name=None, detected_at=datetime.now(timezone.utc))
+
+    row = fetch_all_goals(conn)[0]
+    assert row["created_at"].endswith("+09:00")
+    assert row["updated_at"].endswith("+09:00")
+
+
+def test_save_goal_logs_reason_without_leaking_disallowed_names(monkeypatch, caplog):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    conn = connect(":memory:")
+    match_id = save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=1,
+            rank_after=1,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+
+    with caplog.at_level("INFO", logger="nss_tracker.database"):
+        save_goal(
+            conn,
+            match_id=match_id,
+            scorer_name="Stranger",
+            assist_name="OtherStranger",
+            detected_at=datetime.now(timezone.utc),
+        )
+
+    assert "許可リストに無い" in caplog.text
+    assert "Stranger" not in caplog.text
+    assert "OtherStranger" not in caplog.text
+
+
+def test_save_goal_logs_reason_when_scorer_name_missing(monkeypatch, caplog):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    conn = connect(":memory:")
+    match_id = save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=1,
+            rank_after=1,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+
+    with caplog.at_level("INFO", logger="nss_tracker.database"):
+        save_goal(conn, match_id=match_id, scorer_name=None, assist_name=None, detected_at=datetime.now(timezone.utc))
+
+    assert "読み取れなかった" in caplog.text
