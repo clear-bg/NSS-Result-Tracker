@@ -81,22 +81,29 @@ def test_is_league_change_screen_detects_promotion_overlay(videos_dir):
     assert false_positive_frame is None, f"演出区間外(フレーム{false_positive_frame})で誤検知した"
 
 
-# 降格時は専用の全画面演出が出ず、小さい「降格」ラベルのみが表示されるケースがある
-# (目視確認済み)。state/match_state.pyのrank_recheck機構はこのケースに対応するために
-# 追加された(test_match_state.pyのtest_track_rank_grace_recheck_catches_tier_change参照)。
-# is_league_change_screenが全画面演出だけを見て判定する設計上、この動画では
+# 降格時は昇格と異なり全画面演出が一切出ず、ランクバッジ上に小さい「降格」ラベルが
+# 乗るだけ(バッジ自体は隠れない)。目視確認済み(state/match_state.pyのモジュール
+# docstring・detection/league_change.pyのモジュールdocstring参照)。
+# state/match_state.pyのrank_recheck機構・バナー消灯時フォールバック確定は
+# このケースに対応するために追加された
+# (test_match_state.pyのtest_track_rank_grace_recheck_catches_tier_change参照)。
+# is_league_change_screenが全画面演出だけを見て判定する設計上、これらの動画では
 # 全編を通じて一度もTrueにならないのが正しい挙動。
-LEAGUE_DOWN_WITHOUT_OVERLAY_VIDEO = "03_lose_blue_2-3.mp4"
+LEAGUE_DOWN_WITHOUT_OVERLAY_VIDEOS = [
+    "03_lose_blue_2-3.mp4",
+    "10_RankDown_red.mp4",
+]
 
 
 @requires_video_fixtures
-def test_is_league_change_screen_false_throughout_when_no_dedicated_overlay(videos_dir):
-    video_path = videos_dir / LEAGUE_DOWN_WITHOUT_OVERLAY_VIDEO
+@pytest.mark.parametrize("video_name", LEAGUE_DOWN_WITHOUT_OVERLAY_VIDEOS)
+def test_is_league_change_screen_false_throughout_when_no_dedicated_overlay(videos_dir, video_name):
+    video_path = videos_dir / video_name
     if not video_path.is_file():
-        pytest.skip(f"{LEAGUE_DOWN_WITHOUT_OVERLAY_VIDEO} が見つからない")
+        pytest.skip(f"{video_name} が見つからない")
 
     for idx, frame in enumerate(_read_frames(video_path)):
         assert not is_league_change_screen(frame), (
-            f"{LEAGUE_DOWN_WITHOUT_OVERLAY_VIDEO}のフレーム{idx}で誤検知した"
+            f"{video_name}のフレーム{idx}で誤検知した"
             "(この動画は降格が小さいラベル表示のみで全画面演出が出ないケース)"
         )
