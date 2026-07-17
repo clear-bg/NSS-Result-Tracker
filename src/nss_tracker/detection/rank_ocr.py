@@ -50,20 +50,23 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from nss_tracker.detection_config import get_detection_value
+
 # ランクバッジが写りうる範囲(通常表示・昇格/降格アニメ中の拡大表示の両方を含む)
 # 解像度1920x1080のフレームを前提とする
-RANK_ROI = (90, 600, 420, 930)
+# (config/detection.tomlの[rank_ocr]で上書き可能。以下同様)
+RANK_ROI = get_detection_value("rank_ocr", "RANK_ROI", (90, 600, 420, 930))
 
 # ランク数値バッジ下部のゲージ(横長の帯)の領域。コンパクト表示・拡大表示で
 # バーの実寸(幅・位置とも)が異なるため個別に用意する(モジュールdocstring参照)。
 # 丸みを帯びた両端のアンチエイリアス部分を避けるため、実測した真のバー端から
 # 内側に数px分マージンを取っている
-GAUGE_ROI_COMPACT = (125, 970, 345, 990)
-GAUGE_ROI_ENLARGED = (130, 966, 420, 998)
+GAUGE_ROI_COMPACT = get_detection_value("rank_ocr", "GAUGE_ROI_COMPACT", (125, 970, 345, 990))
+GAUGE_ROI_ENLARGED = get_detection_value("rank_ocr", "GAUGE_ROI_ENLARGED", (130, 966, 420, 998))
 
 # 実測(scripts/inspect_gauge_fill.py): 塗りつぶし部分はV(明度)が200前後、
 # 未塗りつぶし部分は80〜105程度で明確に分離できる
-GAUGE_FILLED_VALUE_THRESHOLD = 150
+GAUGE_FILLED_VALUE_THRESHOLD = get_detection_value("rank_ocr", "GAUGE_FILLED_VALUE_THRESHOLD", 150)
 
 
 @lru_cache(maxsize=1)
