@@ -16,6 +16,7 @@ import logging
 import logging.handlers
 import os
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -23,6 +24,7 @@ from typing import Optional
 import cv2
 
 from nss_tracker.capture.ffmpeg_capture import FfmpegFrameReader
+from nss_tracker.config import ConfigError, get_capture_device_name, get_capture_resolution
 from nss_tracker.database import db
 from nss_tracker.detection.goal import _get_name_reader
 from nss_tracker.detection.motion import StabilityMonitor
@@ -65,7 +67,8 @@ def _setup_logging() -> None:
 
 def _make_reader(video_path: Optional[Path]) -> FfmpegFrameReader:
     if video_path is None:
-        return FfmpegFrameReader()
+        width, height = get_capture_resolution()
+        return FfmpegFrameReader(device_name=get_capture_device_name(), width=width, height=height)
     # -re: 動画をファイルの本来のfpsで(実時間と同じ速さで)読み込む。
     # 付けない場合ffmpegはデコードできる限り高速に全フレームを吐き出してしまい、
     # FfmpegFrameReaderの「追いつかない間の古いフレームは破棄する」設計と組み合わさると
@@ -196,7 +199,11 @@ def main() -> None:
         fps = _detect_fps(args.video) if args.video is not None else DEFAULT_CAPTURE_FPS
     logger.info("fps=%.2fとして状態機械の閾値をスケーリングします", fps)
 
-    reader = _make_reader(args.video)
+    try:
+        reader = _make_reader(args.video)
+    except ConfigError as exc:
+        logger.error("設定エラー: %s", exc)
+        sys.exit(1)
     machine = _make_match_state_machine(fps)
     conn = db.connect()
     try:
