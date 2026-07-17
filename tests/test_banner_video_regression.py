@@ -64,3 +64,26 @@ def test_confirmed_banner_matches_filename_across_real_clips(videos_dir):
     for path, expected in videos:
         confirmed = _confirmed_banner_result(path)
         assert confirmed == expected, f"{path.name}: 期待={expected} 実際={confirmed}"
+
+
+# 実際の試合を1件も含まない、マッチング待機画面のみの動画(Issue #45)。
+# 背景のスタジアム建造物の色がLOSE_HUE_RANGE等に偶然一致し、classify_bannerが
+# 誤って"lose"を返すケースが実データで見つかった(14は2.5秒以上・3.4秒以上
+# 持続する誤検知があった)。BANNER_HUE_STD_MAX導入後は、単発フレームだけでなく
+# find_confirmed_valueでデバウンスした結果も一貫してNoneのままであることを検証する
+MATCHING_ONLY_VIDEOS = [
+    "14_matching_wait_1.mp4",
+    "15_matching_wait_2.mp4",
+    "16_matching_wait_3.mp4",
+]
+
+
+@requires_video_fixtures
+@pytest.mark.parametrize("video_name", MATCHING_ONLY_VIDEOS)
+def test_confirmed_banner_stays_none_on_matching_only_clips(videos_dir, video_name):
+    video_path = videos_dir / video_name
+    if not video_path.is_file():
+        pytest.skip(f"{video_name} が見つからない")
+
+    confirmed = _confirmed_banner_result(video_path)
+    assert confirmed is None, f"{video_name}: 試合を含まないのに{confirmed}と確定してしまった"

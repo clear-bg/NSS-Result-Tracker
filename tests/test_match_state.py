@@ -61,11 +61,17 @@ def _run_state_machine(path: Path):
     return results, state_change_frames
 
 
-def _assert_rank_matches_tier(rank: float | None, expected_tier: int, label: str) -> None:
+def _assert_rank_matches_tier(rank: float | None, expected_tier: int | None, label: str) -> None:
     """rankはtier(整数)+ゲージの溜まり具合(0.0以上1.0以下)の小数値なので、
     期待する帯番号に対しておおよそその範囲に収まっているかで検証する
     (ゲージの正確な溜まり具合はmetadata.jsonでは正解データ化していない)。
+
+    expected_tierがNoneの場合(結果画面にランクバッジ自体が表示されない試合)は、
+    rankもNoneのままであることを検証する。
     """
+    if expected_tier is None:
+        assert rank is None, f"{label}: 期待はNone(ランクバッジ非表示)だが実際={rank}"
+        return
     assert rank is not None, f"{label}: Noneだった(期待は帯{expected_tier})"
     assert expected_tier <= rank <= expected_tier + 1.0, (
         f"{label}: 期待帯={expected_tier} 実際={rank}"
