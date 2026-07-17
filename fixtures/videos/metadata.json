@@ -46,5 +46,21 @@
     "expected_league_changed": null,
     "banner_confirmed_frame_range": null,
     "match_result_frame_range": null
+  },
+  "12_win_red_vs_screen_to_result.mp4": {
+    "expected_result": "win",
+    "expected_rank_before": 39,
+    "expected_rank_after": 39,
+    "expected_league_changed": null,
+    "banner_confirmed_frame_range": null,
+    "match_result_frame_range": null
+  },
+  "13_win_red_vs_screen_without_rank.mp4": {
+    "expected_result": "win",
+    "expected_rank_before": null,
+    "expected_rank_after": null,
+    "expected_league_changed": null,
+    "banner_confirmed_frame_range": null,
+    "match_result_frame_range": null
   }
 }
