@@ -1,7 +1,7 @@
 import cv2
 import pytest
 
-from conftest import requires_fixtures
+from conftest import list_screenshot_fixtures, requires_fixtures
 from nss_tracker.detection.matchmaking import is_vs_screen
 
 # マッチング完了(VS画面)を捉えているfixture。11/12/14/15は本来の目的である
@@ -32,7 +32,7 @@ def test_is_vs_screen_false_for_non_vs_screenshots(fixtures_dir):
     fixtures/screenshots/*.pngのうちVS_SCREEN_SCREENSHOTS以外は
     VS画面を含まないため、全件が非該当のはず。
     """
-    screenshots = sorted(fixtures_dir.glob("*.png"))
+    screenshots = list_screenshot_fixtures(fixtures_dir)
     assert screenshots, "fixtures/screenshots/にpngが見つからない"
     for path in screenshots:
         if path.name in VS_SCREEN_SCREENSHOTS:

@@ -8,9 +8,11 @@ fixtures/videos/16_matching_wait_3.mp4(frame 1400)は、実際に該当フレー
 
 単発フレームでは試合中の演出アイコン等がROIに重なり稀に誤検知することがある
 (video 12のframe 4397、プレイヤー頭上のミント色アイコンが1フレームだけ
-重なるケースを確認済み)。一方、本物のVS画面は150フレーム(5秒)以上安定して
-表示され続けるため、banner.pyの結果バナー判定と同様にmotion.find_confirmed_value
-によるデバウンスと組み合わせて使うことを前提とする(detection/matchmaking.py
+重なるケースを確認済み、最長でも7フレーム程度)。一方、本物のVS画面は
+fixtures/videos 12/13/16の実測で最短でも158フレーム(約5.3秒、30fps換算)
+連続して表示され続けるため、banner.pyの結果バナー判定と同じ基準(1.0秒)を
+デバウンス閾値として採用する。30fps環境では30フレームに相当し、最短の
+実測ケース(158フレーム)に対しても約5倍の余裕がある(detection/matchmaking.py
 のモジュールdocstring参照)。
 """
 
@@ -21,10 +23,10 @@ from conftest import requires_video_fixtures
 from nss_tracker.detection.matchmaking import is_vs_screen
 from nss_tracker.detection.motion import find_confirmed_value
 
-# 実測: 試合中の演出アイコンによる誤検知は1フレーム(30fps換算で約33ms)のみ
-# 継続する一方、本物のVS画面は150フレーム(5秒)以上安定して表示され続ける。
-# 余裕を持って0.5秒をデバウンス閾値とする
-MIN_CONFIRM_SECONDS = 0.5
+# banner.pyの結果バナー判定と同じ基準(1.0秒 = 30fps換算で30フレーム)。
+# 実測ではVS画面は最短でも158フレーム(約5.3秒)連続して表示されるため、
+# この閾値でも約5倍の余裕がある
+MIN_CONFIRM_SECONDS = 1.0
 
 
 def _confirmed_vs_screen(path, min_confirm_seconds: float = MIN_CONFIRM_SECONDS) -> bool:

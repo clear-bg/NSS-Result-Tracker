@@ -1,7 +1,7 @@
 import cv2
 import pytest
 
-from conftest import requires_fixtures, requires_video_fixtures
+from conftest import list_screenshot_fixtures, requires_fixtures, requires_video_fixtures
 from nss_tracker.detection.league_change import is_league_change_screen
 
 TARGET_SIZE = (1920, 1080)
@@ -31,7 +31,7 @@ def test_is_league_change_screen_false_for_non_overlay_screenshots(fixtures_dir)
     (fixtures/screenshots/*.pngのうち62_result_rank_up.png以外は演出画面を
     含まないため全件が非該当のはず)。
     """
-    screenshots = sorted(fixtures_dir.glob("*.png"))
+    screenshots = list_screenshot_fixtures(fixtures_dir)
     assert screenshots, "fixtures/screenshots/にpngが見つからない"
     for path in screenshots:
         if path.name == LEAGUE_CHANGE_OVERLAY_SCREENSHOT:
