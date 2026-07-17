@@ -9,9 +9,10 @@
   - 例: `feature/rank-ocr`, `fix/banner-false-positive`
 - タスクが大きくなる場合は親ブランチ/子ブランチ構成にする
   - 親ブランチ: `feature/xxx`(通常の命名と同じ)
-  - 子ブランチ: 親ブランチ名を接頭辞にする `feature/xxx/yyy`
-    - 例: 親`feature/rank-detection` → 子`feature/rank-detection/ocr`, `feature/rank-detection/schema`
+  - 子ブランチ: 親ブランチ名をハイフンで接頭辞にする `feature/xxx-yyy`(`/`区切りは不可、後述の注意点を参照)
+    - 例: 親`feature/rank-detection` → 子`feature/rank-detection-ocr`, `feature/rank-detection-schema`
   - 子ブランチは親ブランチにマージし、最後に親ブランチを`main`にマージする
+  - **注意**: 子ブランチを`feature/xxx/yyy`のように親ブランチ名をそのまま`/`区切りで接頭辞にすることはできない。Gitのブランチ参照(`refs/heads/...`)はパスとして階層的に保存されるため、`feature/xxx`というブランチが存在する状態では同じ名前を親ディレクトリとする`feature/xxx/yyy`を同時に作成できない(`cannot lock ref`エラーになる、2026-07-17に実際に発生し発覚)。そのため子ブランチは親ブランチ名+ハイフンで区別する
 
 ## 開発フロー(Claude Codeでの開発)
 
