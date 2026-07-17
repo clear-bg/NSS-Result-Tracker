@@ -126,7 +126,7 @@ def test_save_goal_for_allowed_player(monkeypatch):
     assert row["updated_at"] is not None
 
 
-def test_save_goal_skips_disallowed_scorer(monkeypatch):
+def test_save_goal_saves_when_scorer_disallowed_but_assist_allowed(monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
     conn = connect(":memory:")
     match_id = save_match_result(
@@ -145,6 +145,60 @@ def test_save_goal_skips_disallowed_scorer(monkeypatch):
         match_id=match_id,
         scorer_name="Stranger",
         assist_name="Alice",
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    assert goal_id is not None
+    row = fetch_all_goals(conn)[0]
+    assert row["scorer_name"] == "Stranger"
+    assert row["assist_name"] == "Alice"
+
+
+def test_save_goal_skips_when_neither_scorer_nor_assist_allowed(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    conn = connect(":memory:")
+    match_id = save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=1,
+            rank_after=1,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+
+    goal_id = save_goal(
+        conn,
+        match_id=match_id,
+        scorer_name="Stranger",
+        assist_name="OtherStranger",
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    assert goal_id is None
+    assert fetch_all_goals(conn) == []
+
+
+def test_save_goal_skips_when_scorer_disallowed_and_assist_none(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    conn = connect(":memory:")
+    match_id = save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=1,
+            rank_after=1,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+
+    goal_id = save_goal(
+        conn,
+        match_id=match_id,
+        scorer_name="Stranger",
+        assist_name=None,
         detected_at=datetime.now(timezone.utc),
     )
 
@@ -194,6 +248,28 @@ def test_save_goal_without_scorer_name_is_skipped(monkeypatch):
     )
 
     goal_id = save_goal(conn, match_id=match_id, scorer_name=None, assist_name=None, detected_at=datetime.now(timezone.utc))
+
+    assert goal_id is None
+    assert fetch_all_goals(conn) == []
+
+
+def test_save_goal_without_scorer_name_is_skipped_even_when_assist_allowed(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    conn = connect(":memory:")
+    match_id = save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=1,
+            rank_after=1,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+
+    goal_id = save_goal(
+        conn, match_id=match_id, scorer_name=None, assist_name="Alice", detected_at=datetime.now(timezone.utc)
+    )
 
     assert goal_id is None
     assert fetch_all_goals(conn) == []

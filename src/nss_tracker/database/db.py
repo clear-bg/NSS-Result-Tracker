@@ -7,9 +7,11 @@
   カラム)。今後追加するテーブルにも同様に持たせる想定
 
 goalsテーブルはmatches.idをmatch_idとして参照する(matchesテーブル自体には
-先回りして将来項目を持たせない、という既存方針どおり)。得点者が
-config.is_allowed_player()で許可されていない場合、save_goal()は何も
-挿入せずNoneを返す(記録すらしないというプライバシー方針)。
+先回りして将来項目を持たせない、という既存方針どおり)。得点者・アシスト者の
+どちらもconfig.is_allowed_player()で許可されていない場合、save_goal()は
+何も挿入せずNoneを返す(記録すらしないというプライバシー方針)。どちらか一方でも
+許可されていれば、もう一方が許可リストに無い名前でもそのまま保存する
+(ローカル運用のみのため、許可リスト外の実名がDBに残ること自体は許容する)。
 """
 
 import sqlite3
@@ -90,11 +92,15 @@ def save_goal(
 ) -> Optional[int]:
     """ゴールを1件goalsテーブルに保存する。
 
-    得点者が許可リストに無い(scorer_nameがNone、またはis_allowed_player()が
-    Falseを返す)場合は何も保存せずNoneを返す。アシスト者が許可リストに
-    無くても、得点者が許可されていればassist_nameはそのまま保存する。
+    scorer_nameがNoneの場合(OCR失敗等)はgoals.scorer_nameがNOT NULLのため
+    保存できずNoneを返す。scorer_nameが存在していても、得点者・アシスト者の
+    どちらもis_allowed_player()でFalseの場合は何も保存せずNoneを返す。
+    どちらか一方でも許可されていれば、もう一方が許可リストに無い名前でも
+    そのまま保存する。
     """
-    if not scorer_name or not is_allowed_player(scorer_name):
+    if not scorer_name:
+        return None
+    if not is_allowed_player(scorer_name) and not (assist_name and is_allowed_player(assist_name)):
         return None
 
     now = datetime.now(timezone.utc).isoformat()
