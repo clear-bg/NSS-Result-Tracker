@@ -1,0 +1,41 @@
+# 検知パラメータ(ROI・色閾値)の設定ファイル。
+#
+# 各値はPython側のデフォルト値と同じものを初期値として書き込んである。
+# fixture実測に基づく根拠のコメントは詳細を失わないよう
+# src/nss_tracker/detection/配下の各モジュールのコメント側に残しているので、
+# 値の意味を知りたい場合はそちらを参照すること。
+#
+# キー・セクションが存在しない、またはこのファイル自体が存在しない場合は、
+# 各detectionモジュールのPythonデフォルト値にフォールバックする
+# (src/nss_tracker/detection_config.py参照)。
+#
+# 実機の発色特性・キャプチャ環境の違いで値がズレる場合は、このファイルの
+# 該当する値のみを直接書き換えればよい(コードの変更は不要)。
+
+[banner]
+BANNER_ROI = [1300, 5, 1750, 35]
+WIN_HUE_RANGE = [77, 86]
+WIN_SAT_MIN = 120
+WIN_VAL_MIN = 165
+LOSE_HUE_RANGE = [87, 103]
+LOSE_SAT_RANGE = [35, 65]
+LOSE_VAL_RANGE = [65, 130]
+
+[rank_ocr]
+RANK_ROI = [90, 600, 420, 930]
+GAUGE_ROI_COMPACT = [125, 970, 345, 990]
+GAUGE_ROI_ENLARGED = [130, 966, 420, 998]
+GAUGE_FILLED_VALUE_THRESHOLD = 150
+
+[league_change]
+HUE_RANGE = [95, 108]
+SAT_RANGE = [55, 80]
+VAL_MIN = 180
+
+[goal]
+BANNER_ROI = [100, 280, 400, 350]
+BLUE_HUE_RANGE = [83, 100]
+RED_HUE_RANGE = [130, 155]
+SAT_MIN = 100
+VAL_MIN = 190
+NAME_PANEL_ROI = [700, 780, 1250, 1030]

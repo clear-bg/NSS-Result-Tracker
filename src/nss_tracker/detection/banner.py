@@ -22,6 +22,8 @@ from typing import Literal, Optional
 import cv2
 import numpy as np
 
+from nss_tracker.detection_config import get_detection_value
+
 BannerResult = Optional[Literal["win", "lose", "draw"]]
 # "draw"(引き分け)は今後判定用の参照映像が揃い次第対応する。現時点では
 # classify_banner()が"draw"を返すことはない(型としてのみ将来に備えている)
@@ -29,16 +31,17 @@ BannerResult = Optional[Literal["win", "lose", "draw"]]
 # バナー帯のうち、テキストや選手モデルにかぶらない右上寄りの領域 (x1, y1, x2, y2)
 # 帯の太さ・角度は配信によって差があるため、画面最上部寄りの薄い帯にして
 # 背景色の混入を避けている。解像度1920x1080のフレームを前提とする
-BANNER_ROI = (1300, 5, 1750, 35)
+# (config/detection.tomlの[banner]で上書き可能。以下同様)
+BANNER_ROI = get_detection_value("banner", "BANNER_ROI", (1300, 5, 1750, 35))
 
 # 実測(scripts/inspect_banner_colors.py, fixtures/screenshots + fixtures/videos/00-03):
 # 勝ち: H80.7-83.2 / 負け: H89.0-99.0(配信間の差が大きい)
-WIN_HUE_RANGE = (77, 86)
-WIN_SAT_MIN = 120
-WIN_VAL_MIN = 165
-LOSE_HUE_RANGE = (87, 103)
-LOSE_SAT_RANGE = (35, 65)
-LOSE_VAL_RANGE = (65, 130)
+WIN_HUE_RANGE = get_detection_value("banner", "WIN_HUE_RANGE", (77, 86))
+WIN_SAT_MIN = get_detection_value("banner", "WIN_SAT_MIN", 120)
+WIN_VAL_MIN = get_detection_value("banner", "WIN_VAL_MIN", 165)
+LOSE_HUE_RANGE = get_detection_value("banner", "LOSE_HUE_RANGE", (87, 103))
+LOSE_SAT_RANGE = get_detection_value("banner", "LOSE_SAT_RANGE", (35, 65))
+LOSE_VAL_RANGE = get_detection_value("banner", "LOSE_VAL_RANGE", (65, 130))
 
 
 def classify_banner(frame: np.ndarray, roi: tuple[int, int, int, int] = BANNER_ROI) -> BannerResult:
