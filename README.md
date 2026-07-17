@@ -109,7 +109,10 @@ uv run python main.py
 uv run python main.py --video fixtures/videos/01_win_blue_2-1.mp4
 ```
 
-得点・アシストを記録する場合は、`.env.example`をコピーして`.env`を作成し、`ALLOWED_PLAYERS`に記録対象のプレイヤー名(カンマ区切り)を設定する。`.env`は`.gitignore`対象(他プレイヤーの実名を含みうるため)。
+実行前に、`.env.example`をコピーして`.env`を作成し、値を設定する(`.env`は`.gitignore`対象、他プレイヤーの実名を含みうるため)。
+
+- `ALLOWED_PLAYERS`: 得点・アシストを記録する対象のプレイヤー名(カンマ区切り)。空文字でもよい(その場合ゴール・アシストは記録されない)
+- `CAPTURE_DEVICE_NAME` / `CAPTURE_WIDTH` / `CAPTURE_HEIGHT`: キャプチャデバイス名・解像度(`--video`未指定の実キャプチャ時に必須。未設定の場合は起動時にエラーになる)
 
 ### OBS Virtual Cameraのセットアップ(初回のみ)
 
@@ -118,7 +121,7 @@ uv run python main.py --video fixtures/videos/01_win_blue_2-1.mp4
 1. Switchとキャプチャーボード(I-O DATA GV-USB3HDS/E)を接続し、いつも通りプレイできる状態にする
 2. OBS Studioを起動し、キャプチャーボードの映像をソースとして追加する(通常の配信・録画設定と同じでよい)
 3. OBSの映像設定(基本解像度・出力解像度)を**1920x1080**に設定する
-   - コードは1920x1080固定で生バイト列を画像として組み立てているため、解像度が異なると映像が壊れる
+   - コードは1920x1080を前提に生バイト列を画像として組み立てているため、OBS側の解像度と一致していないと映像が壊れる。1920x1080以外で運用する場合は`.env`の`CAPTURE_WIDTH`/`CAPTURE_HEIGHT`をOBS側の設定と一致させること
 4. OBSの「仮想カメラを開始」ボタンを押す
    - これを押さないと、ffmpegが掴もうとする`"OBS Virtual Camera"`というdshowデバイス自体が存在しない状態になる
 

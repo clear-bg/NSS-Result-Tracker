@@ -1,9 +1,13 @@
-"""プレイヤー許可リストの読み込み。
+"""プレイヤー許可リスト・キャプチャ設定の読み込み。
 
 得点・アシストの記録は、`.env`(git管理外。他プレイヤーの実名を含むため)の
 `ALLOWED_PLAYERS`にカンマ区切りで書かれたプレイヤーのみを対象とする。
 リストに無いプレイヤーの得点は記録すらしない(database.db.save_goal参照)。
 テンプレートは`.env.example`(git管理対象)を参照すること。
+
+キャプチャデバイス名・解像度(`CAPTURE_DEVICE_NAME`/`CAPTURE_WIDTH`/`CAPTURE_HEIGHT`)も
+同様に`.env`から読み込む。フォールバック用のデフォルト値は持たず、未設定の場合は
+ConfigErrorを送出する(`.env.example`を必ずコピーして値を埋めてもらう運用)。
 """
 
 import os
@@ -11,6 +15,10 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+class ConfigError(RuntimeError):
+    """.envに必須の設定値が不足している場合に送出する。"""
 
 
 def _load_allowed_players() -> frozenset[str]:
@@ -25,3 +33,22 @@ def is_allowed_player(name: str) -> bool:
     (テストや運用中の設定変更を反映しやすくするため)。
     """
     return name in _load_allowed_players()
+
+
+def get_capture_device_name() -> str:
+    """dshowから読み取るキャプチャデバイス名を取得する。未設定時はConfigErrorを送出する。"""
+    value = os.environ.get("CAPTURE_DEVICE_NAME")
+    if not value:
+        raise ConfigError("CAPTURE_DEVICE_NAMEが.envに設定されていません。.env.exampleを参考に設定してください。")
+    return value
+
+
+def get_capture_resolution() -> tuple[int, int]:
+    """キャプチャ解像度(width, height)を取得する。未設定時はConfigErrorを送出する。"""
+    width_raw = os.environ.get("CAPTURE_WIDTH")
+    if not width_raw:
+        raise ConfigError("CAPTURE_WIDTHが.envに設定されていません。.env.exampleを参考に設定してください。")
+    height_raw = os.environ.get("CAPTURE_HEIGHT")
+    if not height_raw:
+        raise ConfigError("CAPTURE_HEIGHTが.envに設定されていません。.env.exampleを参考に設定してください。")
+    return int(width_raw), int(height_raw)
