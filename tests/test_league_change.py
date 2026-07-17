@@ -19,18 +19,34 @@ def _read_frames(path):
         cap.release()
 
 
+# 62_result_rank_up.pngはリーグ昇格の全画面オーバーレイそのもの(意図的にTrueになる
+# べき唯一のfixture)なので、以下の「非該当画面は全てFalseのはず」テストの対象から除く
+LEAGUE_CHANGE_OVERLAY_SCREENSHOT = "62_result_rank_up.png"
+
+
 @requires_fixtures
 def test_is_league_change_screen_false_for_non_overlay_screenshots(fixtures_dir):
     """ロビー・マッチング・試合中・結果バナー等、演出画面ではない静止画では
     is_league_change_screenが常にFalseであることを確認する
-    (fixtures/screenshots/*.pngは演出画面を含まないため全件が非該当のはず)。
+    (fixtures/screenshots/*.pngのうち62_result_rank_up.png以外は演出画面を
+    含まないため全件が非該当のはず)。
     """
     screenshots = sorted(fixtures_dir.glob("*.png"))
     assert screenshots, "fixtures/screenshots/にpngが見つからない"
     for path in screenshots:
+        if path.name == LEAGUE_CHANGE_OVERLAY_SCREENSHOT:
+            continue
         frame = cv2.imread(str(path))
         assert frame is not None, f"failed to load {path.name}"
         assert not is_league_change_screen(frame), f"{path.name}で誤検知した"
+
+
+@requires_fixtures
+def test_is_league_change_screen_true_for_promotion_overlay_screenshot(fixtures_dir):
+    path = fixtures_dir / LEAGUE_CHANGE_OVERLAY_SCREENSHOT
+    frame = cv2.imread(str(path))
+    assert frame is not None, f"failed to load {path.name}"
+    assert is_league_change_screen(frame), f"{path.name}で検知できなかった"
 
 
 # 実際の映像を目視確認して決めたフレーム区間(is_league_change_screen自体の

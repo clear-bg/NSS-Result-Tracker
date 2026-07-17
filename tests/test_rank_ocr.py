@@ -12,17 +12,19 @@ from nss_tracker.detection.rank_ocr import (
 
 # 同一プレイ記録からのfixtureのため全て同じランク値(38)になっているが、
 # バッジの表示有無・通常表示/昇格・降格アニメ中の拡大表示それぞれで
-# 正しく読み取れる(またはバッジ非表示時にNoneを返す)ことを確認する
+# 正しく読み取れる(またはバッジ非表示時にNoneを返す)ことを確認する。
+# "_in_rank_increase_"/"_in_rank_decrease_"のfixture(ランク増加中/減少中、
+# 遷移演出の途中)は含めない。state.match_state側もこのタイミングで
+# read_rank/read_precise_rankを呼ぶことはなく(呼ぶのは常にコンパクト表示=
+# 増加/減少前、または安定後の拡大表示=増加/減少後のみ)、現行システムの
+# 判断材料になっていないため
 EXPECTED = {
     "43_result_win_without_rank_blue.png": None,
     "44_result_lose_with_rank_blue.png": 38,
-    "45_result_lose_in_rank_decrease_blue.png": 38,
     "46_result_lose_after_rank_decrease_blue.png": 38,
     "50_result_win_with_rank_red.png": 38,
-    "51_result_in_rank_increase_red.png": 38,
     "52_result_after_rank_increase_red.png": 38,
     "54_result_lose_with_rank_red.png": 38,
-    "55_result_lose_in_rank_decrease_red.png": 38,
     "56_result_lose_after_rank_decrease_red.png": 38,
 }
 
@@ -44,12 +46,10 @@ def test_read_rank(fixtures_dir, filename, expected):
 # 拡大表示では塗りつぶし率が明確に異なる値になる(例: 44は0.75だが対応する
 # 46は0.56。勝敗による塗りつぶし量の増減が正しく反映されている)。
 #
-# "_in_rank_increase_"/"_in_rank_decrease_"のfixture(docs/screen_states.md参照:
-# ランク増加中/減少中、すなわち拡大表示に切り替わった直後の遷移演出の途中)は
-# 含めない。read_rank_gauge_fillは「安定している瞬間」にのみ呼び出す前提の
-# 関数であり、遷移演出中はゲージの見た目自体がグラデーション表示になり
-# 塗りつぶし割合として意味を持たないため、この状態に対して期待値を固定する
-# テストは前提と矛盾する
+# "_in_rank_increase_"/"_in_rank_decrease_"のfixtureを含めない理由はEXPECTED
+# 同様(このファイル冒頭のコメント参照)。加えてread_rank_gauge_fillは
+# 「安定している瞬間」にのみ呼び出す前提の関数であり、遷移演出中はゲージの
+# 見た目自体がグラデーション表示になり塗りつぶし割合として意味を持たない
 EXPECTED_GAUGE_FILL_COMPACT = {
     "44_result_lose_with_rank_blue.png": 0.75,
     "50_result_win_with_rank_red.png": 0.06,
