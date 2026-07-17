@@ -25,7 +25,7 @@
 
 - [x] 他のプレイヤー待機 `13_waiting_for_other_players_red`
 - [x] マッチング（ランク付き）`14_matching_with_rank_red`
-- [ ] マッチング（ランク無し）`15_matching_without_rank_red`
+- [x] マッチング（ランク無し）`15_matching_without_rank_red`
 
 ---
 
