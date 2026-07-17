@@ -18,6 +18,18 @@ import main
 VIDEO_NAME = "02_lose_red_1-2.mp4"
 
 
+def test_make_reader_without_video_uses_capture_env_config(monkeypatch):
+    monkeypatch.setenv("CAPTURE_DEVICE_NAME", "Custom Capture Device")
+    monkeypatch.setenv("CAPTURE_WIDTH", "1280")
+    monkeypatch.setenv("CAPTURE_HEIGHT", "720")
+
+    reader = main._make_reader(None)
+
+    assert reader._width == 1280
+    assert reader._height == 720
+    assert reader._input_args == ["-f", "dshow", "-video_size", "1280x720", "-i", "video=Custom Capture Device"]
+
+
 @pytest.mark.slow
 @requires_video_fixtures
 def test_run_wires_capture_state_and_database(videos_dir, monkeypatch):
