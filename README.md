@@ -114,6 +114,8 @@ uv run python main.py --video fixtures/videos/01_win_blue_2-1.mp4
 - `ALLOWED_PLAYERS`: 得点・アシストを記録する対象のプレイヤー名(カンマ区切り)。空文字でもよい(その場合ゴール・アシストは記録されない)
 - `CAPTURE_DEVICE_NAME` / `CAPTURE_WIDTH` / `CAPTURE_HEIGHT`: キャプチャデバイス名・解像度(`--video`未指定の実キャプチャ時に必須。未設定の場合は起動時にエラーになる)
 
+検知処理(勝敗バナー・ランクOCR・ゴール検知)のROI・色閾値は`config/detection.toml`で管理している。モニターやキャプチャボードの発色特性の違いで検知精度がズレる場合は、このファイルの該当する値を直接書き換えればよい(キー・ファイル自体が無い場合はコード側のデフォルト値にフォールバックする)。
+
 ### OBS Virtual Cameraのセットアップ(初回のみ)
 
 実機キャプチャ(`--video`オプション無しでの実行)には、事前にOBS Studio側の設定が必要。
@@ -133,6 +135,8 @@ uv run python main.py --video fixtures/videos/01_win_blue_2-1.mp4
 .
 ├── README.md
 ├── CLAUDE.md
+├── config/
+│   └── detection.toml         # detection/のROI・色閾値設定(デフォルト値入り、上書き自由)
 ├── docs/
 │   ├── screen_states.md      # 画面状態の一覧(スクショ対象.mdより)
 │   └── git_workflow.md       # Git/GitHub運用ルール
@@ -144,6 +148,7 @@ uv run python main.py --video fixtures/videos/01_win_blue_2-1.mp4
 │   └── nss_tracker/
 │       ├── capture/            # ffmpeg+dshowによる継続フレーム取得
 │       ├── detection/          # banner(勝敗判定) / rank_ocr(ランクOCR) / motion(状態監視)
+│       ├── detection_config.py # config/detection.tomlの読み込み(ROI・色閾値)
 │       ├── state/              # 試合の状態遷移管理
 │       ├── database/           # SQLite読み書き
 │       └── web/                # 将来のグラフ表示用(未実装)

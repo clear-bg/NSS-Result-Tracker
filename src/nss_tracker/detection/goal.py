@@ -27,20 +27,23 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from nss_tracker.detection_config import get_detection_value
+
 # 「ゴール!」バナーのうち、中央の白文字にかぶらない左寄りの領域 (x1, y1, x2, y2)
 # 解像度1920x1080のフレームを前提とする
-BANNER_ROI = (100, 280, 400, 350)
+# (config/detection.tomlの[goal]で上書き可能。以下同様)
+BANNER_ROI = get_detection_value("goal", "BANNER_ROI", (100, 280, 400, 350))
 
 # 実測(scripts/inspect_goal_colors.py): 青チーム得点 H88-96 / 赤チーム得点 H137-150
 # いずれも非該当状態(プレイ中・ロビー等)より明確に高彩度・高輝度
-BLUE_HUE_RANGE = (83, 100)
-RED_HUE_RANGE = (130, 155)
-SAT_MIN = 100
-VAL_MIN = 190
+BLUE_HUE_RANGE = get_detection_value("goal", "BLUE_HUE_RANGE", (83, 100))
+RED_HUE_RANGE = get_detection_value("goal", "RED_HUE_RANGE", (130, 155))
+SAT_MIN = get_detection_value("goal", "SAT_MIN", 100)
+VAL_MIN = get_detection_value("goal", "VAL_MIN", 190)
 
 # 得点者・アシスト名のパネル全体を覆う領域。パネルは段数(アシスト有無)に応じて
 # 縦位置が変わるため、両パターンを包含する広めの範囲にしている
-NAME_PANEL_ROI = (700, 780, 1250, 1030)
+NAME_PANEL_ROI = get_detection_value("goal", "NAME_PANEL_ROI", (700, 780, 1250, 1030))
 
 _ASSIST_LABEL = "アシスト"
 # OCRが「ゴール」を「コール」等に誤読することがあるため、既知のラベル文字列は

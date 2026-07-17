@@ -2,7 +2,7 @@
 name = "nss-result-tracker"
 version = "0.1.0"
 description = "Add your description here"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "easyocr>=1.7.2",
     "imageio-ffmpeg>=0.6.0",
