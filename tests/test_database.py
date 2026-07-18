@@ -1,6 +1,14 @@
 from datetime import datetime, timezone
 
-from nss_tracker.database.db import connect, fetch_all_goals, fetch_all_matches, save_goal, save_match_result
+from nss_tracker.database.db import (
+    connect,
+    fetch_all_goals,
+    fetch_all_matches,
+    fetch_vs_slot_ranks,
+    save_goal,
+    save_match_result,
+    save_vs_slot_ranks,
+)
 from nss_tracker.state.match_state import MatchResult
 
 
@@ -10,6 +18,7 @@ def test_connect_creates_matches_table():
     table_names = {row["name"] for row in tables}
     assert "matches" in table_names
     assert "goals" in table_names
+    assert "vs_slot_ranks" in table_names
 
 
 def test_save_and_fetch_match_result():
@@ -359,3 +368,67 @@ def test_save_goal_logs_reason_when_scorer_name_missing(monkeypatch, caplog):
         save_goal(conn, match_id=match_id, scorer_name=None, assist_name=None, detected_at=datetime.now(timezone.utc))
 
     assert "読み取れなかった" in caplog.text
+
+
+def _make_match(conn) -> int:
+    return save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=1,
+            rank_after=1,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+
+
+def test_save_and_fetch_vs_slot_ranks():
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    inserted_ids = save_vs_slot_ranks(
+        conn,
+        match_id=match_id,
+        mine_ranks=[38, 1, 24, 9],
+        opponent_ranks=[10, 12, 33, 18],
+    )
+
+    assert inserted_ids == list(range(1, 9))
+    rows = fetch_vs_slot_ranks(conn, match_id)
+    assert len(rows) == 8
+    assert [row["side"] for row in rows] == ["mine"] * 4 + ["opponent"] * 4
+    assert [row["slot_index"] for row in rows] == [0, 1, 2, 3, 0, 1, 2, 3]
+    assert [row["rank_tier"] for row in rows] == [38, 1, 24, 9, 10, 12, 33, 18]
+    assert all(row["match_id"] == match_id for row in rows)
+    assert all(row["created_at"] is not None for row in rows)
+
+
+def test_save_vs_slot_ranks_keeps_none_slots_as_null_rows():
+    """読み取れなかったスロット(文字階級バッジ・ランク非表示等)も、
+    goalsのような許可リストフィルタとは異なりスキップせずNULL行として保存する。
+    """
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    save_vs_slot_ranks(
+        conn,
+        match_id=match_id,
+        mine_ranks=[40, 9, 16, None],
+        opponent_ranks=[None, None, None, None],
+    )
+
+    rows = fetch_vs_slot_ranks(conn, match_id)
+    assert len(rows) == 8
+    assert [row["rank_tier"] for row in rows] == [40, 9, 16, None, None, None, None, None]
+
+
+def test_save_vs_slot_ranks_created_at_is_jst():
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    save_vs_slot_ranks(conn, match_id=match_id, mine_ranks=[1, None, None, None], opponent_ranks=[None, None, None, None])
+
+    row = fetch_vs_slot_ranks(conn, match_id)[0]
+    assert row["created_at"].endswith("+09:00")
+    assert row["updated_at"].endswith("+09:00")
