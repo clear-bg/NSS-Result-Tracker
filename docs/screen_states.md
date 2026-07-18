@@ -78,3 +78,5 @@
 - [x] 延長試合中 `61_overtime_in_game`
 - [x] ランクアップ `62_result_rank_up`
 - [x] ランクダウン `63_result_rank_down`(ロジック要修正、Issue #TBD参照)
+- [x] 引き分け `64_result_draw`
+  - ランクバッジは表示されない(引き分けはランク変動が無いため)。バナー消灯後は暗転演出を挟まず直接メニュー画面に遷移する(fixtures/videos/20_draw_blue_1-1.mp4で確認済み、Issue #26)
