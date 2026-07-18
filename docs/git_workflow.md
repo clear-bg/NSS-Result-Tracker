@@ -9,9 +9,10 @@
   - 例: `feature/rank-ocr`, `fix/banner-false-positive`
 - タスクが大きくなる場合は親ブランチ/子ブランチ構成にする
   - 親ブランチ: `feature/xxx`(通常の命名と同じ)
-  - 子ブランチ: 親ブランチ名を接頭辞にする `feature/xxx/yyy`
-    - 例: 親`feature/rank-detection` → 子`feature/rank-detection/ocr`, `feature/rank-detection/schema`
+  - 子ブランチ: 親ブランチ名をハイフンで接頭辞にする `feature/xxx-yyy`(`/`区切りは不可、後述の注意点を参照)
+    - 例: 親`feature/rank-detection` → 子`feature/rank-detection-ocr`, `feature/rank-detection-schema`
   - 子ブランチは親ブランチにマージし、最後に親ブランチを`main`にマージする
+  - **注意**: 子ブランチを`feature/xxx/yyy`のように親ブランチ名をそのまま`/`区切りで接頭辞にすることはできない。Gitのブランチ参照(`refs/heads/...`)はパスとして階層的に保存されるため、`feature/xxx`というブランチが存在する状態では同じ名前を親ディレクトリとする`feature/xxx/yyy`を同時に作成できない(`cannot lock ref`エラーになる、2026-07-17に実際に発生し発覚)。そのため子ブランチは親ブランチ名+ハイフンで区別する
 
 ## 開発フロー(Claude Codeでの開発)
 
@@ -21,7 +22,7 @@ Claude Codeでタスクに着手する際は、以下の流れに沿って進め
 2. **着手前に`main`を最新化する**(`git pull`)
 3. **タスクごとにブランチを切る**。`main`に直接コミットしない
    - 通常のタスク: `main`から`feature/xxx`・`fix/xxx`を切る
-   - タスクが大きい場合: 親ブランチ`feature/xxx`を切り、そこからさらに子ブランチ`feature/xxx/yyy`を切って作業する
+   - タスクが大きい場合: 親ブランチ`feature/xxx`を切り、そこからさらに子ブランチ`feature/xxx-yyy`を切って作業する
 4. **こまめにコミットする**(Issue番号を含むConventional Commits形式、詳細は次項)
 5. **新たな実装をしたり、決め事をした場合は、必要に応じて都度関連するマークダウンファイル(README/CLAUDE.md/docs配下)に反映する**
 6. 作業が完了したら、マージ前に**PRを作成する**(通常タスクは`main`へ、子ブランチは親ブランチへ)。対応するIssueに紐付ける
