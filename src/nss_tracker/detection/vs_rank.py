@@ -41,16 +41,32 @@ PaddleOCR(lang="en")に切り替えたところ大幅に精度が改善したた
 賄えないと判明したため、MINE_ICON_OFFSETS/OPPONENT_ICON_OFFSETSはスロットごとに
 個別の値を持つ。
 
-既知の制約: 相手チームスロット2(手前から3番目)は、実機キャプチャ動画では
-数字ピル自体のOCRが他スロットより不安定になることを確認している(静止画fixtureでは
-安定して読める)。VS画面は5〜9秒程度(150〜270フレーム)表示され続けるため、
-状態機械側(Issue #54)で複数フレームにわたって読み取りを試行し、最初に成功した
-値を採用する(または多数決を取る)運用にすることで実質的な精度はさらに上げられる
-見込み(単発フレームでの読み取りを前提にしない)。
+既知の制約(Issue #57で対応): 相手チームスロット2(手前から3番目)は、実機
+キャプチャ動画では数字ピル自体のOCRが他スロットより不安定だった(静止画fixture
+では安定して読める)。原因は圧縮ノイズがこの位置の低コントラストな絵柄(暗い
+ピルの上の細い数字)を潰しているためと推測している(未確定)。対策として、
+このスロットのみOpenCVの超解像(dnn_superres、FSRCNN_x4モデル)をOCR前に
+適用する。他のスロットに同じ処理を一律適用すると、より小さく写る遠くのスロット
+(スロット3等)でかえって精度が落ちる(超解像が拡大しすぎて周囲のノイズも
+一緒に拡大してしまうためと推測)ため、問題が実測で確認できたこのスロットにのみ
+限定して適用する。
+
+超解像モデルファイル(`models/FSRCNN_x4.pb`、Apache License 2.0、
+https://github.com/Saafke/FSRCNN_Tensorflow より取得)はリポジトリに同梱している。
+
+さらに、このスロットは数字ピルだけでなく∞判定用のアイコン確認(前述の
+「アイコンが全て数字から成るか」判定)自体も実機動画で不安定なことが分かった
+(超解像を適用しても改善しなかった)。数字ピルの読み取り精度を優先するという
+判断により、このスロットに限り∞判定を行わず、数字ピルが読めていればその値を
+採用する(SUPER_RESOLUTION_SKIP_INFINITY_CHECK、Issue #57でのユーザーとの
+すり合わせ済み)。そのため、このスロットに限っては文字階級(S/A等)バッジの
+内部の小さい数字を誤って∞帯の数値として記録してしまう可能性がある
+(他の7スロットはこれまで通り∞判定を行うため影響しない)。
 """
 
 import re
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -96,6 +112,15 @@ _UPSCALE = get_detection_value("vs_rank", "UPSCALE", 3)
 _PAD = get_detection_value("vs_rank", "PAD", 20)
 _LEADING_DIGITS = re.compile(r"^\d+")
 
+# 超解像を使う特別扱いのスロット(相手チームスロット2のみ、モジュールdocstring参照)
+SUPER_RESOLUTION_SLOT_SIDE = get_detection_value("vs_rank", "SUPER_RESOLUTION_SLOT_SIDE", "opponent")
+SUPER_RESOLUTION_SLOT_INDEX = get_detection_value("vs_rank", "SUPER_RESOLUTION_SLOT_INDEX", 2)
+SUPER_RESOLUTION_MARGIN = get_detection_value("vs_rank", "SUPER_RESOLUTION_MARGIN", 6)
+SUPER_RESOLUTION_MODEL_PATH = Path("models/FSRCNN_x4.pb")
+# このスロットは∞判定自体も実機動画で不安定なため、判定をスキップして
+# 数字ピルが読めていればそのまま採用する(モジュールdocstring参照)
+SUPER_RESOLUTION_SKIP_INFINITY_CHECK = get_detection_value("vs_rank", "SUPER_RESOLUTION_SKIP_INFINITY_CHECK", True)
+
 
 @lru_cache(maxsize=1)
 def _get_reader():
@@ -110,8 +135,21 @@ def _get_reader():
     )
 
 
-def _ocr_texts(crop: np.ndarray, border_color: tuple[int, int, int]) -> list[tuple[str, float]]:
-    resized = cv2.resize(crop, None, fx=_UPSCALE, fy=_UPSCALE, interpolation=cv2.INTER_CUBIC)
+@lru_cache(maxsize=1)
+def _get_super_resolution():
+    sr = cv2.dnn_superres.DnnSuperResImpl_create()
+    sr.readModel(str(SUPER_RESOLUTION_MODEL_PATH))
+    sr.setModel("fsrcnn", 4)
+    return sr
+
+
+def _ocr_texts(
+    crop: np.ndarray, border_color: tuple[int, int, int], use_super_resolution: bool = False
+) -> list[tuple[str, float]]:
+    if use_super_resolution:
+        resized = _get_super_resolution().upsample(crop)
+    else:
+        resized = cv2.resize(crop, None, fx=_UPSCALE, fy=_UPSCALE, interpolation=cv2.INTER_CUBIC)
     padded = cv2.copyMakeBorder(resized, _PAD, _PAD, _PAD, _PAD, cv2.BORDER_CONSTANT, value=border_color)
     results = _get_reader().predict(padded)
     texts: list[tuple[str, float]] = []
@@ -134,11 +172,17 @@ def _is_infinity_icon(
     return all(text.isdigit() for text in texts)
 
 
-def _read_pill_digits(frame: np.ndarray, slot_roi: tuple[int, int, int, int]) -> Optional[int]:
+def _read_pill_digits(
+    frame: np.ndarray, slot_roi: tuple[int, int, int, int], use_super_resolution: bool = False
+) -> Optional[int]:
     x1, y1, x2, y2 = slot_roi
-    crop = frame[y1:y2, x1:x2]
+    if use_super_resolution:
+        margin = SUPER_RESOLUTION_MARGIN
+        crop = frame[y1 - margin : y2 + margin, x1 - margin : x2 + margin]
+    else:
+        crop = frame[y1:y2, x1:x2]
     candidates = []
-    for text, score in _ocr_texts(crop, (0, 0, 0)):
+    for text, score in _ocr_texts(crop, (0, 0, 0), use_super_resolution=use_super_resolution):
         match = _LEADING_DIGITS.match(text)
         if match:
             candidates.append((match.group(), score))
@@ -152,15 +196,20 @@ def read_slot_rank(
     frame: np.ndarray,
     slot_roi: tuple[int, int, int, int],
     icon_offset: tuple[int, int],
+    use_super_resolution: bool = False,
+    skip_infinity_check: bool = False,
 ) -> Optional[int]:
     """VS画面の1スロット分のランク数値を読み取る。
 
     文字階級(S/A等)バッジ、ランク非表示の試合、バッジ自体が写っていない
-    場合はいずれもNoneを返す(呼び出し側からは区別しない)。
+    場合はいずれもNoneを返す(呼び出し側からは区別しない)。use_super_resolution・
+    skip_infinity_checkはいずれも既知の不安定スロット向けの特別扱い
+    (モジュールdocstring参照)。skip_infinity_check=Trueの場合、∞判定を行わず
+    数字ピルが読めていればその値をそのまま返す。
     """
-    if not _is_infinity_icon(frame, slot_roi, icon_offset):
+    if not skip_infinity_check and not _is_infinity_icon(frame, slot_roi, icon_offset):
         return None
-    return _read_pill_digits(frame, slot_roi)
+    return _read_pill_digits(frame, slot_roi, use_super_resolution=use_super_resolution)
 
 
 def read_vs_screen_ranks(frame: np.ndarray) -> tuple[list[Optional[int]], list[Optional[int]]]:
@@ -173,6 +222,17 @@ def read_vs_screen_ranks(frame: np.ndarray) -> tuple[list[Optional[int]], list[O
         read_slot_rank(frame, roi, MINE_ICON_OFFSETS[i]) for i, roi in enumerate(MINE_SLOT_ROIS)
     ]
     opponent = [
-        read_slot_rank(frame, roi, OPPONENT_ICON_OFFSETS[i]) for i, roi in enumerate(OPPONENT_SLOT_ROIS)
+        read_slot_rank(
+            frame,
+            roi,
+            OPPONENT_ICON_OFFSETS[i],
+            use_super_resolution=(SUPER_RESOLUTION_SLOT_SIDE == "opponent" and i == SUPER_RESOLUTION_SLOT_INDEX),
+            skip_infinity_check=(
+                SUPER_RESOLUTION_SKIP_INFINITY_CHECK
+                and SUPER_RESOLUTION_SLOT_SIDE == "opponent"
+                and i == SUPER_RESOLUTION_SLOT_INDEX
+            ),
+        )
+        for i, roi in enumerate(OPPONENT_SLOT_ROIS)
     ]
     return mine, opponent
