@@ -62,5 +62,13 @@
     "expected_league_changed": null,
     "banner_confirmed_frame_range": null,
     "match_result_frame_range": null
+  },
+  "20_draw_blue_without_rank_1-1.mp4": {
+    "expected_result": "draw",
+    "expected_rank_before": null,
+    "expected_rank_after": null,
+    "expected_league_changed": null,
+    "banner_confirmed_frame_range": [239, 249],
+    "match_result_frame_range": null
   }
 }
