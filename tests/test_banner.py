@@ -34,7 +34,7 @@ EXPECTED = {
     "56_result_lose_after_rank_decrease_red.png": "lose",
     "60_start_overtime.png": None,
     "61_overtime_in_game.png": None,
-    "64_result_draw.png": "draw",
+    "64_result_draw_without_rank_blue.png": "draw",
 }
 
 
