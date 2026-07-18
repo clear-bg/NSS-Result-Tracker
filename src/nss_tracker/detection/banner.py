@@ -91,7 +91,7 @@ BANNER_HUE_STD_MAX = get_detection_value("banner", "BANNER_HUE_STD_MAX", 10.0)
 # (config/detection.tomlの[banner]で上書き可能。以下同様)
 DRAW_TEXT_ROI = get_detection_value("banner", "DRAW_TEXT_ROI", (270, 45, 650, 250))
 
-# 実測(fixtures/screenshots + fixtures/videos/20_draw_blue_1-1.mp4):
+# 実測(fixtures/screenshots + fixtures/videos/20_draw_blue_without_rank_1-1.mp4):
 # 勝ち55% / 引き分け25-27% / 負け0%(DRAW_TEXT_ROI内でのミントグリーン画素の割合)
 DRAW_TEXT_HUE_RANGE = get_detection_value("banner", "DRAW_TEXT_HUE_RANGE", (75, 95))
 DRAW_TEXT_SAT_MIN = get_detection_value("banner", "DRAW_TEXT_SAT_MIN", 100)
