@@ -7,7 +7,9 @@ from nss_tracker.detection.vs_rank import read_vs_screen_ranks
 # 正解値は各fixtureの静止画を目視確認して得たもの(read_vs_screen_ranks自体の出力を
 # 転記したものではない)。スロット0が画面手前(自チーム側は自分自身)、スロット3が
 # 最も奥。70/71は文字階級(S/A)バッジのスロットを含み、そこは期待値をNoneとする
-# (Noneは「文字階級」「ランク非表示」の両方であり得るため呼び出し側からは区別しない)
+# (Noneは「文字階級」「ランク非表示」の両方であり得るため呼び出し側からは区別しない)。
+# 2026-07-19時点、切り出し座標を目視確認のうえ精密化した結果、以下の6枚+動画3本
+# (tests側では別関数)の全72スロットで完全一致(100%)を達成している
 EXPECTED_SCREENSHOTS = {
     "11_matching_with_rank_blue.png": ([38, 1, 24, 9], [10, 12, 33, 18]),
     "14_matching_with_rank_red.png": ([37, 19, 4, 2], [23, 23, 14, None]),
