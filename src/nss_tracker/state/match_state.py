@@ -75,7 +75,7 @@ from nss_tracker.detection.league_change import is_league_change_screen
 from nss_tracker.detection.matchmaking import is_vs_screen
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED, RANK_ROI, read_precise_rank
-from nss_tracker.detection.vs_rank import read_vs_screen_ranks
+from nss_tracker.detection.vs_rank import SlotRank, read_vs_screen_ranks
 from nss_tracker.detection_config import get_detection_value
 from nss_tracker.timeutil import now_jst
 
@@ -130,8 +130,8 @@ class MatchResult:
     goals: list[GoalEvent] = field(default_factory=list)
     # VS画面(マッチング完了)を見逃した試合ではどちらも空リストのまま
     # (Issue #39: VS画面検知は任意のエンリッチであり必須の前提にしない)
-    vs_mine_ranks: list[Optional[int]] = field(default_factory=list)
-    vs_opponent_ranks: list[Optional[int]] = field(default_factory=list)
+    vs_mine_ranks: list[SlotRank] = field(default_factory=list)
+    vs_opponent_ranks: list[SlotRank] = field(default_factory=list)
 
 
 class MatchStateMachine:
@@ -175,8 +175,8 @@ class MatchStateMachine:
         self._pending_goals: list[GoalEvent] = []
         self._vs_streak = 0
         self._vs_recorded_this_match = False
-        self._pending_vs_mine_ranks: list[Optional[int]] = []
-        self._pending_vs_opponent_ranks: list[Optional[int]] = []
+        self._pending_vs_mine_ranks: list[SlotRank] = []
+        self._pending_vs_opponent_ranks: list[SlotRank] = []
 
     @property
     def current_state(self) -> str:
