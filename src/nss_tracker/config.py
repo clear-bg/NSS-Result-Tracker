@@ -1,8 +1,8 @@
 """プレイヤー許可リスト・キャプチャ設定の読み込み。
 
 得点・アシストの記録は、`.env`(git管理外。他プレイヤーの実名を含むため)の
-`ALLOWED_PLAYERS`にカンマ区切りで書かれたプレイヤーのみを対象とする。
-リストに無いプレイヤーの得点は記録すらしない(database.db.save_goal参照)。
+`ALLOWED_PLAYERS`にカンマ区切りで書かれたプレイヤーが得点者・アシスト者の
+どちらか一方でも含まれていれば対象とする(database.db.save_goal参照)。
 テンプレートは`.env.example`(git管理対象)を参照すること。
 
 キャプチャデバイス名・解像度(`CAPTURE_DEVICE_NAME`/`CAPTURE_WIDTH`/`CAPTURE_HEIGHT`)も
