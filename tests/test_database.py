@@ -9,6 +9,7 @@ from nss_tracker.database.db import (
     save_match_result,
     save_vs_slot_ranks,
 )
+from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchResult
 
 
@@ -390,8 +391,8 @@ def test_save_and_fetch_vs_slot_ranks():
     inserted_ids = save_vs_slot_ranks(
         conn,
         match_id=match_id,
-        mine_ranks=[38, 1, 24, 9],
-        opponent_ranks=[10, 12, 33, 18],
+        mine_ranks=[SlotRank("∞", 38), SlotRank("∞", 1), SlotRank("∞", 24), SlotRank("∞", 9)],
+        opponent_ranks=[SlotRank("∞", 10), SlotRank("∞", 12), SlotRank("∞", 33), SlotRank("∞", 18)],
     )
 
     assert inserted_ids == list(range(1, 9))
@@ -400,12 +401,13 @@ def test_save_and_fetch_vs_slot_ranks():
     assert [row["side"] for row in rows] == ["mine"] * 4 + ["opponent"] * 4
     assert [row["slot_index"] for row in rows] == [0, 1, 2, 3, 0, 1, 2, 3]
     assert [row["rank_tier"] for row in rows] == [38, 1, 24, 9, 10, 12, 33, 18]
+    assert [row["rank_tier_label"] for row in rows] == ["∞"] * 8
     assert all(row["match_id"] == match_id for row in rows)
     assert all(row["created_at"] is not None for row in rows)
 
 
 def test_save_vs_slot_ranks_keeps_none_slots_as_null_rows():
-    """読み取れなかったスロット(文字階級バッジ・ランク非表示等)も、
+    """読み取れなかったスロット(B~E帯・ランク非表示等)も、
     goalsのような許可リストフィルタとは異なりスキップせずNULL行として保存する。
     """
     conn = connect(":memory:")
@@ -414,20 +416,46 @@ def test_save_vs_slot_ranks_keeps_none_slots_as_null_rows():
     save_vs_slot_ranks(
         conn,
         match_id=match_id,
-        mine_ranks=[40, 9, 16, None],
-        opponent_ranks=[None, None, None, None],
+        mine_ranks=[SlotRank("∞", 40), SlotRank("∞", 9), SlotRank("∞", 16), SlotRank(None, None)],
+        opponent_ranks=[SlotRank(None, None)] * 4,
     )
 
     rows = fetch_vs_slot_ranks(conn, match_id)
     assert len(rows) == 8
     assert [row["rank_tier"] for row in rows] == [40, 9, 16, None, None, None, None, None]
+    assert [row["rank_tier_label"] for row in rows] == ["∞", "∞", "∞", None, None, None, None, None]
+
+
+def test_save_vs_slot_ranks_distinguishes_letter_tiers():
+    """S/A帯は数値だけでなくrank_tier_labelでも∞と区別して保存できることを確認する
+    (Issue #40)。
+    """
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    save_vs_slot_ranks(
+        conn,
+        match_id=match_id,
+        mine_ranks=[SlotRank("∞", 40), SlotRank("S", 3), SlotRank("A", 28), SlotRank(None, None)],
+        opponent_ranks=[SlotRank(None, None)] * 4,
+    )
+
+    rows = fetch_vs_slot_ranks(conn, match_id)
+    mine_rows = [row for row in rows if row["side"] == "mine"]
+    assert [row["rank_tier_label"] for row in mine_rows] == ["∞", "S", "A", None]
+    assert [row["rank_tier"] for row in mine_rows] == [40, 3, 28, None]
 
 
 def test_save_vs_slot_ranks_created_at_is_jst():
     conn = connect(":memory:")
     match_id = _make_match(conn)
 
-    save_vs_slot_ranks(conn, match_id=match_id, mine_ranks=[1, None, None, None], opponent_ranks=[None, None, None, None])
+    save_vs_slot_ranks(
+        conn,
+        match_id=match_id,
+        mine_ranks=[SlotRank("∞", 1), SlotRank(None, None), SlotRank(None, None), SlotRank(None, None)],
+        opponent_ranks=[SlotRank(None, None)] * 4,
+    )
 
     row = fetch_vs_slot_ranks(conn, match_id)[0]
     assert row["created_at"].endswith("+09:00")
