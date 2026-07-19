@@ -1,8 +1,18 @@
 """VS画面(マッチング完了直後)に表示される、両チーム最大4人分のランク数値の読み取り。
 
-CLAUDE.md・Issue #39/#52記載のとおり、VS画面確定時に自チーム/相手チームそれぞれ
-最大4スロット分の∞帯の数値をnull許容で読み取る。文字階級(S/A等の∞未満のランク帯)
-は対象外とし、読み取れない場合と同様Noneを返す。
+CLAUDE.md・Issue #39/#52/#40記載のとおり、VS画面確定時に自チーム/相手チームそれぞれ
+最大4スロット分のランクバッジを読み取る。バッジは∞/S/Aいずれも「アイコン(∞記号
+または英字)+ その下の数値ピル」という同一レイアウトで描画されるため、アイコン
+部分をOCRして∞/S/Aのどれかをまず判定し、数値ピルは共通のロジックで読み取る
+(read_slot_rank参照)。B/C/D/Eはアイコン自体の参照fixtureがまだ無くOCR精度を
+検証できないため未対応とし、これらのバッジ・バッジ非表示・読み取り失敗はいずれも
+SlotRank(None, None)として区別しない(Issue #43でfixtureが揃うまでの暫定)。
+
+S/A帯内の数値がバッジ表示上「大きいほど良い(∞と同じ向き)」かどうかは、実際の
+S/A帯での昇格/降格映像で未検証。参照fixture(70/71)は静止画1枚ずつのみで
+前後比較ができないため、呼び出し側で大小比較による昇格/降格判定を行う場合は
+別途の検証が必要(現時点でread_vs_screen_ranksの呼び出し元はスナップショットとして
+保存するのみで、前後比較はしていない)。
 
 数字自体はrank_ocr.pyと同じ「∞バッジの数字」だが、VS画面のバッジは1つ1つが
 非常に小さく(画面に8個並ぶため)、rank_ocr.pyが使うEasyOCRでは小さな切り出し画像
@@ -46,7 +56,7 @@ PaddleOCR(lang="en")に切り替えたところ大幅に精度が改善したた
 
 import re
 from functools import lru_cache
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import cv2
 import numpy as np
@@ -84,6 +94,18 @@ OPPONENT_X1 = get_detection_value("vs_rank", "OPPONENT_X1", (1448, 1270, 1151, 9
 _UPSCALE = get_detection_value("vs_rank", "UPSCALE", 3)
 _PAD = get_detection_value("vs_rank", "PAD", 20)
 _LEADING_DIGITS = re.compile(r"^\d+")
+_LETTER_TIERS = ("S", "A")
+
+
+class SlotRank(NamedTuple):
+    """1スロット分のランクバッジ読み取り結果。
+
+    tierは'∞'/'S'/'A'のいずれか(未識別・非表示・B~E(未対応)はNone)。
+    valueは帯内の数値(tierがNoneの場合、または数値ピルのOCRが失敗した場合はNone)。
+    """
+
+    tier: Optional[str]
+    value: Optional[int]
 
 
 def _xywh_to_roi(x1: int, y1: int, w: int, h: int) -> tuple[int, int, int, int]:
@@ -125,13 +147,23 @@ def _ocr_texts(crop: np.ndarray, border_color: tuple[int, int, int]) -> list[tup
     return texts
 
 
-def _is_infinity_icon(frame: np.ndarray, icon_roi: tuple[int, int, int, int]) -> bool:
+def _classify_tier_icon(frame: np.ndarray, icon_roi: tuple[int, int, int, int]) -> Optional[str]:
+    """アイコン領域をOCRし、'∞'/'S'/'A'のいずれかを判定する。
+
+    検出テキストが全て数字なら∞アイコン(数字の誤読)とみなす。B~E・非表示・
+    どちらとも判定できない誤読はいずれもNoneを返し、呼び出し側からは区別しない。
+    """
     x1, y1, x2, y2 = icon_roi
     icon_crop = frame[y1:y2, x1:x2]
-    texts = [text for text, _score in _ocr_texts(icon_crop, (255, 255, 255))]
+    texts = [text.strip().upper() for text, _score in _ocr_texts(icon_crop, (255, 255, 255))]
     if not texts:
-        return False
-    return all(text.isdigit() for text in texts)
+        return None
+    if all(text.isdigit() for text in texts):
+        return "∞"
+    for text in texts:
+        if text in _LETTER_TIERS:
+            return text
+    return None
 
 
 def _read_pill_digits(frame: np.ndarray, num_roi: tuple[int, int, int, int]) -> Optional[int]:
@@ -152,19 +184,31 @@ def read_slot_rank(
     frame: np.ndarray,
     icon_roi: tuple[int, int, int, int],
     num_roi: tuple[int, int, int, int],
-) -> Optional[int]:
-    """VS画面の1スロット分のランク数値を読み取る。
+) -> SlotRank:
+    """VS画面の1スロット分のランクバッジを読み取る。
 
-    文字階級(S/A等)バッジ、ランク非表示の試合、バッジ自体が写っていない
-    場合はいずれもNoneを返す(呼び出し側からは区別しない)。
+    B/C/D/Eバッジ、ランク非表示の試合、バッジ自体が写っていない場合は
+    いずれもSlotRank(None, None)を返す(呼び出し側からは区別しない)。
+
+    ∞判定は「検出テキストが全て数字」という緩い条件のため、バッジが無い
+    (芝生など背景のみの)クロップでもノイズを数字と誤読して∞と判定して
+    しまうことがある(実データで確認済み)。そのため∞の場合のみ、数値ピル
+    も実際に読み取れたときに限ってSlotRankを返す(数値も読めて初めて∞と
+    見なす、旧実装の暗黙の二重チェックを踏襲)。S/Aはアイコンの文字自体が
+    ∞判定用の「全て数字」より遥かに特異的な一致('S'/'A'との完全一致)の
+    ため、同じ問題は起きていない(実データで確認済み)。
     """
-    if not _is_infinity_icon(frame, icon_roi):
-        return None
-    return _read_pill_digits(frame, num_roi)
+    tier = _classify_tier_icon(frame, icon_roi)
+    if tier is None:
+        return SlotRank(None, None)
+    value = _read_pill_digits(frame, num_roi)
+    if tier == "∞" and value is None:
+        return SlotRank(None, None)
+    return SlotRank(tier, value)
 
 
-def read_vs_screen_ranks(frame: np.ndarray) -> tuple[list[Optional[int]], list[Optional[int]]]:
-    """VS画面の両チーム最大4人分のランク数値をまとめて読み取る。
+def read_vs_screen_ranks(frame: np.ndarray) -> tuple[list[SlotRank], list[SlotRank]]:
+    """VS画面の両チーム最大4人分のランクバッジをまとめて読み取る。
 
     戻り値は (自チーム, 相手チーム) の順のタプル。各リストはスロット0
     (カメラに最も近い位置、自チーム側は自分自身)〜3(最も奥)の順。

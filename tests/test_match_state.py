@@ -9,6 +9,7 @@ import nss_tracker.state.match_state as match_state_module
 from conftest import requires_video_fixtures
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED, RANK_ROI
+from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchStateMachine
 
 TARGET_SIZE = (1920, 1080)
@@ -386,7 +387,10 @@ def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(
         match_state_module,
         "read_vs_screen_ranks",
-        lambda frame: ([38, 1, 24, 9], [10, 12, 33, 18]),
+        lambda frame: (
+            [SlotRank("∞", 38), SlotRank("∞", 1), SlotRank("∞", 24), SlotRank("∞", 9)],
+            [SlotRank("∞", 10), SlotRank("∞", 12), SlotRank("∞", 33), SlotRank("∞", 18)],
+        ),
     )
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
@@ -408,8 +412,8 @@ def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
             break
 
     assert result is not None, "MatchResultが確定しなかった"
-    assert result.vs_mine_ranks == [38, 1, 24, 9]
-    assert result.vs_opponent_ranks == [10, 12, 33, 18]
+    assert result.vs_mine_ranks == [SlotRank("∞", 38), SlotRank("∞", 1), SlotRank("∞", 24), SlotRank("∞", 9)]
+    assert result.vs_opponent_ranks == [SlotRank("∞", 10), SlotRank("∞", 12), SlotRank("∞", 33), SlotRank("∞", 18)]
 
 
 def test_vs_screen_not_detected_results_in_empty_vs_ranks(monkeypatch):
