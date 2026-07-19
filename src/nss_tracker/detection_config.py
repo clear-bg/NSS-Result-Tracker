@@ -1,7 +1,8 @@
 """detection/配下の各モジュールが使うROI・色閾値をconfig/detection.tomlから読み込む。
 
 config/detection.toml(git追跡対象、デフォルト値入り)にモジュールごとのテーブル
-([banner]・[rank_ocr]・[league_change]・[goal])としてキーを持たせる。fixture実測
+([banner]・[rank_ocr]・[league_change]・[goal]・[motion]・[matchmaking]・[vs_rank]・
+[match_state])としてキーを持たせる。fixture実測
 根拠のコメントは各detectionモジュールのPython定数側に残し、このモジュールは値の
 読み込みだけを担当する。ファイルが存在しない、またはテーブル・キーが無い場合は
 呼び出し側が渡したデフォルト値(=元々のPython定数値)にフォールバックする。
