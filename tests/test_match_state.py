@@ -43,6 +43,7 @@ def _run_state_machine(path: Path):
     machine = MatchStateMachine(
         banner_confirm_frames=confirm_frames,
         banner_absence_confirm_frames=confirm_frames,
+        vs_screen_confirm_frames=confirm_frames,
         league_change_grace_frames=round(fps * 5.0),
         rank_stability_monitor=StabilityMonitor(roi=RANK_ROI, stable_frames_required=round(fps * 0.5)),
     )
@@ -140,6 +141,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -178,6 +180,7 @@ def test_rank_read_failure_is_logged(monkeypatch, caplog):
         return None
 
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
@@ -228,6 +231,7 @@ def test_track_rank_grace_recheck_catches_slow_drift(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -269,6 +273,7 @@ def test_track_rank_grace_recheck_catches_tier_change(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -320,6 +325,7 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -349,6 +355,7 @@ def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: "Alice")
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
 
     machine = MatchStateMachine(goal_confirm_frames=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -356,3 +363,110 @@ def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
         machine.process_frame(frame)
 
     assert len(machine._pending_goals) == 1
+
+
+def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
+    """VS画面検知の統合ロジック(確定時に1回だけOCRしてMatchResultへpayoutされる)を
+    実映像に依存せず検証する。is_vs_screen自体の判定はtest_matchmaking.pyで、
+    read_vs_screen_ranks自体の読み取り精度はtest_vs_rank.pyで別途検証済みのため、
+    ここではモックする。
+    """
+    calls = {"n": 0}
+
+    def fake_is_vs_screen(frame):
+        # 最初の3フレームだけVS画面が出ているとみなす
+        return calls["n"] < 3
+
+    def fake_classify_banner(frame):
+        n = calls["n"]
+        calls["n"] += 1
+        return None if n < 5 else "win"
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
+    monkeypatch.setattr(
+        match_state_module,
+        "read_vs_screen_ranks",
+        lambda frame: ([38, 1, 24, 9], [10, 12, 33, 18]),
+    )
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        vs_screen_confirm_frames=2,
+        league_change_grace_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(15):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.vs_mine_ranks == [38, 1, 24, 9]
+    assert result.vs_opponent_ranks == [10, 12, 33, 18]
+
+
+def test_vs_screen_not_detected_results_in_empty_vs_ranks(monkeypatch):
+    """VS画面を一度も検知しなかった試合では、vs_mine_ranks/vs_opponent_ranksが
+    空リストのままになることを確認する(Issue #39: VS画面検知は任意のエンリッチ
+    であり、見逃しても既存の結果バナー起点フローは従来通り動作させる)。
+    """
+    calls = {"n": 0}
+
+    def fake_classify_banner(frame):
+        n = calls["n"]
+        calls["n"] += 1
+        return None if n < 5 else "win"
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(15):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.vs_mine_ranks == []
+    assert result.vs_opponent_ranks == []
+
+
+def test_vs_screen_shown_continuously_reads_ranks_only_once(monkeypatch):
+    """同じVS画面が表示され続けている間、read_vs_screen_ranks()が複数回
+    呼ばれない(デバウンス)ことを確認する(重いOCRを毎フレーム呼ばないという
+    CLAUDE.mdのサンプリング戦略どおりの挙動)。
+    """
+    read_calls = {"n": 0}
+
+    def fake_read_vs_screen_ranks(frame):
+        read_calls["n"] += 1
+        return [1, None, None, None], [None, None, None, None]
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", fake_read_vs_screen_ranks)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+
+    machine = MatchStateMachine(vs_screen_confirm_frames=2)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    for _ in range(10):
+        machine.process_frame(frame)
+
+    assert read_calls["n"] == 1

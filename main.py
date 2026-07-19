@@ -36,6 +36,7 @@ from nss_tracker.database import db
 from nss_tracker.detection.goal import _get_name_reader
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import RANK_ROI, _get_reader
+from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
 from nss_tracker.state.match_state import MatchResult, MatchStateMachine
 from nss_tracker.timeutil import JST
 
@@ -119,6 +120,7 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
         banner_confirm_frames=confirm_frames,
         banner_absence_confirm_frames=confirm_frames,
         goal_confirm_frames=confirm_frames,
+        vs_screen_confirm_frames=confirm_frames,
         league_change_grace_frames=round(fps * 5.0),
         rank_recheck_interval_frames=round(fps * 0.25),
         rank_stability_monitor=StabilityMonitor(roi=RANK_ROI, stable_frames_required=round(fps * 0.5)),
@@ -143,6 +145,17 @@ def _record_match_result(conn: sqlite3.Connection, result: MatchResult) -> None:
                 "ゴールを記録しました: match_id=%d scorer=%s assist=%s", match_id, goal.scorer_name, goal.assist_name
             )
 
+    if result.vs_mine_ranks or result.vs_opponent_ranks:
+        db.save_vs_slot_ranks(conn, match_id, result.vs_mine_ranks, result.vs_opponent_ranks)
+        logger.info(
+            "VS画面のランクを記録しました: match_id=%d mine=%s opponent=%s",
+            match_id,
+            result.vs_mine_ranks,
+            result.vs_opponent_ranks,
+        )
+    else:
+        logger.info("VS画面を検知できなかったため、VSスロットランクは記録しません: match_id=%d", match_id)
+
 
 def _warmup_ocr_engines() -> None:
     """OCRエンジン(EasyOCR・PaddleOCR)を事前に構築しておく。
@@ -157,6 +170,7 @@ def _warmup_ocr_engines() -> None:
     logger.info("OCRエンジンを初期化しています(数秒かかります)")
     _get_reader()
     _get_name_reader()
+    _get_vs_rank_reader()
     logger.info("OCRエンジンの初期化が完了しました")
 
 

@@ -41,3 +41,6 @@ desktop.ini
 dist/
 build/
 *.egg-info/
+
+# 作業用一時ファイル(検証用スクリプト・画像など)
+tmp/
