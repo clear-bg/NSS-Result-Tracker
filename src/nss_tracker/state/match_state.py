@@ -55,6 +55,16 @@ detection.match_end参照)。「試合終了」を確認できていれば、_wa
 逃すだけで正しさは損なわれない。VS画面検知(Issue #39、下記)を「見逃しても
 既存フローに影響しない任意のエンリッチ」として扱っている設計方針と同じ考え方。
 
+Issue #71: 実プレイでの動作確認をしやすくするため、試合のライフサイクルの節目
+(セッション内でn試合目か、を含む)をINFOログとして出す。カウンタ(_session_match_no)は
+「試合開始」ログ(_check_for_vs_screen、VS画面確定時)でのみ増加させ、「試合終了」
+(_check_for_match_end、confirm_match_end_text確認時)・「結果」(_watch_for_banner、
+バナー確定時、この時点ではランクは未確定なのでrank_beforeのみ含める)の各ログは
+直前に増加させた番号をそのまま参照する。VS画面・「試合終了」バナーはいずれも
+見逃しうる(実データで確認済み、上記参照)ため、対応するログ自体が出ないことが
+あるが、番号がズレるより見逃し時にログが欠落する方を許容する方針とした
+(ユーザーとすり合わせ済み)。
+
 ランク確定判定(TRACKING_RANK)は、ピクセル差分が一旦安定しても「リーグ昇格」の
 全画面演出がそのあとに続く場合があることが実データで判明している
 (fixtures/videos/01_win_blue_2-1.mp4)。安定を検知した直後にすぐ
@@ -120,6 +130,9 @@ from nss_tracker.detection_config import get_detection_value
 from nss_tracker.timeutil import now_jst
 
 logger = getLogger("nss_tracker.state")
+
+# Issue #71: 勝敗結果ログ用の表示文言
+_BANNER_RESULT_LABELS = {"win": "勝ち", "lose": "負け", "draw": "引き分け"}
 
 # Issue #67: 通常プレイ中の背景誤検知(1.3秒程度持続)を確実に防ぐため、
 # 他のconfirm系(1秒相当)より長い2秒相当のデフォルト値にしている
@@ -233,6 +246,11 @@ class MatchStateMachine:
         self._match_end_streak = 0
         self._match_end_recorded_this_event = False
         self._match_end_seen = False
+        # Issue #71: セッション内の試合数カウンタ。「試合開始」ログ(VS画面確定時)
+        # でのみ増加する。VS画面を見逃した試合では増加しないため、その場合の
+        # 「試合終了」「結果」ログは直前に増加させた番号を使い回す(ユーザーと
+        # すり合わせ済み。番号がズレるリスクより、見逃しでログ自体が欠落する方を避ける)
+        self._session_match_no = 0
 
     @property
     def current_state(self) -> str:
@@ -259,6 +277,8 @@ class MatchStateMachine:
         if self._vs_streak >= self._vs_screen_confirm_frames and not self._vs_recorded_this_match:
             self._pending_vs_mine_ranks, self._pending_vs_opponent_ranks = read_vs_screen_ranks(frame)
             self._vs_recorded_this_match = True
+            self._session_match_no += 1
+            logger.info("%d試合目開始", self._session_match_no)
 
     def _check_for_match_end(self, frame: np.ndarray) -> None:
         if not is_match_end_screen(frame):
@@ -273,6 +293,7 @@ class MatchStateMachine:
             # 誤検知をここでOCRにより除外する(detection.match_end参照)
             if confirm_match_end_text(frame):
                 self._match_end_seen = True
+                logger.info("%d試合目 試合終了", self._session_match_no)
 
     def _check_for_goal(self, frame: np.ndarray) -> None:
         if not is_goal_event(frame):
@@ -282,10 +303,17 @@ class MatchStateMachine:
 
         self._goal_streak += 1
         if self._goal_streak >= self._goal_confirm_frames and not self._goal_recorded_this_event:
+            scorer = read_scorer_name(frame)
+            assist = read_assist_name(frame)
+            # Issue #71: 許可リストの判定結果によらず、OCRの誤読診断のためDEBUGレベルに
+            # 限り実名+信頼度スコアをログに出す(CLAUDE.md「ログ方針」の例外)。
+            # 許可リストに基づく「記録する/しない」の判断は永続化層(database.db)の
+            # 責務のため、ここでは行わない
+            logger.debug("ゴール検知: scorer=%s assist=%s", scorer, assist)
             self._pending_goals.append(
                 GoalEvent(
-                    scorer_name=read_scorer_name(frame),
-                    assist_name=read_assist_name(frame),
+                    scorer_name=scorer[0] if scorer is not None else None,
+                    assist_name=assist[0] if assist is not None else None,
                     detected_at=now_jst(),
                 )
             )
@@ -320,6 +348,12 @@ class MatchStateMachine:
                     "結果バナー確定時点でランクバッジを読み取れませんでした"
                     "(バッジ非表示、または読み取り失敗の可能性)"
                 )
+            logger.info(
+                "%d試合目の結果: %s (ランク: %s)",
+                self._session_match_no,
+                _BANNER_RESULT_LABELS[self._pending_result],
+                self._pending_rank_before if self._pending_rank_before is not None else "なし",
+            )
             self._banner_candidate = None
             self._banner_streak = 0
             self._rank_phase = _RankPhase.WAITING_STABLE

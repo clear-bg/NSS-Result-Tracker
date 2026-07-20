@@ -73,41 +73,48 @@ def _get_name_reader():
     )
 
 
-def _read_panel_lines(frame: np.ndarray, roi: tuple[int, int, int, int]) -> list[tuple[float, str]]:
+def _read_panel_lines(frame: np.ndarray, roi: tuple[int, int, int, int]) -> list[tuple[float, str, float]]:
     x1, y1, x2, y2 = roi
     crop = frame[y1:y2, x1:x2]
     results = _get_name_reader().predict(crop)
 
-    lines: list[tuple[float, str]] = []
+    lines: list[tuple[float, str, float]] = []
     for result in results:
         texts = result.get("rec_texts", [])
+        scores = result.get("rec_scores", [])
         boxes = result.get("rec_boxes", [])
-        for text, box in zip(texts, boxes):
-            lines.append((float(box[1]), text))
+        for text, score, box in zip(texts, scores, boxes):
+            lines.append((float(box[1]), text, float(score)))
     lines.sort(key=lambda line: line[0])
     return lines
 
 
-def read_scorer_name(frame: np.ndarray, roi: tuple[int, int, int, int] = NAME_PANEL_ROI) -> Optional[str]:
-    """得点者名をOCRで読み取る。パネルが表示されていなければNoneを返す。"""
-    block: list[str] = []
-    for _y, text in _read_panel_lines(frame, roi):
+def read_scorer_name(frame: np.ndarray, roi: tuple[int, int, int, int] = NAME_PANEL_ROI) -> Optional[tuple[str, float]]:
+    """得点者名をOCRで読み取る。パネルが表示されていなければNoneを返す。
+
+    戻り値は(名前, OCRの信頼度スコア)のタプル(Issue #71: 誤読診断のため信頼度も返す)。
+    """
+    block: list[tuple[str, float]] = []
+    for _y, text, score in _read_panel_lines(frame, roi):
         if text == _ASSIST_LABEL:
             break
         if text in _GOAL_LABEL_VARIANTS:
             continue
-        block.append(text)
+        block.append((text, score))
     return block[-1] if block else None
 
 
-def read_assist_name(frame: np.ndarray, roi: tuple[int, int, int, int] = NAME_PANEL_ROI) -> Optional[str]:
-    """アシスト者名をOCRで読み取る。アシストが無い場合はNoneを返す。"""
-    block: list[str] = []
+def read_assist_name(frame: np.ndarray, roi: tuple[int, int, int, int] = NAME_PANEL_ROI) -> Optional[tuple[str, float]]:
+    """アシスト者名をOCRで読み取る。アシストが無い場合はNoneを返す。
+
+    戻り値は(名前, OCRの信頼度スコア)のタプル(Issue #71: 誤読診断のため信頼度も返す)。
+    """
+    block: list[tuple[str, float]] = []
     in_assist_block = False
-    for _y, text in _read_panel_lines(frame, roi):
+    for _y, text, score in _read_panel_lines(frame, roi):
         if text == _ASSIST_LABEL:
             in_assist_block = True
             continue
         if in_assist_block:
-            block.append(text)
+            block.append((text, score))
     return block[-1] if block else None

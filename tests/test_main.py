@@ -7,15 +7,28 @@ detection/の各判定ロジック自体の精度はtest_banner.py・test_rank_o
 """
 
 import sqlite3
+from datetime import datetime
 
 import pytest
 
 from conftest import requires_video_fixtures
 from nss_tracker.database import db
+from nss_tracker.timeutil import JST
 
 import main
 
 VIDEO_NAME = "02_lose_red_1-2.mp4"
+
+
+def test_generate_log_file_path_uses_jst_timestamp():
+    """Issue #71: ログファイルをセッション(起動時刻)ごとに分けるため、
+    ファイル名にJSTの起動時刻を埋め込むことを確認する。
+    """
+    now = datetime(2026, 7, 20, 21, 5, 9, tzinfo=JST)
+
+    path = main._generate_log_file_path(now)
+
+    assert path == main.LOG_DIR / "tracker_20260720_210509.log"
 
 
 def test_make_reader_without_video_uses_capture_env_config(monkeypatch):
