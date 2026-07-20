@@ -34,15 +34,27 @@ def _read_frames(path: Path):
         cap.release()
 
 
-def _run_state_machine(path: Path):
-    """動画を最後まで流し、状態が切り替わったフレーム番号とMatchResultを収集する。"""
+def _run_state_machine(path: Path, banner_confirm_seconds: float = 1.0):
+    """動画を最後まで流し、状態が切り替わったフレーム番号とMatchResultを収集する。
+
+    banner_confirm_seconds: banner_confirm_framesの秒数。デフォルトは他のconfirm系と
+    同じ1.0秒。Issue #67の回帰テスト(21_goal_event_false_positive_*.mp4)のように、
+    本番のmain.py側(_make_match_state_machine)で使っている2.0秒(通常プレイ中の
+    背景誤検知が1秒のデバウンスをすり抜けた実データへの対応)を検証したい場合のみ
+    metadata.jsonの"banner_confirm_seconds"で個別に指定する。他の動画は元々1.0秒の
+    デバウンスを前提に手動検証されたfixtureのため、全動画一律で2.0秒にはしない
+    (短い動画では本番相当の値でも実際の試合内容自体は変わらないが、ランク確定までの
+    残り時間が削られてOCR読み取りが間に合わなくなるケースがあり、fixtureごとの
+    検証観点に合わせて個別に設定する)。
+    """
     cap = cv2.VideoCapture(str(path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     cap.release()
 
     confirm_frames = round(fps * 1.0)
+    banner_confirm_frames = round(fps * banner_confirm_seconds)
     machine = MatchStateMachine(
-        banner_confirm_frames=confirm_frames,
+        banner_confirm_frames=banner_confirm_frames,
         banner_absence_confirm_frames=confirm_frames,
         vs_screen_confirm_frames=confirm_frames,
         league_change_grace_frames=round(fps * 5.0),
@@ -88,7 +100,8 @@ def test_match_state_machine_matches_expected_metadata(videos_dir):
     assert videos, f"{METADATA_FILENAME}に記載の動画がfixtures/videos/に見つからない"
 
     for path, expected in videos:
-        results, state_change_frames = _run_state_machine(path)
+        banner_confirm_seconds = expected.get("banner_confirm_seconds", 1.0)
+        results, state_change_frames = _run_state_machine(path, banner_confirm_seconds=banner_confirm_seconds)
 
         assert len(results) == 1, f"{path.name}: 検知された試合数が{len(results)}件(期待は1件)"
         match = results[0]
@@ -124,17 +137,19 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     """ゴール検知の統合ロジック(バッファリング→試合終了時にMatchResultへ payoutされる)を
     実映像に依存せず検証する。個々の検知関数(is_goal_event等)は
     tests/test_goal.py・tests/test_banner.py等で別途検証済みのため、ここではモックする。
+
+    frame_idxはテストループ側で1フレームごとに進める(Issue #67の修正により
+    is_goal_event=True中はclassify_bannerが呼ばれなくなったため、classify_banner
+    呼び出し回数に依存したフレーム進行のカウントはできない)。
     """
-    calls = {"n": 0}
+    frame_idx = {"n": 0}
 
     def fake_is_goal_event(frame):
         # 最初の2フレームだけゴールバナーが出ているとみなす
-        return calls["n"] < 2
+        return frame_idx["n"] < 2
 
     def fake_classify_banner(frame):
-        n = calls["n"]
-        calls["n"] += 1
-        return None if n < 5 else "win"
+        return None if frame_idx["n"] < 5 else "win"
 
     monkeypatch.setattr(match_state_module, "is_goal_event", fake_is_goal_event)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: "Alice")
@@ -155,6 +170,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     result = None
     for _ in range(15):
         result = machine.process_frame(frame)
+        frame_idx["n"] += 1
         if result is not None:
             break
 
