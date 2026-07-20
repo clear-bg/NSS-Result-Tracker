@@ -113,7 +113,7 @@ MatchResult/GoalEventのdetected_atはJST(timeutil.now_jst参照)で記録する
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
-from logging import getLogger
+from logging import DEBUG, getLogger
 from typing import Optional
 
 import numpy as np
@@ -122,7 +122,7 @@ from nss_tracker.detection.banner import BannerResult, classify_banner
 from nss_tracker.detection.goal import is_goal_event, read_assist_name, read_scorer_name
 from nss_tracker.detection.league_change import is_league_change_screen
 from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end_screen
-from nss_tracker.detection.matchmaking import is_vs_screen
+from nss_tracker.detection.matchmaking import is_vs_screen, read_vs_roi_hsv
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED, RANK_ROI, read_precise_rank
 from nss_tracker.detection.vs_rank import SlotRank, read_vs_screen_ranks
@@ -268,6 +268,14 @@ class MatchStateMachine:
         return self._watch_for_banner_absence(frame)
 
     def _check_for_vs_screen(self, frame: np.ndarray) -> None:
+        # Issue #68: 実プレイでVS画面検知が繰り返し失敗しており(2026-07-19・
+        # 2026-07-20の実測とも0/5・0/4)、既存fixtureでの検証では原因を特定できて
+        # いない。実際のキャプチャパイプラインでの生のHSV値を次回セッションで
+        # 確認できるよう、毎フレームDEBUGログに残す(デフォルトのINFOレベルでは
+        # 出ないため、通常運用への影響は無い)
+        if logger.isEnabledFor(DEBUG):
+            h, s, v = read_vs_roi_hsv(frame)
+            logger.debug("VS_ROI HSV: H=%.2f S=%.2f V=%.2f", h, s, v)
         if not is_vs_screen(frame):
             self._vs_streak = 0
             self._vs_recorded_this_match = False
