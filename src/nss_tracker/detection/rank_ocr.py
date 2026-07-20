@@ -35,6 +35,18 @@ state.match_state側の呼び出しタイミングは以下のように一意に
 検出された数字のうち最も下側(bboxのy座標が最大)のものを実際のランク数値
 として採用する。
 
+Issue #73: S/A帯のバッジも∞と同じ「アイコン(∞記号/英字)+ 下に数値」という
+レイアウトで描画される想定のため、read_rank_tier()はread_rank()と同じRANK_ROIを
+allowlistなしでOCRし、最も上側(bboxのy座標が最小)のテキストをアイコンと
+みなして判定する(新規のROI測定は不要)。実際に既存の∞帯fixture6枚全てで
+「allowlistなしでも最上段は"0"/"00"に誤読される」ことを確認済みのため、
+∞判定はこの方式で問題ない。一方S/A帯が実際にこの分類で正しく読めるかは、
+結果バナー画面でS/A帯バッジが写った参照fixtureが無く未検証(vs_rank.pyの
+VS画面用アイコンROIを代用して試したが、バッジが小さすぎてEasyOCRが
+'S'/'A'の文字自体を安定して検出できないことが判明しており、代用にならない
+と判明した)。Issue #43でS/A帯の結果バナーfixtureが集まり次第、実データで
+検証すること。
+
 ランク変動アニメーション中(帯が動いている最中、拡大表示の遷移演出)は
 ゲージの見た目が遷移演出用のグラデーションになり塗りつぶし割合として
 意味を持たないため、read_rankと同様に「安定している瞬間」にのみ
@@ -68,6 +80,10 @@ GAUGE_ROI_ENLARGED = get_detection_value("rank_ocr", "GAUGE_ROI_ENLARGED", (130,
 # 未塗りつぶし部分は80〜105程度で明確に分離できる
 GAUGE_FILLED_VALUE_THRESHOLD = get_detection_value("rank_ocr", "GAUGE_FILLED_VALUE_THRESHOLD", 150)
 
+# バッジのアイコン部分が英字帯の場合に取りうる文字(vs_rank.pyの_LETTER_TIERSと同じ、
+# B~E帯は参照fixtureが無く未対応のため対象外)
+RANK_TIER_LETTERS = ("S", "A")
+
 
 @lru_cache(maxsize=1)
 def _get_reader():
@@ -92,6 +108,36 @@ def read_rank(frame: np.ndarray, roi: tuple[int, int, int, int] = RANK_ROI) -> O
     if not text.isdigit():
         return None
     return int(text)
+
+
+def read_rank_tier(frame: np.ndarray, roi: tuple[int, int, int, int] = RANK_ROI) -> Optional[str]:
+    """バッジのアイコン部分から帯('∞'/'S'/'A')を判定する。判定できなければNone。
+
+    read_rank()と同じROIをallowlistなしでOCRし、最も上側(bboxのy座標が最小)の
+    テキストをアイコンとみなす(モジュールdocstring参照。アイコンは常に数値の上に
+    表示される)。全て数字であれば∞アイコンの誤読とみなし、RANK_TIER_LETTERSの
+    いずれかと完全一致すればその帯を返す。B~E帯・非表示・どちらとも判定できない
+    誤読はいずれもNoneを返し、呼び出し側からは区別しない(vs_rank.pyと同じ方針)。
+
+    S/A帯の判定は結果バナー画面での参照fixtureが無く未検証(モジュールdocstring参照)。
+    """
+    x1, y1, x2, y2 = roi
+    crop = frame[y1:y2, x1:x2]
+    results = _get_reader().readtext(crop)
+    if not results:
+        return None
+
+    def bbox_top(result: tuple) -> float:
+        bbox, _text, _conf = result
+        return min(point[1] for point in bbox)
+
+    _bbox, text, _conf = min(results, key=bbox_top)
+    text = text.strip().upper()
+    if text.isdigit():
+        return "∞"
+    if text in RANK_TIER_LETTERS:
+        return text
+    return None
 
 
 def read_rank_gauge_fill(frame: np.ndarray, roi: tuple[int, int, int, int]) -> Optional[float]:
