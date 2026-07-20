@@ -449,6 +449,55 @@ def test_match_end_candidate_rejected_by_ocr_keeps_slow_banner_confirm(monkeypat
     assert result is not None, "MatchResultが確定しなかった"
 
 
+def test_lifecycle_logs_reuse_session_match_number(monkeypatch, caplog):
+    """試合開始(VS画面確定)→試合終了(バナー確定)→結果(結果バナー確定)の
+    3つのライフサイクルログが、いずれも同じ試合番号(n試合目)で出ることを
+    確認する(Issue #71)。
+    """
+    frame_idx = {"n": 0}
+
+    def fake_is_vs_screen(frame):
+        return frame_idx["n"] < 2
+
+    def fake_is_match_end_screen(frame):
+        return 5 <= frame_idx["n"] < 7
+
+    def fake_classify_banner(frame):
+        return "win" if frame_idx["n"] >= 8 else None
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", fake_is_match_end_screen)
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.5))
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        vs_screen_confirm_frames=2,
+        match_end_confirm_frames=2,
+        banner_confirm_frames_after_match_end=2,
+        banner_confirm_frames=100,
+        league_change_grace_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(20):
+            result = machine.process_frame(frame)
+            frame_idx["n"] += 1
+            if result is not None:
+                break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert "1試合目開始" in caplog.text
+    assert "1試合目 試合終了" in caplog.text
+    assert "1試合目の結果: 勝ち (ランク: 10.5)" in caplog.text
+
+
 def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
     """VS画面検知の統合ロジック(確定時に1回だけOCRしてMatchResultへpayoutされる)を
     実映像に依存せず検証する。is_vs_screen自体の判定はtest_matchmaking.pyで、
