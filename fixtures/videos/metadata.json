@@ -70,5 +70,14 @@
     "expected_league_changed": null,
     "banner_confirmed_frame_range": [239, 249],
     "match_result_frame_range": null
+  },
+  "21_goal_event_false_positive_win_blue_4-3.mp4": {
+    "expected_result": "win",
+    "expected_rank_before": 39,
+    "expected_rank_after": 40,
+    "expected_league_changed": "up",
+    "banner_confirm_seconds": 2.0,
+    "banner_confirmed_frame_range": [8386, 8446],
+    "match_result_frame_range": [8938, 8998]
   }
 }
