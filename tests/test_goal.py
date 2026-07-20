@@ -54,6 +54,29 @@ def test_is_goal_event(fixtures_dir, filename, expected):
 
 @pytest.mark.slow
 @requires_fixtures
+def test_read_scorer_name_returns_name_and_confidence_score(fixtures_dir):
+    """read_scorer_name/read_assist_nameの戻り値が(名前, 信頼度スコア)のタプルに
+    なっていることを確認する(Issue #71: OCRの誤読診断のためスコアも返すよう
+    戻り値を拡張した)。名前の値そのものは実名のため検証しない(構造のみ確認)。
+    """
+    frame = cv2.imread(str(fixtures_dir / "21_goal_with_assist_blue.png"))
+    assert frame is not None
+
+    scorer = read_scorer_name(frame)
+    assert scorer is not None
+    name, score = scorer
+    assert isinstance(name, str) and name
+    assert 0.0 <= score <= 1.0
+
+    assist = read_assist_name(frame)
+    assert assist is not None
+    name, score = assist
+    assert isinstance(name, str) and name
+    assert 0.0 <= score <= 1.0
+
+
+@pytest.mark.slow
+@requires_fixtures
 def test_name_ocr_accuracy(fixtures_dir):
     """得点者・アシスト名OCRの実現性検証。
 
@@ -73,14 +96,16 @@ def test_name_ocr_accuracy(fixtures_dir):
         frame = cv2.imread(str(fixtures_dir / filename))
         assert frame is not None, f"failed to load {filename}"
 
-        scorer = read_scorer_name(frame)
+        scorer_result = read_scorer_name(frame)
+        scorer = scorer_result[0] if scorer_result is not None else None
         total += 1
         if scorer == expected_scorer:
             correct += 1
         else:
             mismatches.append((filename, "scorer", expected_scorer, scorer))
 
-        assist = read_assist_name(frame)
+        assist_result = read_assist_name(frame)
+        assist = assist_result[0] if assist_result is not None else None
         total += 1
         if assist == expected_assist:
             correct += 1
