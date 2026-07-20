@@ -124,17 +124,19 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     """ゴール検知の統合ロジック(バッファリング→試合終了時にMatchResultへ payoutされる)を
     実映像に依存せず検証する。個々の検知関数(is_goal_event等)は
     tests/test_goal.py・tests/test_banner.py等で別途検証済みのため、ここではモックする。
+
+    frame_idxはテストループ側で1フレームごとに進める(Issue #67の修正により
+    is_goal_event=True中はclassify_bannerが呼ばれなくなったため、classify_banner
+    呼び出し回数に依存したフレーム進行のカウントはできない)。
     """
-    calls = {"n": 0}
+    frame_idx = {"n": 0}
 
     def fake_is_goal_event(frame):
         # 最初の2フレームだけゴールバナーが出ているとみなす
-        return calls["n"] < 2
+        return frame_idx["n"] < 2
 
     def fake_classify_banner(frame):
-        n = calls["n"]
-        calls["n"] += 1
-        return None if n < 5 else "win"
+        return None if frame_idx["n"] < 5 else "win"
 
     monkeypatch.setattr(match_state_module, "is_goal_event", fake_is_goal_event)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: "Alice")
@@ -155,6 +157,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     result = None
     for _ in range(15):
         result = machine.process_frame(frame)
+        frame_idx["n"] += 1
         if result is not None:
             break
 
@@ -364,6 +367,55 @@ def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
         machine.process_frame(frame)
 
     assert len(machine._pending_goals) == 1
+
+
+def test_goal_event_suppresses_banner_confirmation(monkeypatch):
+    """ゴール演出中(is_goal_event=True)にclassify_bannerが誤って結果バナーの
+    判定を返し続けても、banner_confirm_framesを満たして誤確定しないことを
+    確認する(Issue #67: 背景のSOCCERトランジション帯がBANNER_ROIに写り込み、
+    デバウンスをすり抜けて試合が誤って分割された回帰防止)。
+    ゴール演出が終わった後は通常どおり本物の結果バナーを確定できることも
+    あわせて確認する。
+    """
+    frame_idx = {"n": 0}
+    # 最初の10フレームはゴール演出中(誤って"lose"判定され続ける)、
+    # その後ゴール演出が終わり、本物の"win"バナーが表示される
+    GOAL_EVENT_FRAMES = 10
+
+    def fake_is_goal_event(frame):
+        return frame_idx["n"] < GOAL_EVENT_FRAMES
+
+    def fake_classify_banner(frame):
+        return "lose" if frame_idx["n"] < GOAL_EVENT_FRAMES else "win"
+
+    monkeypatch.setattr(match_state_module, "is_goal_event", fake_is_goal_event)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=5,
+        goal_confirm_frames=2,
+        league_change_grace_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for i in range(30):
+        result = machine.process_frame(frame)
+        if result is not None:
+            assert i >= GOAL_EVENT_FRAMES, (
+                f"ゴール演出中(is_goal_event=True)の誤った'lose'判定でフレーム{i}に確定してしまった"
+            )
+            break
+        frame_idx["n"] += 1
+
+    assert result is not None, "MatchResultが確定しなかった(ゴール演出終了後の本物のバナーも検知できていない)"
+    assert result.result == "win"
 
 
 def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
