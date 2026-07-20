@@ -303,10 +303,17 @@ class MatchStateMachine:
 
         self._goal_streak += 1
         if self._goal_streak >= self._goal_confirm_frames and not self._goal_recorded_this_event:
+            scorer = read_scorer_name(frame)
+            assist = read_assist_name(frame)
+            # Issue #71: 許可リストの判定結果によらず、OCRの誤読診断のためDEBUGレベルに
+            # 限り実名+信頼度スコアをログに出す(CLAUDE.md「ログ方針」の例外)。
+            # 許可リストに基づく「記録する/しない」の判断は永続化層(database.db)の
+            # 責務のため、ここでは行わない
+            logger.debug("ゴール検知: scorer=%s assist=%s", scorer, assist)
             self._pending_goals.append(
                 GoalEvent(
-                    scorer_name=read_scorer_name(frame),
-                    assist_name=read_assist_name(frame),
+                    scorer_name=scorer[0] if scorer is not None else None,
+                    assist_name=assist[0] if assist is not None else None,
                     detected_at=now_jst(),
                 )
             )
