@@ -116,8 +116,11 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     (CLAUDE.md・tests/test_match_state.pyの_run_state_machineと同じ考え方)。
     """
     confirm_frames = round(fps * 1.0)
+    # Issue #67: 通常プレイ中の背景誤検知(実測1.3秒程度持続)がデバウンス(1秒)を
+    # すり抜けて結果バナーの誤検知が発生したため、banner_confirm_framesのみ2秒に延長
+    banner_confirm_frames = round(fps * 2.0)
     return MatchStateMachine(
-        banner_confirm_frames=confirm_frames,
+        banner_confirm_frames=banner_confirm_frames,
         banner_absence_confirm_frames=confirm_frames,
         goal_confirm_frames=confirm_frames,
         vs_screen_confirm_frames=confirm_frames,
