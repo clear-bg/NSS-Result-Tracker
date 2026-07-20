@@ -35,6 +35,26 @@ fixtures/videos/21_goal_event_false_positive_win_blue_4-3.mp4
 (tests/test_match_state.pyのtest_match_state_machine_matches_expected_metadata、
 fixtures/videos/metadata.json参照)。
 
+Issue #76: Issue #67の2秒デバウンスは対症療法であり検知が遅くなる副作用がある。
+これを改善するため、試合の本当の終了時点にのみ表示される「試合終了」バナー
+(detection.match_end参照)を補助信号として使う。WATCHING中に
+is_match_end_screen()を毎フレーム軽量にチェックし、match_end_confirm_frames回
+連続したタイミングで1回だけconfirm_match_end_text()を呼んでOCRで文字を確認する
+(「試合終了」と色味が酷似する「延長戦」「キックオフ」バナーとの誤認識を防ぐため。
+detection.match_end参照)。「試合終了」を確認できていれば、_watch_for_banner()の
+確定に必要なbanner_streakの閾値をbanner_confirm_frames_after_match_end
+(短い、デフォルトはIssue #67修正前と同じ1秒相当)に切り替える。確認できていない
+場合は通常どおりbanner_confirm_frames(長い、2秒相当)のままとする。
+
+この設計を「VS画面〜試合終了検知までの間はバナー判定自体を行わない」という
+完全なゲート方式にしなかったのは、「試合終了」検知自体を見逃す実データケースが
+あったため(実測: fixtures/videos/21_goal_event_false_positive_win_blue_4-3.mp4は
+「試合終了」が本来映るはずの区間を含んでいない)。完全ゲート方式だと見逃した
+試合が丸ごと記録から欠落してしまうが、本方式(見ていれば高速、見ていなくても
+既存の安全側デバウンスにフォールバック)であれば、見逃しても速度面の恩恵を
+逃すだけで正しさは損なわれない。VS画面検知(Issue #39、下記)を「見逃しても
+既存フローに影響しない任意のエンリッチ」として扱っている設計方針と同じ考え方。
+
 ランク確定判定(TRACKING_RANK)は、ピクセル差分が一旦安定しても「リーグ昇格」の
 全画面演出がそのあとに続く場合があることが実データで判明している
 (fixtures/videos/01_win_blue_2-1.mp4)。安定を検知した直後にすぐ
@@ -91,6 +111,7 @@ import numpy as np
 from nss_tracker.detection.banner import BannerResult, classify_banner
 from nss_tracker.detection.goal import is_goal_event, read_assist_name, read_scorer_name
 from nss_tracker.detection.league_change import is_league_change_screen
+from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end_screen
 from nss_tracker.detection.matchmaking import is_vs_screen
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED, RANK_ROI, read_precise_rank
@@ -103,9 +124,16 @@ logger = getLogger("nss_tracker.state")
 # Issue #67: 通常プレイ中の背景誤検知(1.3秒程度持続)を確実に防ぐため、
 # 他のconfirm系(1秒相当)より長い2秒相当のデフォルト値にしている
 DEFAULT_BANNER_CONFIRM_FRAMES = 60
+# Issue #76: 「試合終了」バナーを確認できている場合のbanner_confirm_frames。
+# Issue #67修正前のデフォルト(1秒相当)と同じ値に戻す(本当の試合終了直前だと
+# 分かっているため、通常プレイ中の背景誤検知を心配する必要が無い)
+DEFAULT_BANNER_CONFIRM_FRAMES_AFTER_MATCH_END = 30
 DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES = 30
 DEFAULT_GOAL_CONFIRM_FRAMES = 30
 DEFAULT_VS_SCREEN_CONFIRM_FRAMES = 30
+# 「試合終了」バナーは実データで最短7フレーム程度(60fps)しか綺麗に表示されない
+# ケースがあったため、他のconfirm系より短いデフォルト値にしている
+DEFAULT_MATCH_END_CONFIRM_FRAMES = 3
 # 実測(fixtures/videos/01_win_blue_2-1.mp4, 60fps):
 # ランク数値が一旦静止してから昇格演出が始まるまで約270フレーム(4.5秒)の間があった
 DEFAULT_LEAGUE_CHANGE_GRACE_FRAMES = 150
@@ -162,19 +190,23 @@ class MatchStateMachine:
         self,
         rank_roi: tuple[int, int, int, int] = RANK_ROI,
         banner_confirm_frames: int = DEFAULT_BANNER_CONFIRM_FRAMES,
+        banner_confirm_frames_after_match_end: int = DEFAULT_BANNER_CONFIRM_FRAMES_AFTER_MATCH_END,
         banner_absence_confirm_frames: int = DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES,
         league_change_grace_frames: int = DEFAULT_LEAGUE_CHANGE_GRACE_FRAMES,
         goal_confirm_frames: int = DEFAULT_GOAL_CONFIRM_FRAMES,
         rank_recheck_interval_frames: int = DEFAULT_RANK_RECHECK_INTERVAL_FRAMES,
         vs_screen_confirm_frames: int = DEFAULT_VS_SCREEN_CONFIRM_FRAMES,
+        match_end_confirm_frames: int = DEFAULT_MATCH_END_CONFIRM_FRAMES,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
     ) -> None:
         self._banner_confirm_frames = banner_confirm_frames
+        self._banner_confirm_frames_after_match_end = banner_confirm_frames_after_match_end
         self._banner_absence_confirm_frames = banner_absence_confirm_frames
         self._league_change_grace_frames = league_change_grace_frames
         self._goal_confirm_frames = goal_confirm_frames
         self._rank_recheck_interval_frames = rank_recheck_interval_frames
         self._vs_screen_confirm_frames = vs_screen_confirm_frames
+        self._match_end_confirm_frames = match_end_confirm_frames
         self._rank_monitor = rank_stability_monitor or StabilityMonitor(roi=rank_roi)
 
         self._state = _State.WATCHING
@@ -198,6 +230,9 @@ class MatchStateMachine:
         self._vs_recorded_this_match = False
         self._pending_vs_mine_ranks: list[SlotRank] = []
         self._pending_vs_opponent_ranks: list[SlotRank] = []
+        self._match_end_streak = 0
+        self._match_end_recorded_this_event = False
+        self._match_end_seen = False
 
     @property
     def current_state(self) -> str:
@@ -208,6 +243,7 @@ class MatchStateMachine:
         if self._state is _State.WATCHING:
             self._check_for_vs_screen(frame)
             self._check_for_goal(frame)
+            self._check_for_match_end(frame)
             return self._watch_for_banner(frame)
         if self._state is _State.TRACKING_RANK:
             return self._track_rank(frame)
@@ -223,6 +259,20 @@ class MatchStateMachine:
         if self._vs_streak >= self._vs_screen_confirm_frames and not self._vs_recorded_this_match:
             self._pending_vs_mine_ranks, self._pending_vs_opponent_ranks = read_vs_screen_ranks(frame)
             self._vs_recorded_this_match = True
+
+    def _check_for_match_end(self, frame: np.ndarray) -> None:
+        if not is_match_end_screen(frame):
+            self._match_end_streak = 0
+            self._match_end_recorded_this_event = False
+            return
+
+        self._match_end_streak += 1
+        if self._match_end_streak >= self._match_end_confirm_frames and not self._match_end_recorded_this_event:
+            self._match_end_recorded_this_event = True
+            # is_match_end_screenは色ベースの候補判定のため、「延長戦」「キックオフ」等の
+            # 誤検知をここでOCRにより除外する(detection.match_end参照)
+            if confirm_match_end_text(frame):
+                self._match_end_seen = True
 
     def _check_for_goal(self, frame: np.ndarray) -> None:
         if not is_goal_event(frame):
@@ -252,7 +302,12 @@ class MatchStateMachine:
             self._banner_candidate = None
             self._banner_streak = 0
 
-        if self._banner_streak >= self._banner_confirm_frames:
+        # Issue #76: 「試合終了」を確認できていれば短いデバウンス、できていなければ
+        # 従来どおりの安全側の長いデバウンスを使う(モジュールdocstring参照)
+        required_streak = (
+            self._banner_confirm_frames_after_match_end if self._match_end_seen else self._banner_confirm_frames
+        )
+        if self._banner_streak >= required_streak:
             self._pending_result = self._banner_candidate
             # バナー確定直後 = ランク変動アニメーションが始まる前 = 常にコンパクト表示
             precise_result = read_precise_rank(frame, GAUGE_ROI_COMPACT)
@@ -274,6 +329,8 @@ class MatchStateMachine:
             self._rank_monitor.reset()
             self._rank_monitor.update(frame)
             self._state = _State.TRACKING_RANK
+            # 「試合終了」の確認は今回の結果バナー確定にのみ使うため、ここでリセットする
+            self._match_end_seen = False
         return None
 
     def _track_rank(self, frame: np.ndarray) -> Optional[MatchResult]:

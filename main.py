@@ -117,13 +117,20 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     """
     confirm_frames = round(fps * 1.0)
     # Issue #67: 通常プレイ中の背景誤検知(実測1.3秒程度持続)がデバウンス(1秒)を
-    # すり抜けて結果バナーの誤検知が発生したため、banner_confirm_framesのみ2秒に延長
+    # すり抜けて結果バナーの誤検知が発生したため、banner_confirm_framesのみ2秒に延長。
+    # Issue #76: 「試合終了」バナーを確認できていれば、Issue #67修正前と同じ1秒
+    # (confirm_framesと同じ)に短縮する(state/match_state.pyのモジュールdocstring参照)
     banner_confirm_frames = round(fps * 2.0)
+    # 「試合終了」バナーは実測最短7フレーム(60fps)程度しか綺麗に表示されないことが
+    # あるため、他のconfirm系より短いデバウンスにする(state/match_state.py参照)
+    match_end_confirm_frames = round(fps * 0.1)
     return MatchStateMachine(
         banner_confirm_frames=banner_confirm_frames,
+        banner_confirm_frames_after_match_end=confirm_frames,
         banner_absence_confirm_frames=confirm_frames,
         goal_confirm_frames=confirm_frames,
         vs_screen_confirm_frames=confirm_frames,
+        match_end_confirm_frames=match_end_confirm_frames,
         league_change_grace_frames=round(fps * 5.0),
         rank_recheck_interval_frames=round(fps * 0.25),
         rank_stability_monitor=StabilityMonitor(roi=RANK_ROI, stable_frames_required=round(fps * 0.5)),
