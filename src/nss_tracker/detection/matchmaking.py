@@ -40,6 +40,23 @@ VS_SAT_RANGE = get_detection_value("matchmaking", "VS_SAT_RANGE", (60, 70))
 VS_VAL_MIN = get_detection_value("matchmaking", "VS_VAL_MIN", 180)
 
 
+def read_vs_roi_hsv(frame: np.ndarray, roi: tuple[int, int, int, int] = VS_ROI) -> tuple[float, float, float]:
+    """VS_ROI内の平均HSV値をそのまま返す(診断用)。
+
+    Issue #68: 実プレイでVS画面検知が繰り返し失敗しており(2026-07-19・
+    2026-07-20の実測とも0/5・0/4)、原因が未特定のまま。既存fixtureでの
+    検証では色閾値自体に問題は見つからなかったため、実際のキャプチャ
+    パイプラインで何が起きているかを次回セッションでDEBUGログから
+    直接確認できるよう、is_vs_screen()の判定に使うHSV平均値を単体で
+    呼び出せるようにしている(state.match_stateの_check_for_vs_screen参照)。
+    """
+    x1, y1, x2, y2 = roi
+    crop = frame[y1:y2, x1:x2]
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV).reshape(-1, 3)
+    h, s, v = hsv.mean(axis=0)
+    return float(h), float(s), float(v)
+
+
 def is_vs_screen(frame: np.ndarray, roi: tuple[int, int, int, int] = VS_ROI) -> bool:
     """マッチング完了(VS画面)の「VS」ロゴが表示されているかを判定する。
 
@@ -47,8 +64,5 @@ def is_vs_screen(frame: np.ndarray, roi: tuple[int, int, int, int] = VS_ROI) -> 
     docstring参照)。呼び出し側でmotion.find_confirmed_value等によるデバウンスと
     組み合わせて使うことを前提とする。
     """
-    x1, y1, x2, y2 = roi
-    crop = frame[y1:y2, x1:x2]
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV).reshape(-1, 3)
-    h, s, v = hsv.mean(axis=0)
+    h, s, v = read_vs_roi_hsv(frame, roi)
     return VS_HUE_RANGE[0] <= h <= VS_HUE_RANGE[1] and VS_SAT_RANGE[0] <= s <= VS_SAT_RANGE[1] and v >= VS_VAL_MIN
