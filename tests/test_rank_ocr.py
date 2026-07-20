@@ -8,6 +8,7 @@ from nss_tracker.detection.rank_ocr import (
     read_precise_rank,
     read_rank,
     read_rank_gauge_fill,
+    read_rank_tier,
 )
 
 # 同一プレイ記録からのfixtureのため全て同じランク値(38)になっているが、
@@ -95,3 +96,27 @@ def test_read_precise_rank_returns_none_without_badge(fixtures_dir):
     frame = cv2.imread(str(fixtures_dir / "43_result_win_without_rank_blue.png"))
     assert frame is not None
     assert read_precise_rank(frame, GAUGE_ROI_COMPACT) is None
+
+
+# Issue #73: read_rank_tier()の∞判定は既存の∞帯fixture全てで実データ検証できるが、
+# S/A帯は結果バナー画面での参照fixtureが無いため未検証(rank_ocr.pyのモジュール
+# docstring参照)。ここでは∞判定の回帰確認、およびバッジ非表示時にNoneを返す
+# ことのみ確認する。
+@pytest.mark.slow
+@requires_fixtures
+@pytest.mark.parametrize(
+    "filename",
+    sorted(name for name, expected in EXPECTED.items() if expected is not None),
+)
+def test_read_rank_tier_returns_infinity_for_existing_fixtures(fixtures_dir, filename):
+    frame = cv2.imread(str(fixtures_dir / filename))
+    assert frame is not None, f"failed to load {filename}"
+    assert read_rank_tier(frame) == "∞"
+
+
+@pytest.mark.slow
+@requires_fixtures
+def test_read_rank_tier_returns_none_without_badge(fixtures_dir):
+    frame = cv2.imread(str(fixtures_dir / "43_result_win_without_rank_blue.png"))
+    assert frame is not None
+    assert read_rank_tier(frame) is None
