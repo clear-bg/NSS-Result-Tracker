@@ -34,29 +34,27 @@ def _read_frames(path: Path):
         cap.release()
 
 
-def _run_state_machine(path: Path, banner_confirm_seconds: float = 1.0):
+def _run_state_machine(path: Path):
     """動画を最後まで流し、状態が切り替わったフレーム番号とMatchResultを収集する。
 
-    banner_confirm_seconds: banner_confirm_framesの秒数。デフォルトは他のconfirm系と
-    同じ1.0秒。Issue #67の回帰テスト(21_goal_event_false_positive_*.mp4)のように、
-    本番のmain.py側(_make_match_state_machine)で使っている2.0秒(通常プレイ中の
-    背景誤検知が1秒のデバウンスをすり抜けた実データへの対応)を検証したい場合のみ
-    metadata.jsonの"banner_confirm_seconds"で個別に指定する。他の動画は元々1.0秒の
-    デバウンスを前提に手動検証されたfixtureのため、全動画一律で2.0秒にはしない
-    (短い動画では本番相当の値でも実際の試合内容自体は変わらないが、ランク確定までの
-    残り時間が削られてOCR読み取りが間に合わなくなるケースがあり、fixtureごとの
-    検証観点に合わせて個別に設定する)。
+    main.pyの_make_match_state_machineと同じ設定でMatchStateMachineを構築する
+    (Issue #76: 「試合終了」バナーを検知できた動画は短いデバウンス(1.0秒)、
+    できなかった動画(21_goal_event_false_positive_*.mp4)は長いデバウンス(2.0秒)に
+    自動的に切り替わる。個別のfixtureごとに閾値を指定する必要はない)。
     """
     cap = cv2.VideoCapture(str(path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     cap.release()
 
     confirm_frames = round(fps * 1.0)
-    banner_confirm_frames = round(fps * banner_confirm_seconds)
+    banner_confirm_frames = round(fps * 2.0)
+    match_end_confirm_frames = round(fps * 0.1)
     machine = MatchStateMachine(
         banner_confirm_frames=banner_confirm_frames,
+        banner_confirm_frames_after_match_end=confirm_frames,
         banner_absence_confirm_frames=confirm_frames,
         vs_screen_confirm_frames=confirm_frames,
+        match_end_confirm_frames=match_end_confirm_frames,
         league_change_grace_frames=round(fps * 5.0),
         rank_stability_monitor=StabilityMonitor(roi=RANK_ROI, stable_frames_required=round(fps * 0.5)),
     )
@@ -100,8 +98,7 @@ def test_match_state_machine_matches_expected_metadata(videos_dir):
     assert videos, f"{METADATA_FILENAME}に記載の動画がfixtures/videos/に見つからない"
 
     for path, expected in videos:
-        banner_confirm_seconds = expected.get("banner_confirm_seconds", 1.0)
-        results, state_change_frames = _run_state_machine(path, banner_confirm_seconds=banner_confirm_seconds)
+        results, state_change_frames = _run_state_machine(path)
 
         assert len(results) == 1, f"{path.name}: 検知された試合数が{len(results)}件(期待は1件)"
         match = results[0]
@@ -158,6 +155,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -198,6 +196,7 @@ def test_rank_read_failure_is_logged(monkeypatch, caplog):
 
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
@@ -249,6 +248,7 @@ def test_track_rank_grace_recheck_catches_slow_drift(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -291,6 +291,7 @@ def test_track_rank_grace_recheck_catches_tier_change(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -343,6 +344,7 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -373,6 +375,7 @@ def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(goal_confirm_frames=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -380,6 +383,70 @@ def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
         machine.process_frame(frame)
 
     assert len(machine._pending_goals) == 1
+
+
+def test_match_end_confirmed_enables_fast_banner_confirm(monkeypatch):
+    """「試合終了」バナーを確認できた場合、banner_confirm_frames_after_match_end
+    (短い方)でバナーが確定することを確認する(Issue #76)。
+    """
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=100,
+        banner_confirm_frames_after_match_end=3,
+        match_end_confirm_frames=1,
+        league_change_grace_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for i in range(10):
+        result = machine.process_frame(frame)
+        if result is not None:
+            assert i < 100, "短いデバウンスが使われず、長い方の閾値まで待ってしまった"
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.result == "win"
+
+
+def test_match_end_candidate_rejected_by_ocr_keeps_slow_banner_confirm(monkeypatch):
+    """is_match_end_screen(色ベース)がTrueでも、confirm_match_end_text(OCR)が
+    Falseを返す場合(「キックオフ」等の誤認識、Issue #76参照)は、
+    banner_confirm_frames(長い方)のまま確定を待つことを確認する。
+    """
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=5,
+        banner_confirm_frames_after_match_end=1,
+        match_end_confirm_frames=1,
+        league_change_grace_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for i in range(10):
+        result = machine.process_frame(frame)
+        if result is not None:
+            assert i >= 4, f"OCRで却下されたはずの候補で短いデバウンスが使われてしまった(frame={i})"
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
 
 
 def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
@@ -412,6 +479,7 @@ def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -449,6 +517,7 @@ def test_vs_screen_not_detected_results_in_empty_vs_ranks(monkeypatch):
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -483,6 +552,7 @@ def test_vs_screen_shown_continuously_reads_ranks_only_once(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", fake_read_vs_screen_ranks)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(vs_screen_confirm_frames=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
