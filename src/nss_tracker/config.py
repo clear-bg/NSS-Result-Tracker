@@ -68,3 +68,14 @@ def get_frame_read_timeout_seconds() -> float:
     """フレーム取得のタイムアウト秒数を取得する。未設定時は5.0にフォールバックする。"""
     value = os.environ.get("FRAME_READ_TIMEOUT_SECONDS")
     return float(value) if value else 5.0
+
+
+def get_web_host() -> str:
+    """Webダッシュボードのバインド先ホストを取得する。未設定時は127.0.0.1にフォールバックする。"""
+    return os.environ.get("WEB_HOST", "127.0.0.1")
+
+
+def get_web_port() -> int:
+    """Webダッシュボードのポート番号を取得する。未設定時は8000にフォールバックする。"""
+    value = os.environ.get("WEB_PORT")
+    return int(value) if value else 8000

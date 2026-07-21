@@ -49,6 +49,28 @@ def test_matches_count_with_no_matches(tmp_path: Path):
     assert response.json() == {"total": 0, "win": 0, "lose": 0, "draw": 0}
 
 
+def test_index_page_shows_match_counts(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    for result in ["win", "win", "lose"]:
+        db.save_match_result(
+            conn,
+            MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "3" in response.text
+    assert "win: 2" in response.text
+    assert "lose: 1" in response.text
+    assert "draw: 0" in response.text
+
+
 def test_start_web_server_thread_serves_requests_and_stops_cleanly(tmp_path: Path):
     """Issue #80のPoC: 別スレッドで起動したuvicornが実際にHTTPリクエストに
     応答し、stop()でスレッドごと正常終了できることを確認する

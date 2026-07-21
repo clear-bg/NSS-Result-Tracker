@@ -35,7 +35,10 @@ from nss_tracker.config import (
     ConfigError,
     get_capture_device_name,
     get_capture_resolution,
+    get_db_path,
     get_frame_read_timeout_seconds,
+    get_web_host,
+    get_web_port,
 )
 from nss_tracker.database import db
 from nss_tracker.detection.goal import _get_name_reader
@@ -44,6 +47,8 @@ from nss_tracker.detection.rank_ocr import RANK_ROI, _get_reader
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
 from nss_tracker.state.match_state import MatchResult, MatchStateMachine
 from nss_tracker.timeutil import JST
+from nss_tracker.web.runner import start_web_server_thread
+from nss_tracker.web.server import create_app
 
 LOG_DIR = Path("logs")
 # OBS Virtual Cameraのキャプチャは30fps想定(CLAUDE.md)。--videoでの動作確認時は
@@ -288,10 +293,16 @@ def main() -> None:
     else:
         logger.info("動画ファイルを入力として使用します: %s", args.video)
     machine = _make_match_state_machine(fps)
-    conn = db.connect()
+    db_path = get_db_path()
+    conn = db.connect(db_path)
+    web_host = get_web_host()
+    web_port = get_web_port()
+    web_handle = start_web_server_thread(create_app(db_path), host=web_host, port=web_port)
+    logger.info("Webダッシュボードを起動しました: http://%s:%d/", web_host, web_port)
     try:
         run(reader, machine, conn)
     finally:
+        web_handle.stop()
         conn.close()
 
 
