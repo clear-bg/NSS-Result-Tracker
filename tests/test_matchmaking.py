@@ -4,16 +4,17 @@ import pytest
 from conftest import list_screenshot_fixtures, requires_fixtures
 from nss_tracker.detection.matchmaking import VS_HUE_RANGE, VS_SAT_RANGE, VS_VAL_MIN, is_vs_screen, read_vs_roi_hsv
 
-# マッチング完了(VS画面)を捉えているfixture。11/12/14/15は本来の目的である
-# 「マッチング(ランク有無・チーム別)」画像。70/71はS/A帯バッジのOCR確認用に
-# 集めた画像だが、たまたまVS画面そのものを写しているため合わせて真陽性として扱う
+# マッチング完了(VS画面)を捉えているfixture。
+#
+# Issue #68: 11/12/14/15(「マッチング ランク有無・チーム別」本来の目的の画像)・
+# 70/71(S/A帯バッジOCR確認用、たまたまVS画面を写していた画像)は、いずれも
+# 2026-07-21のHDR無効化後は再現しない色(旧VS_HUE_RANGE=62-77等)で撮影されて
+# いたため、is_vs_screenの真陽性テストからは外した(画像自体は元の目的の
+# fixtureとして引き続き使う)。代わりに同日のHDR無効化後ローカル録画から
+# 切り出した72/73番を使う(detection/matchmaking.pyのモジュールdocstring参照)
 VS_SCREEN_SCREENSHOTS = {
-    "11_matching_with_rank_blue.png",
-    "12_matching_without_rank_blue.png",
-    "14_matching_with_rank_red.png",
-    "15_matching_without_rank_red.png",
-    "70_rank_tier_s.png",
-    "71_rank_tier_a.png",
+    "72_matching_hdr_off_1.png",
+    "73_matching_hdr_off_2.png",
 }
 
 
