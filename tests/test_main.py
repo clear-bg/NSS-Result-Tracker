@@ -7,6 +7,7 @@ detection/の各判定ロジック自体の精度はtest_banner.py・test_rank_o
 """
 
 import sqlite3
+import sys
 from datetime import datetime
 
 import pytest
@@ -41,6 +42,41 @@ def test_make_reader_without_video_uses_capture_env_config(monkeypatch):
     assert reader._width == 1280
     assert reader._height == 720
     assert reader._input_args == ["-f", "dshow", "-video_size", "1280x720", "-i", "video=Custom Capture Device"]
+
+
+def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
+    """Issue #81: main()がWebサーバーを起動し、終了時にstop()まで呼ぶことを確認する。
+
+    検知ループ本体(run())やOCR初期化は重いため差し替え、main()の配線
+    (get_db_path/get_web_host/get_web_portで得た値でstart_web_server_threadを
+    呼び、finallyでweb_handle.stop()を呼ぶこと)だけを軽量に検証する。
+    """
+    monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn: None)
+
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    monkeypatch.setenv("WEB_PORT", "8768")
+    monkeypatch.setattr(sys, "argv", ["main.py", "--video", "dummy.mp4"])
+
+    original_start = main.start_web_server_thread
+    captured = {}
+
+    def spy_start(app, host, port):
+        handle = original_start(app, host=host, port=port)
+        captured["handle"] = handle
+        captured["host"] = host
+        captured["port"] = port
+        return handle
+
+    monkeypatch.setattr(main, "start_web_server_thread", spy_start)
+
+    main.main()
+
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 8768
+    assert not captured["handle"].thread.is_alive()
+    assert db_path.exists()
 
 
 @pytest.mark.slow
