@@ -92,7 +92,8 @@ def _assert_rank_matches_tier(rank: float | None, expected_tier: int | None, lab
 
 @pytest.mark.slow
 @requires_video_fixtures
-def test_match_state_machine_matches_expected_metadata(videos_dir):
+def test_match_state_machine_matches_expected_metadata(videos_dir, monkeypatch):
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     metadata = _load_metadata(videos_dir)
     videos = [(videos_dir / name, expected) for name, expected in metadata.items() if (videos_dir / name).is_file()]
     assert videos, f"{METADATA_FILENAME}に記載の動画がfixtures/videos/に見つからない"
@@ -156,6 +157,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -193,6 +195,7 @@ def test_goal_detection_logs_scorer_and_assist_at_info_level(monkeypatch, caplog
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(goal_confirm_frames=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -219,6 +222,7 @@ def test_goal_detection_logs_not_recorded_when_outside_allowlist(monkeypatch, ca
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(goal_confirm_frames=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -229,6 +233,112 @@ def test_goal_detection_logs_not_recorded_when_outside_allowlist(monkeypatch, ca
             frame_idx["n"] += 1
 
     assert "ゴール検知: scorer=Charlie assist=None (許可リスト外のため記録対象外)" in caplog.text
+
+
+def test_goal_detection_logs_always_recorded_in_all_mode(monkeypatch, caplog):
+    """Issue #88: GOAL_RECORD_MODE=allの場合、許可リストに関係なく常に
+    「記録対象」と表示することを確認する。
+    """
+    frame_idx = {"n": 0}
+
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Charlie", 0.95))
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+
+    machine = MatchStateMachine(goal_confirm_frames=2)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(3):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+
+    assert "ゴール検知: scorer=Charlie assist=None (記録対象)" in caplog.text
+
+
+def test_goal_detection_logs_partial_redact_in_redact_mode(monkeypatch, caplog):
+    """Issue #88: GOAL_RECORD_MODE=allowlist_redactで、得点者のみ許可リスト外の
+    場合に「一部redactして記録対象」と表示することを確認する。
+    """
+    frame_idx = {"n": 0}
+
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("たなか", 0.95))
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: ("ブルドッグ", 0.90))
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setenv("ALLOWED_PLAYERS", "ブルドッグ")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
+
+    machine = MatchStateMachine(goal_confirm_frames=2)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(3):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+
+    assert "ゴール検知: scorer=たなか assist=ブルドッグ (一部redactして記録対象)" in caplog.text
+
+
+def test_goal_detection_logs_full_record_in_redact_mode_when_both_allowed(monkeypatch, caplog):
+    """allowlist_redactでも、両者とも許可リストにいればredactせず「記録対象」と表示する。"""
+    frame_idx = {"n": 0}
+
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: ("Bob", 0.90))
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
+
+    machine = MatchStateMachine(goal_confirm_frames=2)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(3):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+
+    assert "ゴール検知: scorer=Alice assist=Bob (記録対象)" in caplog.text
+
+
+def test_goal_detection_logs_no_redact_when_assist_missing_in_redact_mode(monkeypatch, caplog):
+    """allowlist_redactで、得点者が許可リストにいてアシストがそもそも存在しない
+    (None)場合は「redactするものが無い」ため「記録対象」と表示する。
+    """
+    frame_idx = {"n": 0}
+
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
+
+    machine = MatchStateMachine(goal_confirm_frames=2)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(3):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+
+    assert "ゴール検知: scorer=Alice assist=None (記録対象)" in caplog.text
 
 
 def test_rank_read_failure_is_logged(monkeypatch, caplog):
@@ -429,6 +539,7 @@ def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(goal_confirm_frames=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)

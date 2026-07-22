@@ -59,6 +59,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     monkeypatch.setenv("WEB_HOST", "127.0.0.1")
     monkeypatch.setenv("WEB_PORT", "8768")
     monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "INFO")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     monkeypatch.setattr(sys, "argv", ["main.py", "--video", "dummy.mp4"])
 
     original_start = main.start_web_server_thread
@@ -87,6 +88,7 @@ def test_run_wires_capture_state_and_database(videos_dir, monkeypatch):
     # 得点者名は実名を含みうるため、許可リストを空にしてgoalsへの記録内容を
     # テストの関心から外す(配線確認のみが目的。名前は検証しない)
     monkeypatch.setenv("ALLOWED_PLAYERS", "")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     monkeypatch.setenv("FRAME_READ_TIMEOUT_SECONDS", "5.0")
 
     video_path = videos_dir / VIDEO_NAME

@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import datetime, timezone
 
 from nss_tracker.database.db import (
@@ -104,6 +105,7 @@ def test_fetch_all_matches_orders_by_id():
 
 def test_save_goal_for_allowed_player(monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     conn = connect(":memory:")
     match_id = save_match_result(
         conn,
@@ -138,6 +140,7 @@ def test_save_goal_for_allowed_player(monkeypatch):
 
 def test_save_goal_saves_when_scorer_disallowed_but_assist_allowed(monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     conn = connect(":memory:")
     match_id = save_match_result(
         conn,
@@ -166,6 +169,7 @@ def test_save_goal_saves_when_scorer_disallowed_but_assist_allowed(monkeypatch):
 
 def test_save_goal_skips_when_neither_scorer_nor_assist_allowed(monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     conn = connect(":memory:")
     match_id = save_match_result(
         conn,
@@ -192,6 +196,7 @@ def test_save_goal_skips_when_neither_scorer_nor_assist_allowed(monkeypatch):
 
 def test_save_goal_skips_when_scorer_disallowed_and_assist_none(monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     conn = connect(":memory:")
     match_id = save_match_result(
         conn,
@@ -218,6 +223,7 @@ def test_save_goal_skips_when_scorer_disallowed_and_assist_none(monkeypatch):
 
 def test_save_goal_keeps_assist_name_when_assist_not_allowed(monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     conn = connect(":memory:")
     match_id = save_match_result(
         conn,
@@ -245,6 +251,7 @@ def test_save_goal_keeps_assist_name_when_assist_not_allowed(monkeypatch):
 
 def test_save_goal_without_scorer_name_is_skipped(monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     conn = connect(":memory:")
     match_id = save_match_result(
         conn,
@@ -265,6 +272,7 @@ def test_save_goal_without_scorer_name_is_skipped(monkeypatch):
 
 def test_save_goal_without_scorer_name_is_skipped_even_when_assist_allowed(monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     conn = connect(":memory:")
     match_id = save_match_result(
         conn,
@@ -304,6 +312,7 @@ def test_save_match_result_created_at_is_jst():
 
 def test_save_goal_created_at_is_jst(monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     conn = connect(":memory:")
     match_id = save_match_result(
         conn,
@@ -325,6 +334,7 @@ def test_save_goal_created_at_is_jst(monkeypatch):
 
 def test_save_goal_logs_reason_without_leaking_disallowed_names(monkeypatch, caplog):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     conn = connect(":memory:")
     match_id = save_match_result(
         conn,
@@ -353,6 +363,7 @@ def test_save_goal_logs_reason_without_leaking_disallowed_names(monkeypatch, cap
 
 def test_save_goal_logs_reason_when_scorer_name_missing(monkeypatch, caplog):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     conn = connect(":memory:")
     match_id = save_match_result(
         conn,
@@ -369,6 +380,184 @@ def test_save_goal_logs_reason_when_scorer_name_missing(monkeypatch, caplog):
         save_goal(conn, match_id=match_id, scorer_name=None, assist_name=None, detected_at=datetime.now(timezone.utc))
 
     assert "読み取れなかった" in caplog.text
+
+
+def test_save_goal_all_mode_records_regardless_of_allowlist(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    goal_id = save_goal(
+        conn,
+        match_id=match_id,
+        scorer_name="Stranger",
+        assist_name="OtherStranger",
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    assert goal_id is not None
+    row = fetch_all_goals(conn)[0]
+    assert row["scorer_name"] == "Stranger"
+    assert row["assist_name"] == "OtherStranger"
+
+
+def test_save_goal_all_mode_still_skips_when_scorer_name_missing(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    goal_id = save_goal(
+        conn, match_id=match_id, scorer_name=None, assist_name="OtherStranger", detected_at=datetime.now(timezone.utc)
+    )
+
+    assert goal_id is None
+    assert fetch_all_goals(conn) == []
+
+
+def test_save_goal_redact_mode_nulls_out_disallowed_scorer(monkeypatch):
+    """Issue #88の例そのもの: 許可リストに「ブルドッグ」がいて、
+    得点者=たなか(許可リスト外)・アシスト=ブルドッグ(許可リスト内)の場合、
+    得点者名はNULLでアシスト名はそのまま記録される。
+    """
+    monkeypatch.setenv("ALLOWED_PLAYERS", "ブルドッグ")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    goal_id = save_goal(
+        conn,
+        match_id=match_id,
+        scorer_name="たなか",
+        assist_name="ブルドッグ",
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    assert goal_id is not None
+    row = fetch_all_goals(conn)[0]
+    assert row["scorer_name"] is None
+    assert row["assist_name"] == "ブルドッグ"
+
+
+def test_save_goal_redact_mode_nulls_out_disallowed_assist(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    save_goal(
+        conn,
+        match_id=match_id,
+        scorer_name="Alice",
+        assist_name="Stranger",
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    row = fetch_all_goals(conn)[0]
+    assert row["scorer_name"] == "Alice"
+    assert row["assist_name"] is None
+
+
+def test_save_goal_redact_mode_keeps_both_when_both_allowed(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    save_goal(
+        conn, match_id=match_id, scorer_name="Alice", assist_name="Bob", detected_at=datetime.now(timezone.utc)
+    )
+
+    row = fetch_all_goals(conn)[0]
+    assert row["scorer_name"] == "Alice"
+    assert row["assist_name"] == "Bob"
+
+
+def test_save_goal_redact_mode_skips_when_neither_allowed(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    goal_id = save_goal(
+        conn,
+        match_id=match_id,
+        scorer_name="Stranger",
+        assist_name="OtherStranger",
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    assert goal_id is None
+    assert fetch_all_goals(conn) == []
+
+
+def test_connect_migrates_legacy_not_null_scorer_name_schema(tmp_path):
+    """Issue #88: scorer_nameがNOT NULLだった移行前のDBファイルに対しても、
+    connect()を呼ぶだけでNOT NULL制約が外れ、既存データを保持したまま
+    NULLの得点者名を挿入できるようになることを確認する。
+    """
+    db_path = tmp_path / "legacy.db"
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.executescript(
+        """
+        CREATE TABLE matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            result TEXT NOT NULL,
+            rank_before REAL,
+            rank_after REAL,
+            league_changed TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE goals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER NOT NULL REFERENCES matches(id),
+            detected_at TEXT NOT NULL,
+            scorer_name TEXT NOT NULL,
+            assist_name TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO matches (detected_at, result, created_at, updated_at)
+            VALUES ('2026-07-01T00:00:00+09:00', 'win', '2026-07-01T00:00:00+09:00', '2026-07-01T00:00:00+09:00');
+        INSERT INTO goals (match_id, detected_at, scorer_name, assist_name, created_at, updated_at)
+            VALUES (1, '2026-07-01T00:00:00+09:00', 'ExistingScorer', 'ExistingAssist',
+                    '2026-07-01T00:00:00+09:00', '2026-07-01T00:00:00+09:00');
+        """
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    conn = connect(db_path)
+
+    columns = conn.execute("PRAGMA table_info(goals)").fetchall()
+    scorer_column = next(c for c in columns if c["name"] == "scorer_name")
+    assert scorer_column["notnull"] == 0
+
+    rows = fetch_all_goals(conn)
+    assert len(rows) == 1
+    assert rows[0]["scorer_name"] == "ExistingScorer"
+    assert rows[0]["assist_name"] == "ExistingAssist"
+
+    conn.execute(
+        "INSERT INTO goals (match_id, detected_at, scorer_name, assist_name, created_at, updated_at) "
+        "VALUES (1, '2026-07-02T00:00:00+09:00', NULL, 'RedactedTest', '2026-07-02T00:00:00+09:00', "
+        "'2026-07-02T00:00:00+09:00')"
+    )
+    conn.commit()
+    assert fetch_all_goals(conn)[1]["scorer_name"] is None
+
+
+def test_connect_is_idempotent_for_already_migrated_schema(tmp_path):
+    """新規DB(最初からNOT NULL無し)にconnect()を複数回呼んでもエラーにならないこと。"""
+    db_path = tmp_path / "fresh.db"
+    connect(db_path).close()
+    conn = connect(db_path)
+    columns = conn.execute("PRAGMA table_info(goals)").fetchall()
+    scorer_column = next(c for c in columns if c["name"] == "scorer_name")
+    assert scorer_column["notnull"] == 0
 
 
 def _make_match(conn) -> int:

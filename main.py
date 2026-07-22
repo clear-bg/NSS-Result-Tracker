@@ -36,6 +36,7 @@ from nss_tracker.config import (
     get_capture_resolution,
     get_db_path,
     get_frame_read_timeout_seconds,
+    get_goal_record_mode,
     get_log_level,
     get_web_host,
     get_web_port,
@@ -288,6 +289,7 @@ def main() -> None:
         db_path = get_db_path()
         web_host = get_web_host()
         web_port = get_web_port()
+        get_goal_record_mode()  # 値自体はdb.py/match_state.pyが都度参照するため、ここでは早期に検証するだけ
     except ConfigError as exc:
         logger.error("設定エラー: %s", exc)
         sys.exit(1)
