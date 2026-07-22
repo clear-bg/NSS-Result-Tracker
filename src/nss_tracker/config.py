@@ -10,7 +10,7 @@
 
 `ALLOWED_PLAYERS`以外の設定項目(`CAPTURE_DEVICE_NAME`・`CAPTURE_WIDTH`・
 `CAPTURE_HEIGHT`・`DB_PATH`・`FRAME_READ_TIMEOUT_SECONDS`・`NSS_TRACKER_LOG_LEVEL`
-・`WEB_HOST`・`WEB_PORT`)は、Python側にフォールバック用のデフォルト値を
+・`WEB_HOST`・`WEB_PORT`・`GOAL_RECORD_MODE`)は、Python側にフォールバック用のデフォルト値を
 一切持たない。`.env`に値が設定されていることを前提に動作し、未設定または
 不正な値の場合は起動時に`ConfigError`を送出して明示的に失敗する(2026-07-22、
 Issue #89の決め事。以前は一部の項目に「未設定でも動作に支障が無い値だから」
@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _VALID_LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR")
+_VALID_GOAL_RECORD_MODES = ("all", "allowlist", "allowlist_redact")
 
 
 class ConfigError(RuntimeError):
@@ -103,3 +104,19 @@ def get_web_host() -> str:
 def get_web_port() -> int:
     """Webダッシュボードのポート番号を取得する。未設定時はConfigErrorを送出する。"""
     return int(_require_env("WEB_PORT"))
+
+
+def get_goal_record_mode() -> str:
+    """ゴール/アシストをDBに記録する際の許可リストの扱いモードを取得する(Issue #88)。
+
+    "all"(許可リストに関係なく全員記録)/"allowlist"(どちらかが許可リストに
+    いれば両方そのまま記録)/"allowlist_redact"(どちらかが許可リストにいれば
+    記録するが、許可リスト外の名前はNULLにする)のいずれか。未設定・不正な
+    値の場合はConfigErrorを送出する(database.db.save_goal参照)。
+    """
+    value = _require_env("GOAL_RECORD_MODE")
+    if value not in _VALID_GOAL_RECORD_MODES:
+        raise ConfigError(
+            f"GOAL_RECORD_MODEの値が不正です: {value}({'/'.join(_VALID_GOAL_RECORD_MODES)}のいずれかを指定してください)"
+        )
+    return value
