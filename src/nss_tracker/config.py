@@ -3,33 +3,25 @@
 得点・アシストの記録は、`.env`(git管理外。他プレイヤーの実名を含むため)の
 `ALLOWED_PLAYERS`にカンマ区切りで書かれたプレイヤーが得点者・アシスト者の
 どちらか一方でも含まれていれば対象とする(database.db.save_goal参照)。
-テンプレートは`.env.example`(git管理対象)を参照すること。
+テンプレートは`.env.example`(git管理対象)を参照すること。`ALLOWED_PLAYERS`は
+未設定時に「空リスト(=誰のゴールも記録しない)」という安全側の状態になる
+ため、他の設定項目と異なりフォールバック値を持つ(2026-07-22、Issue #89の
+議論を経てユーザーと確認済み)。
 
-キャプチャデバイス名・解像度(`CAPTURE_DEVICE_NAME`/`CAPTURE_WIDTH`/`CAPTURE_HEIGHT`)も
-同様に`.env`から読み込む。フォールバック用のデフォルト値は持たず、未設定の場合は
-ConfigErrorを送出する(`.env.example`を必ずコピーして値を埋めてもらう運用)。
-
-`DB_PATH`・`FRAME_READ_TIMEOUT_SECONDS`・`WEB_HOST`・`WEB_PORT`は上記と異なり、
-フォールバック用のデフォルト値を持つ(ConfigErrorは送出しない)。
-
-新しく設定項目を追加する際、フォールバック値を持たせてよいかどうかは
-以下の両方を満たすかで判断する(Issue #89、2026-07時点の決め事)。
-どちらか一方でも満たさない場合はフォールバックを持たせず、ConfigErrorで
-起動時に明示的に失敗させる(`.env.example`に説明付きで初期値を用意し、
-必ずコピーして値を埋めてもらう運用にする):
-
-- デフォルト値が安全側であること(気づかず使っても実害が小さい。例:
-  `WEB_HOST`のデフォルト`127.0.0.1`はLAN/インターネットに晒さない安全側の値)
-- 純粋な技術的チューニング値であり、データの扱い方(何を記録する/しない等)の
-  ポリシー判断を含まないこと
-
-`CAPTURE_DEVICE_NAME`・`CAPTURE_WIDTH`・`CAPTURE_HEIGHT`は実機構成に依存し
-「安全な唯一の正解」が無いためConfigError、`DB_PATH`等は上記2条件を満たす
-ためフォールバックあり、という整理になっている。ゴール記録モード(Issue #88の
-`GOAL_RECORD_MODE`)のように「何を記録する/しないか」というポリシー判断を含む
-項目は、2条件目を満たさないためConfigErrorにする。
+`ALLOWED_PLAYERS`以外の設定項目(`CAPTURE_DEVICE_NAME`・`CAPTURE_WIDTH`・
+`CAPTURE_HEIGHT`・`DB_PATH`・`FRAME_READ_TIMEOUT_SECONDS`・`NSS_TRACKER_LOG_LEVEL`
+・`WEB_HOST`・`WEB_PORT`)は、Python側にフォールバック用のデフォルト値を
+一切持たない。`.env`に値が設定されていることを前提に動作し、未設定または
+不正な値の場合は起動時に`ConfigError`を送出して明示的に失敗する(2026-07-22、
+Issue #89の決め事。以前は一部の項目に「未設定でも動作に支障が無い値だから」
+という理由でフォールバック値を持たせていたが、暗黙のデフォルトに気づかない
+まま運用してしまうことを避けるため、`ALLOWED_PLAYERS`を除き全項目で統一した)。
+`.env.example`側には各項目の実際の初期値をコメントアウトせずに記載してあるため、
+`.env.example`をコピーするだけでそのまま動く。値を変更したい場合や、`.env`から
+行ごと削除してしまった場合にのみ`ConfigError`に遭遇する。
 """
 
+import logging
 import os
 from pathlib import Path
 
@@ -37,9 +29,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+_VALID_LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR")
+
 
 class ConfigError(RuntimeError):
-    """.envに必須の設定値が不足している場合に送出する。"""
+    """.envに必須の設定値が不足している、または値が不正な場合に送出する。"""
+
+
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise ConfigError(f"{name}が.envに設定されていません。.env.exampleを参考に設定してください。")
+    return value
 
 
 def _load_allowed_players() -> frozenset[str]:
@@ -58,41 +59,47 @@ def is_allowed_player(name: str) -> bool:
 
 def get_capture_device_name() -> str:
     """dshowから読み取るキャプチャデバイス名を取得する。未設定時はConfigErrorを送出する。"""
-    value = os.environ.get("CAPTURE_DEVICE_NAME")
-    if not value:
-        raise ConfigError("CAPTURE_DEVICE_NAMEが.envに設定されていません。.env.exampleを参考に設定してください。")
-    return value
+    return _require_env("CAPTURE_DEVICE_NAME")
 
 
 def get_capture_resolution() -> tuple[int, int]:
     """キャプチャ解像度(width, height)を取得する。未設定時はConfigErrorを送出する。"""
-    width_raw = os.environ.get("CAPTURE_WIDTH")
-    if not width_raw:
-        raise ConfigError("CAPTURE_WIDTHが.envに設定されていません。.env.exampleを参考に設定してください。")
-    height_raw = os.environ.get("CAPTURE_HEIGHT")
-    if not height_raw:
-        raise ConfigError("CAPTURE_HEIGHTが.envに設定されていません。.env.exampleを参考に設定してください。")
+    width_raw = _require_env("CAPTURE_WIDTH")
+    height_raw = _require_env("CAPTURE_HEIGHT")
     return int(width_raw), int(height_raw)
 
 
 def get_db_path() -> Path:
-    """DBファイルの保存先を取得する。未設定時はカレントディレクトリのnss_tracker.dbにフォールバックする。"""
-    value = os.environ.get("DB_PATH")
-    return Path(value) if value else Path("nss_tracker.db")
+    """DBファイルの保存先を取得する。未設定時はConfigErrorを送出する。"""
+    return Path(_require_env("DB_PATH"))
 
 
 def get_frame_read_timeout_seconds() -> float:
-    """フレーム取得のタイムアウト秒数を取得する。未設定時は5.0にフォールバックする。"""
-    value = os.environ.get("FRAME_READ_TIMEOUT_SECONDS")
-    return float(value) if value else 5.0
+    """フレーム取得のタイムアウト秒数を取得する。未設定時はConfigErrorを送出する。"""
+    return float(_require_env("FRAME_READ_TIMEOUT_SECONDS"))
+
+
+def get_log_level_name() -> str:
+    """ログレベル名を取得する。未設定・不正な値の場合はConfigErrorを送出する。"""
+    value = _require_env("NSS_TRACKER_LOG_LEVEL").upper()
+    if value not in _VALID_LOG_LEVEL_NAMES:
+        raise ConfigError(
+            f"NSS_TRACKER_LOG_LEVELの値が不正です: {value}"
+            f"({'/'.join(_VALID_LOG_LEVEL_NAMES)}のいずれかを指定してください)"
+        )
+    return value
+
+
+def get_log_level() -> int:
+    """loggingモジュールのログレベル定数を取得する。"""
+    return logging.getLevelName(get_log_level_name())
 
 
 def get_web_host() -> str:
-    """Webダッシュボードのバインド先ホストを取得する。未設定時は127.0.0.1にフォールバックする。"""
-    return os.environ.get("WEB_HOST", "127.0.0.1")
+    """Webダッシュボードのバインド先ホストを取得する。未設定時はConfigErrorを送出する。"""
+    return _require_env("WEB_HOST")
 
 
 def get_web_port() -> int:
-    """Webダッシュボードのポート番号を取得する。未設定時は8000にフォールバックする。"""
-    value = os.environ.get("WEB_PORT")
-    return int(value) if value else 8000
+    """Webダッシュボードのポート番号を取得する。未設定時はConfigErrorを送出する。"""
+    return int(_require_env("WEB_PORT"))

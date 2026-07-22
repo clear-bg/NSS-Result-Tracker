@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,10 @@ from nss_tracker.config import (
     get_capture_resolution,
     get_db_path,
     get_frame_read_timeout_seconds,
+    get_log_level,
+    get_log_level_name,
+    get_web_host,
+    get_web_port,
     is_allowed_player,
 )
 
@@ -65,9 +70,10 @@ def test_get_capture_resolution_uses_env_values(monkeypatch):
     assert get_capture_resolution() == (1280, 720)
 
 
-def test_get_db_path_falls_back_to_default_when_unset(monkeypatch):
+def test_get_db_path_raises_when_unset(monkeypatch):
     monkeypatch.delenv("DB_PATH", raising=False)
-    assert get_db_path() == Path("nss_tracker.db")
+    with pytest.raises(ConfigError, match="DB_PATH"):
+        get_db_path()
 
 
 def test_get_db_path_uses_env_value(monkeypatch):
@@ -75,11 +81,56 @@ def test_get_db_path_uses_env_value(monkeypatch):
     assert get_db_path() == Path("custom/dir/tracker.db")
 
 
-def test_get_frame_read_timeout_seconds_falls_back_to_default_when_unset(monkeypatch):
+def test_get_frame_read_timeout_seconds_raises_when_unset(monkeypatch):
     monkeypatch.delenv("FRAME_READ_TIMEOUT_SECONDS", raising=False)
-    assert get_frame_read_timeout_seconds() == 5.0
+    with pytest.raises(ConfigError, match="FRAME_READ_TIMEOUT_SECONDS"):
+        get_frame_read_timeout_seconds()
 
 
 def test_get_frame_read_timeout_seconds_uses_env_value(monkeypatch):
     monkeypatch.setenv("FRAME_READ_TIMEOUT_SECONDS", "10.5")
     assert get_frame_read_timeout_seconds() == 10.5
+
+
+def test_get_web_host_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("WEB_HOST", raising=False)
+    with pytest.raises(ConfigError, match="WEB_HOST"):
+        get_web_host()
+
+
+def test_get_web_host_uses_env_value(monkeypatch):
+    monkeypatch.setenv("WEB_HOST", "0.0.0.0")
+    assert get_web_host() == "0.0.0.0"
+
+
+def test_get_web_port_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("WEB_PORT", raising=False)
+    with pytest.raises(ConfigError, match="WEB_PORT"):
+        get_web_port()
+
+
+def test_get_web_port_uses_env_value(monkeypatch):
+    monkeypatch.setenv("WEB_PORT", "9000")
+    assert get_web_port() == 9000
+
+
+def test_get_log_level_name_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("NSS_TRACKER_LOG_LEVEL", raising=False)
+    with pytest.raises(ConfigError, match="NSS_TRACKER_LOG_LEVEL"):
+        get_log_level_name()
+
+
+def test_get_log_level_name_raises_for_invalid_value(monkeypatch):
+    monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "TRACE")
+    with pytest.raises(ConfigError, match="NSS_TRACKER_LOG_LEVEL"):
+        get_log_level_name()
+
+
+def test_get_log_level_name_uses_env_value(monkeypatch):
+    monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "debug")
+    assert get_log_level_name() == "DEBUG"
+
+
+def test_get_log_level_returns_logging_constant(monkeypatch):
+    monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "WARNING")
+    assert get_log_level() == logging.WARNING
