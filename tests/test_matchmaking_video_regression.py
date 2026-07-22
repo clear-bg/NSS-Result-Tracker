@@ -4,16 +4,21 @@ fixtures/videos/12_win_red_vs_screen_to_result.mp4(frame 1750, 1850)、
 fixtures/videos/13_win_red_vs_screen_without_rank.mp4(frame 1700)、
 fixtures/videos/16_matching_wait_3.mp4(frame 1400)は、実際に該当フレームの
 静止画を目視確認して「VS」画面が写っていることを確認済み(is_vs_screen自体の
-出力を転記したものではない)。
+出力を転記したものではない)。ただしIssue #68対応でVS_HUE_RANGE等を
+2026-07-21のHDR無効化後の実測値に更新したため、これら3本(旧色で撮影)は
+現在の閾値ではVS画面を検知できない側になった。真陽性の回帰テストは同日の
+HDR無効化後ローカル録画から切り出したfixtures/videos/22・
+23_vs_screen_hdr_off_*.mp4に置き換えている(detection/matchmaking.pyの
+モジュールdocstring参照)。12/13/16は「マッチング完了直後の遷移」を捉えた
+fixtureとして他用途に残し、本ファイルの回帰テストからは外した。
 
 単発フレームでは試合中の演出アイコン等がROIに重なり稀に誤検知することがある
 (video 12のframe 4397、プレイヤー頭上のミント色アイコンが1フレームだけ
 重なるケースを確認済み、最長でも7フレーム程度)。一方、本物のVS画面は
-fixtures/videos 12/13/16の実測で最短でも158フレーム(約5.3秒、30fps換算)
+fixtures/videos 22/23の実測で少なくとも600フレーム(60fps換算で10秒)以上
 連続して表示され続けるため、banner.pyの結果バナー判定と同じ基準(1.0秒)を
-デバウンス閾値として採用する。30fps環境では30フレームに相当し、最短の
-実測ケース(158フレーム)に対しても約5倍の余裕がある(detection/matchmaking.py
-のモジュールdocstring参照)。
+デバウンス閾値として採用する。30fps環境では30フレームに相当し、実測ケースに
+対して十分な余裕がある(detection/matchmaking.pyのモジュールdocstring参照)。
 """
 
 import cv2
@@ -47,11 +52,10 @@ def _confirmed_vs_screen(path, min_confirm_seconds: float = MIN_CONFIRM_SECONDS)
         cap.release()
 
 
-# VS画面を含むことを目視確認済みの動画
+# VS画面を含むことを目視確認済みの動画(Issue #68、HDR無効化後の実測値に対応)
 VS_SCREEN_VIDEOS = [
-    "12_win_red_vs_screen_to_result.mp4",
-    "13_win_red_vs_screen_without_rank.mp4",
-    "16_matching_wait_3.mp4",
+    "22_vs_screen_hdr_off_1.mp4",
+    "23_vs_screen_hdr_off_2.mp4",
 ]
 
 
@@ -67,7 +71,8 @@ def test_confirmed_vs_screen_detected_in_known_vs_clips(videos_dir, video_name):
 
 # VS画面を含まない(結果バナー付近のみ切り出した、またはマッチング待機のみの)動画。
 # いずれも試合中の演出アイコン等による単発フレームの誤検知はあり得るが、
-# デバウンス後は一度も確定しないはず
+# デバウンス後は一度も確定しないはず。24番はIssue #68対応(閾値をHDR無効化後の
+# 実測値に更新)後の通常プレイ中の誤検知チェック用に追加した
 NO_VS_SCREEN_VIDEOS = [
     "00_lose_red_2-3.mp4",
     "01_win_blue_2-1.mp4",
@@ -77,6 +82,7 @@ NO_VS_SCREEN_VIDEOS = [
     "11_lose_blue_minimal_rank_decrease.mp4",
     "14_matching_wait_1.mp4",
     "15_matching_wait_2.mp4",
+    "24_no_vs_screen_hdr_off_gameplay.mp4",
 ]
 
 

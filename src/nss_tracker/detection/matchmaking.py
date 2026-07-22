@@ -3,17 +3,44 @@
 CLAUDE.md記載の方針どおり、OCRではなく画面中央に一瞬表示される「VS」ロゴの
 色で判定する(banner.py・league_change.pyと同様の軽量な色ベース判定)。
 
-閾値は fixtures/screenshots の該当4画像(`11_matching_with_rank_blue`,
-`12_matching_without_rank_blue`, `14_matching_with_rank_red`,
-`15_matching_without_rank_red`)に加え、S/A帯バッジのOCR確認用に集めた
-`70_rank_tier_s.png` / `71_rank_tier_a.png`(いずれも偶然VS画面を捉えている)
-の計6枚を実測して決定した。6枚とも同じミント色のロゴ+白縁取りの組み合わせで
-H62.1-74.9 / S63.0-66.2 / V192.6-208.1に収まり、値のばらつきは小さい。
-
 ROIはロゴの文字部分だけを狙った小さな矩形にしている(周囲の芝生・空を含む
 広いROIだと、対戦相手の背景色の違い(晴天/曇天等)でHSVの平均が引きずられ
-判定がぶれるため)。fixtures/screenshotsの全44枚・fixtures/videosの全動画
-(のべ約3万フレーム)を実測して他の画面状態との重複が無いことを確認済み。
+判定がぶれるため)。
+
+Issue #68対応(2026-07-21、HDR無効化後の実プレイ録画): 当初の閾値
+(H62-77/S60-70/V180+、fixtures/screenshots内のVS画面6枚から決定)は実プレイで
+繰り返し検知に失敗し(2026-07-19・20・21の実測でそれぞれ0/5・0/4・0/14)、
+YouTubeアーカイブ経由の分析では「ロゴの色がアニメーションでパルスしている」
+ことが原因と推測されていた。しかし2026-07-21にOBSのローカル録画(再エンコード
+無し)を直接解析したところ、本物のVS画面(72_matching_hdr_off_1.png/
+73_matching_hdr_off_2.png、fixtures/videos/22・23_vs_screen_hdr_off_*.mp4で
+確認)は2回ともH81.0-85.5/S92.6-93.2/V235.8-237.8に収まり、8〜14秒間
+ほぼ変動せず安定していた。パルスではなく、キャプチャパイプラインの発色特性が
+旧fixture収集時と全く異なる(重複ゼロ)ことが実際の原因だった。旧6枚の
+fixtureは現在の環境では再現しない色のため、72/73番に置き換えた
+(11/12/14/15番は「マッチング ランク有無・チーム別」という元々の収集目的を
+保つため画像自体は残すが、is_vs_screenの真陽性テストからは外している。
+70/71番はS/A帯バッジOCR確認という別目的のfixtureで、たまたま旧VS画面色を
+捉えていただけのため同様に外した)。
+
+**上記の値だけで一度main.pyの実パイプラインで再現テストしたところ、
+それでもVS画面を検知できなかった。** 原因を追ったところ、fixtureは
+すべてcv2.VideoCapture/cv2.imreadで読み込んでいるのに対し、実際の検知
+ループ(capture/ffmpeg_capture.pyのFfmpegFrameReader、`--video`指定時も
+実キャプチャ時も同じ)はffmpegサブプロセスを`-pix_fmt bgr24`で介して
+フレームを読んでおり、両者のYUV→BGR変換が微妙に異なる(同一動画・同一
+フレーム位置でもS値が5前後ずれる)ことが判明した。そのためFfmpegFrameReader
+経由で同じ2回のVS画面を再計測したところ、H82.5-86.6/S98.3-98.8/V227.5-229.3
+という、cv2実測値とは重ならない別のタイトな範囲になった。cv2経由(fixture
+テスト用)とFfmpegFrameReader経由(実パイプライン用)の両方を満たすよう、
+現在の閾値は両者の実測範囲を包含する形にしている。今後この手のROI色閾値を
+実測し直す際は、cv2ではなく必ずFfmpegFrameReader経由で読んだフレームで
+検証すること(cv2の実測値だけでは実際のパイプラインを代表しない)。
+
+ROIの妥当性(他の画面状態との重複が無いこと)自体は旧fixture収集時に
+fixtures/screenshots全44枚・fixtures/videos全動画で確認済みで、今回の閾値
+変更後もfixtures/videos/24_no_vs_screen_hdr_off_gameplay.mp4(HDR無効化後の
+通常プレイ中の録画)で誤検知が無いことを確認済み。
 
 なお試合中の稀なフレームで、プレイヤー頭上のミント色アイコン(スキル発動
 などの演出)がROIにちょうど重なり単発フレームだけ誤検知することを確認した
@@ -34,10 +61,15 @@ from nss_tracker.detection_config import get_detection_value
 # (config/detection.tomlの[matchmaking]で上書き可能。以下同様)
 VS_ROI = get_detection_value("matchmaking", "VS_ROI", (880, 495, 1050, 600))
 
-# 実測(fixtures/screenshots内のVS画面6枚): H62.1-74.9 / S63.0-66.2 / V192.6-208.1
-VS_HUE_RANGE = get_detection_value("matchmaking", "VS_HUE_RANGE", (62, 77))
-VS_SAT_RANGE = get_detection_value("matchmaking", "VS_SAT_RANGE", (60, 70))
-VS_VAL_MIN = get_detection_value("matchmaking", "VS_VAL_MIN", 180)
+# 実測(Issue #68、2026-07-21のHDR無効化後ローカル録画・VS画面2回分)。
+# cv2経由: H81.0-85.5/S92.6-93.2/V235.8-237.8、FfmpegFrameReader経由:
+# H82.5-86.6/S98.3-98.8/V227.5-229.3(両者の差はモジュールdocstring参照)。
+# 実際に使われるのはFfmpegFrameReader経由の値だが、fixtureテストはcv2経由の
+# ため、両方を包含するようマージンを取っている(旧値62-77/60-70/180は
+# モジュールdocstring参照。現在の環境では再現しないため置き換えた)
+VS_HUE_RANGE = get_detection_value("matchmaking", "VS_HUE_RANGE", (78, 90))
+VS_SAT_RANGE = get_detection_value("matchmaking", "VS_SAT_RANGE", (90, 101))
+VS_VAL_MIN = get_detection_value("matchmaking", "VS_VAL_MIN", 220)
 
 
 def read_vs_roi_hsv(frame: np.ndarray, roi: tuple[int, int, int, int] = VS_ROI) -> tuple[float, float, float]:
