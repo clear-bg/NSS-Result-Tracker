@@ -118,7 +118,7 @@ from typing import Optional
 
 import numpy as np
 
-from nss_tracker.config import is_allowed_player
+from nss_tracker.config import get_goal_record_mode, is_allowed_player
 from nss_tracker.detection.banner import BannerResult, classify_banner
 from nss_tracker.detection.goal import is_goal_event, read_assist_name, read_scorer_name
 from nss_tracker.detection.league_change import is_league_change_screen
@@ -325,15 +325,26 @@ class MatchStateMachine:
             # 個人のローカル環境のみでの運用のため、許可リスト外の実名がログに
             # 残ること自体は許容する)。ここでの判定はログ表示用の見込みに過ぎず、
             # 実際にDBへ記録する/しないの判定は引き続き永続化層(database.db.
-            # save_goal)の責務のまま変更しない
-            will_record = (scorer_name is not None and is_allowed_player(scorer_name)) or (
-                assist_name is not None and is_allowed_player(assist_name)
-            )
+            # save_goal)の責務のまま変更しない。Issue #88でGOAL_RECORD_MODEの
+            # 3モード(all/allowlist/allowlist_redact)に合わせて3値表示にした
+            mode = get_goal_record_mode()
+            scorer_allowed = scorer_name is not None and is_allowed_player(scorer_name)
+            assist_allowed = assist_name is not None and is_allowed_player(assist_name)
+            if mode == "all":
+                status = "記録対象"
+            elif not scorer_allowed and not assist_allowed:
+                status = "許可リスト外のため記録対象外"
+            elif mode == "allowlist_redact" and (
+                not scorer_allowed or (assist_name is not None and not assist_allowed)
+            ):
+                status = "一部redactして記録対象"
+            else:
+                status = "記録対象"
             logger.info(
                 "ゴール検知: scorer=%s assist=%s (%s)",
                 scorer_name,
                 assist_name,
-                "記録対象" if will_record else "許可リスト外のため記録対象外",
+                status,
             )
 
             self._pending_goals.append(
