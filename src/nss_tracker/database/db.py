@@ -1,7 +1,7 @@
 """試合結果・ゴールのSQLiteへの保存。
 
-DBファイルの保存先は`.env`の`DB_PATH`で上書き可能(未設定時はカレント
-ディレクトリの`nss_tracker.db`にフォールバック。config.get_db_path参照)。
+DBファイルの保存先は`.env`の`DB_PATH`で指定する(必須、未設定時は
+`connect()`呼び出し時に`ConfigError`。config.get_db_path参照)。
 
 日時カラムは2種類ある:
 - detected_at: 試合結果/ゴールを検知した実時刻(ドメイン上の日時)。期間で
@@ -47,9 +47,6 @@ from nss_tracker.timeutil import now_jst
 
 logger = logging.getLogger("nss_tracker.database")
 
-# .envのDB_PATHで上書き可能(未設定時はnss_tracker.dbにフォールバック。config.py参照)
-DEFAULT_DB_PATH = get_db_path()
-
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS matches (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,8 +82,15 @@ CREATE TABLE IF NOT EXISTS vs_slot_ranks (
 """
 
 
-def connect(db_path: Path = DEFAULT_DB_PATH) -> sqlite3.Connection:
-    """DBに接続し、テーブルが無ければ作成して返す。"""
+def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
+    """DBに接続し、テーブルが無ければ作成して返す。
+
+    db_pathを省略した場合はconfig.get_db_path()を呼び出し時に評価する
+    (モジュールインポート時にDB_PATHを要求してしまうと、DB接続を伴わない
+    テスト・スクリプトの実行までDB_PATH未設定でConfigErrorになってしまうため)。
+    """
+    if db_path is None:
+        db_path = get_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
