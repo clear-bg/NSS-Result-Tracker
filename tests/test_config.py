@@ -9,6 +9,7 @@ from nss_tracker.config import (
     get_capture_resolution,
     get_db_path,
     get_frame_read_timeout_seconds,
+    get_goal_record_mode,
     get_log_level,
     get_log_level_name,
     get_web_host,
@@ -134,3 +135,21 @@ def test_get_log_level_name_uses_env_value(monkeypatch):
 def test_get_log_level_returns_logging_constant(monkeypatch):
     monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "WARNING")
     assert get_log_level() == logging.WARNING
+
+
+def test_get_goal_record_mode_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("GOAL_RECORD_MODE", raising=False)
+    with pytest.raises(ConfigError, match="GOAL_RECORD_MODE"):
+        get_goal_record_mode()
+
+
+def test_get_goal_record_mode_raises_for_invalid_value(monkeypatch):
+    monkeypatch.setenv("GOAL_RECORD_MODE", "everyone")
+    with pytest.raises(ConfigError, match="GOAL_RECORD_MODE"):
+        get_goal_record_mode()
+
+
+@pytest.mark.parametrize("mode", ["all", "allowlist", "allowlist_redact"])
+def test_get_goal_record_mode_uses_env_value(monkeypatch, mode):
+    monkeypatch.setenv("GOAL_RECORD_MODE", mode)
+    assert get_goal_record_mode() == mode
