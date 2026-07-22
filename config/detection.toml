@@ -54,9 +54,9 @@ DEFAULT_STABLE_FRAMES_REQUIRED = 10
 # Issue #68: 2026-07-21のHDR無効化後の実測値に更新(根拠はdetection/matchmaking.py
 # のモジュールdocstring参照)
 VS_ROI = [880, 495, 1050, 600]
-VS_HUE_RANGE = [78, 89]
-VS_SAT_RANGE = [88, 97]
-VS_VAL_MIN = 225
+VS_HUE_RANGE = [78, 90]
+VS_SAT_RANGE = [90, 101]
+VS_VAL_MIN = 220
 
 [vs_rank]
 MINE_ICON_XYWH = [[83, 830, 33, 33], [305, 752, 28, 26], [465, 686, 28, 22], [649, 629, 24, 16]]
