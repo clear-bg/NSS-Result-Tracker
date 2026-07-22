@@ -118,6 +118,7 @@ from typing import Optional
 
 import numpy as np
 
+from nss_tracker.config import is_allowed_player
 from nss_tracker.detection.banner import BannerResult, classify_banner
 from nss_tracker.detection.goal import is_goal_event, read_assist_name, read_scorer_name
 from nss_tracker.detection.league_change import is_league_change_screen
@@ -313,15 +314,32 @@ class MatchStateMachine:
         if self._goal_streak >= self._goal_confirm_frames and not self._goal_recorded_this_event:
             scorer = read_scorer_name(frame)
             assist = read_assist_name(frame)
-            # Issue #71: 許可リストの判定結果によらず、OCRの誤読診断のためDEBUGレベルに
-            # 限り実名+信頼度スコアをログに出す(CLAUDE.md「ログ方針」の例外)。
-            # 許可リストに基づく「記録する/しない」の判断は永続化層(database.db)の
-            # 責務のため、ここでは行わない
+            # Issue #71: OCRの誤読診断のため、信頼度スコア込みの実名をDEBUGレベルに
+            # 限り出す(CLAUDE.md「ログ方針」の例外)
             logger.debug("ゴール検知: scorer=%s assist=%s", scorer, assist)
+
+            scorer_name = scorer[0] if scorer is not None else None
+            assist_name = assist[0] if assist is not None else None
+            # Issue #86: 検知した瞬間に得点者・アシスト名を許可リストの判定結果に
+            # よらずINFOレベルで表示する(2026-07決め事、CLAUDE.md「ログ方針」参照。
+            # 個人のローカル環境のみでの運用のため、許可リスト外の実名がログに
+            # 残ること自体は許容する)。ここでの判定はログ表示用の見込みに過ぎず、
+            # 実際にDBへ記録する/しないの判定は引き続き永続化層(database.db.
+            # save_goal)の責務のまま変更しない
+            will_record = (scorer_name is not None and is_allowed_player(scorer_name)) or (
+                assist_name is not None and is_allowed_player(assist_name)
+            )
+            logger.info(
+                "ゴール検知: scorer=%s assist=%s (%s)",
+                scorer_name,
+                assist_name,
+                "記録対象" if will_record else "許可リスト外のため記録対象外",
+            )
+
             self._pending_goals.append(
                 GoalEvent(
-                    scorer_name=scorer[0] if scorer is not None else None,
-                    assist_name=assist[0] if assist is not None else None,
+                    scorer_name=scorer_name,
+                    assist_name=assist_name,
                     detected_at=now_jst(),
                 )
             )
