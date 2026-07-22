@@ -178,6 +178,59 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     assert result.goals[0].assist_name is None
 
 
+def test_goal_detection_logs_scorer_and_assist_at_info_level(monkeypatch, caplog):
+    """Issue #86: ゴール検知した瞬間に、許可リストの判定結果によらず得点者・
+    アシスト名と記録対象かどうかの見込みをINFOレベルで出すことを確認する。
+    実際にDBへ記録するかどうかの判定は永続化層のままで、ここではログのみ検証する。
+    """
+    frame_idx = {"n": 0}
+
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: ("Bob", 0.90))
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+
+    machine = MatchStateMachine(goal_confirm_frames=2)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(3):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+
+    assert "ゴール検知: scorer=Alice assist=Bob (記録対象)" in caplog.text
+
+
+def test_goal_detection_logs_not_recorded_when_outside_allowlist(monkeypatch, caplog):
+    """得点者・アシストとも許可リストに無い場合、INFOログには実名を出しつつ
+    「記録対象外」と分かるようにする(実際に記録しないこと自体は永続化層の責務)。
+    """
+    frame_idx = {"n": 0}
+
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Charlie", 0.95))
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+
+    machine = MatchStateMachine(goal_confirm_frames=2)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(3):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+
+    assert "ゴール検知: scorer=Charlie assist=None (許可リスト外のため記録対象外)" in caplog.text
+
+
 def test_rank_read_failure_is_logged(monkeypatch, caplog):
     """ランクバッジのOCRが常に失敗するケースで、結果バナー確定時・試合終了時
     それぞれでログが出ることを確認する(Issue #47)。バッジが表示されていない
