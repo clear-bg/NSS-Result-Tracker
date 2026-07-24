@@ -5,6 +5,7 @@ import pytest
 
 from nss_tracker.config import (
     ConfigError,
+    get_allowed_players,
     get_capture_device_name,
     get_capture_resolution,
     get_db_path,
@@ -17,6 +18,16 @@ from nss_tracker.config import (
     get_web_port,
     is_allowed_player,
 )
+
+
+def test_get_allowed_players_returns_frozenset(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    assert get_allowed_players() == frozenset({"Alice", "Bob"})
+
+
+def test_get_allowed_players_empty_when_unset(monkeypatch):
+    monkeypatch.delenv("ALLOWED_PLAYERS", raising=False)
+    assert get_allowed_players() == frozenset()
 
 
 def test_is_allowed_player_true_for_listed_name(monkeypatch):

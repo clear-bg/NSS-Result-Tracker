@@ -44,8 +44,13 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from nss_tracker.config import get_rank_graph_match_limit
-from nss_tracker.database.db import fetch_all_matches, fetch_current_session_id, fetch_recent_matches
+from nss_tracker.config import get_allowed_players, get_rank_graph_match_limit, is_allowed_player
+from nss_tracker.database.db import (
+    fetch_all_matches,
+    fetch_current_session_id,
+    fetch_goals_for_session,
+    fetch_recent_matches,
+)
 
 _WEB_DIR = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=_WEB_DIR / "templates")
@@ -307,6 +312,51 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     )
 
 
+def _aggregate_goal_stats(rows: list[sqlite3.Row]) -> list[dict]:
+    """ゴールの生データ(scorer_name/assist_name)から、許可リストプレイヤー別の
+    得点数・アシスト数・関与数(得点+アシスト)を集計する(Issue #96)。
+
+    許可リスト外の名前(GOAL_RECORD_MODE=all/allowlistで相手チームの名前等が
+    そのまま保存されている場合がある)は集計対象から除外する(ユーザーとの
+    相談で決定)。関与数の多い順(同数の場合は得点数の多い順、それも同じなら
+    名前順)に並べて返す。
+    """
+    counts: dict[str, dict[str, int]] = {}
+    for row in rows:
+        scorer_name = row["scorer_name"]
+        if scorer_name and is_allowed_player(scorer_name):
+            counts.setdefault(scorer_name, {"goals": 0, "assists": 0})
+            counts[scorer_name]["goals"] += 1
+        assist_name = row["assist_name"]
+        if assist_name and is_allowed_player(assist_name):
+            counts.setdefault(assist_name, {"goals": 0, "assists": 0})
+            counts[assist_name]["assists"] += 1
+
+    players = [
+        {"name": name, "goals": c["goals"], "assists": c["assists"], "involvement": c["goals"] + c["assists"]}
+        for name, c in counts.items()
+    ]
+    players.sort(key=lambda p: (-p["involvement"], -p["goals"], p["name"]))
+    return players
+
+
+def _fetch_goal_stats(db_path: Path) -> list[dict]:
+    """現在の配信セッションのゴール/アシスト統計を、プレイヤー別に集計して返す。
+
+    配信セッションが1件も無い場合(main.py未起動でDBのみ閲覧している場合等)は
+    空リストを返す。
+    """
+    conn = _connect(db_path)
+    try:
+        session_id = fetch_current_session_id(conn)
+        if session_id is None:
+            return []
+        rows = fetch_goals_for_session(conn, session_id)
+    finally:
+        conn.close()
+    return _aggregate_goal_stats(rows)
+
+
 def create_app(db_path: Path) -> FastAPI:
     app = FastAPI()
     app.mount("/static", StaticFiles(directory=_WEB_DIR / "static"), name="static")
@@ -348,5 +398,19 @@ def create_app(db_path: Path) -> FastAPI:
         history = _fetch_rank_history(db_path)
         svg = _render_rank_graph_svg(history)
         return _TEMPLATES.TemplateResponse(request, "overlay_rank_graph.html", {"svg": svg})
+
+    @app.get("/api/goal-stats")
+    def goal_stats() -> dict:
+        return {"players": _fetch_goal_stats(db_path)}
+
+    @app.get("/overlay/goal-stats")
+    def overlay_goal_stats(request: Request):
+        players = _fetch_goal_stats(db_path)
+        # 許可リストが1名(=配信者本人)だけの場合、プレイヤー名を表示する意味が
+        # 無い(自明なため)上、配信画面に自分の実名を出したくない場合もあるため、
+        # 名前を出さない簡略表示に切り替える(ユーザーとの相談で決定)
+        single_player_mode = len(get_allowed_players()) == 1
+        context = {"players": players, "single_player_mode": single_player_mode}
+        return _TEMPLATES.TemplateResponse(request, "overlay_goal_stats.html", context)
 
     return app
