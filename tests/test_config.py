@@ -13,6 +13,11 @@ from nss_tracker.config import (
     get_goal_record_mode,
     get_log_level,
     get_log_level_name,
+    get_obs_scene_between_matches,
+    get_obs_scene_in_match,
+    get_obs_websocket_host,
+    get_obs_websocket_password,
+    get_obs_websocket_port,
     get_rank_delta_distribution_scope,
     get_rank_graph_match_limit,
     get_web_host,
@@ -212,3 +217,58 @@ def test_get_rank_graph_match_limit_raises_for_non_positive_value(monkeypatch, v
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", value)
     with pytest.raises(ConfigError, match="RANK_GRAPH_MATCH_LIMIT"):
         get_rank_graph_match_limit()
+
+
+def test_get_obs_websocket_host_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("OBS_WEBSOCKET_HOST", raising=False)
+    with pytest.raises(ConfigError, match="OBS_WEBSOCKET_HOST"):
+        get_obs_websocket_host()
+
+
+def test_get_obs_websocket_host_uses_env_value(monkeypatch):
+    monkeypatch.setenv("OBS_WEBSOCKET_HOST", "192.168.1.10")
+    assert get_obs_websocket_host() == "192.168.1.10"
+
+
+def test_get_obs_websocket_port_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("OBS_WEBSOCKET_PORT", raising=False)
+    with pytest.raises(ConfigError, match="OBS_WEBSOCKET_PORT"):
+        get_obs_websocket_port()
+
+
+def test_get_obs_websocket_port_uses_env_value(monkeypatch):
+    monkeypatch.setenv("OBS_WEBSOCKET_PORT", "4455")
+    assert get_obs_websocket_port() == 4455
+
+
+def test_get_obs_websocket_password_returns_empty_string_when_unset(monkeypatch):
+    """OBS側で認証を無効化している場合、空欄が正しい値のためConfigErrorを送出しない。"""
+    monkeypatch.delenv("OBS_WEBSOCKET_PASSWORD", raising=False)
+    assert get_obs_websocket_password() == ""
+
+
+def test_get_obs_websocket_password_uses_env_value(monkeypatch):
+    monkeypatch.setenv("OBS_WEBSOCKET_PASSWORD", "secret")
+    assert get_obs_websocket_password() == "secret"
+
+
+def test_get_obs_scene_in_match_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("OBS_SCENE_IN_MATCH", raising=False)
+    with pytest.raises(ConfigError, match="OBS_SCENE_IN_MATCH"):
+        get_obs_scene_in_match()
+
+
+def test_get_obs_scene_in_match_uses_env_value(monkeypatch):
+    monkeypatch.setenv("OBS_SCENE_IN_MATCH", "InMatch")
+    assert get_obs_scene_in_match() == "InMatch"
+
+
+def test_get_obs_scene_between_matches_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("OBS_SCENE_BETWEEN_MATCHES", raising=False)
+    with pytest.raises(ConfigError, match="OBS_SCENE_BETWEEN_MATCHES"):
+        get_obs_scene_between_matches()
+
+
+def test_get_obs_scene_between_matches_uses_env_value(monkeypatch):
+    monkeypatch.setenv("OBS_SCENE_BETWEEN_MATCHES", "BetweenMatches")
+    assert get_obs_scene_between_matches() == "BetweenMatches"
