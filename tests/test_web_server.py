@@ -12,6 +12,7 @@ from nss_tracker.web.server import (
     _RANK_GRAPH_MARGIN_LEFT,
     _RANK_GRAPH_MARGIN_RIGHT,
     _RANK_GRAPH_VIEWBOX_WIDTH,
+    _aggregate_goal_stats,
     _rank_graph_x_axis_max,
     _rank_graph_x_tick_values,
     _rank_graph_y_bounds,
@@ -423,6 +424,142 @@ def test_overlay_rank_graph_page_links_transparent_background_stylesheet(tmp_pat
 
     css_response = client.get("/static/overlay.css")
     assert "background: transparent" in css_response.text
+
+
+def test_aggregate_goal_stats_counts_goals_assists_and_involvement(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    rows = [
+        {"scorer_name": "Alice", "assist_name": "Bob"},
+        {"scorer_name": "Alice", "assist_name": None},
+        {"scorer_name": "Bob", "assist_name": "Alice"},
+    ]
+
+    players = _aggregate_goal_stats(rows)
+
+    assert players == [
+        {"name": "Alice", "goals": 2, "assists": 1, "involvement": 3},
+        {"name": "Bob", "goals": 1, "assists": 1, "involvement": 2},
+    ]
+
+
+def test_aggregate_goal_stats_excludes_disallowed_players(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    rows = [{"scorer_name": "Alice", "assist_name": "Stranger"}]
+
+    players = _aggregate_goal_stats(rows)
+
+    assert players == [{"name": "Alice", "goals": 1, "assists": 0, "involvement": 1}]
+
+
+def test_aggregate_goal_stats_returns_empty_list_for_no_rows():
+    assert _aggregate_goal_stats([]) == []
+
+
+def test_goal_stats_endpoint_scoped_to_current_session(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+
+    old_session_id = db.create_session(conn)
+    old_match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=old_session_id,
+    )
+    db.save_goal(conn, old_match_id, "Alice", None, now_jst())
+
+    current_session_id = db.create_session(conn)
+    current_match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=current_session_id,
+    )
+    db.save_goal(conn, current_match_id, "Bob", "Alice", now_jst())
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/goal-stats")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "players": [
+            {"name": "Bob", "goals": 1, "assists": 0, "involvement": 1},
+            {"name": "Alice", "goals": 0, "assists": 1, "involvement": 1},
+        ]
+    }
+
+
+def test_goal_stats_endpoint_empty_when_no_sessions(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/goal-stats")
+
+    assert response.json() == {"players": []}
+
+
+def test_overlay_goal_stats_page_shows_readable_summary(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    db.save_goal(conn, match_id, "Alice", None, now_jst())
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/goal-stats")
+
+    assert response.status_code == 200
+    assert '<link rel="stylesheet" href="/static/overlay.css">' in response.text
+    assert "Alice: 得点 1 / アシスト 0 (関与 1)" in response.text
+
+    css_response = client.get("/static/overlay.css")
+    assert "background: transparent" in css_response.text
+
+
+def test_overlay_goal_stats_page_hides_name_when_single_allowed_player(tmp_path: Path, monkeypatch):
+    """許可リストが1名だけの場合(=配信者本人が自明)は、名前を出さず得点/アシストのみ表示する。"""
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    db.save_goal(conn, match_id, "Alice", None, now_jst())
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/goal-stats")
+
+    assert "Alice" not in response.text
+    assert "得点 1 / アシスト 0 (関与 1)" in response.text
+
+
+def test_overlay_goal_stats_page_shows_empty_message_when_no_data(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/goal-stats")
+
+    assert "データがありません" in response.text
 
 
 def test_start_web_server_thread_serves_requests_and_stops_cleanly(tmp_path: Path):
