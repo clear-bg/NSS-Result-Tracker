@@ -5,28 +5,23 @@
 どちらか一方でも含まれていれば対象とする(database.db.save_goal参照)。
 テンプレートは`.env.example`(git管理対象)を参照すること。`ALLOWED_PLAYERS`は
 未設定時に「空リスト(=誰のゴールも記録しない)」という安全側の状態になる
-ため、他の設定項目と異なりフォールバック値を持つ(2026-07-22、Issue #89の
-議論を経てユーザーと確認済み)。
+ため、他の設定項目と異なりフォールバック値を持つ。
 
 `ALLOWED_PLAYERS`以外の設定項目(`CAPTURE_DEVICE_NAME`・`CAPTURE_WIDTH`・
 `CAPTURE_HEIGHT`・`DB_PATH`・`FRAME_READ_TIMEOUT_SECONDS`・`NSS_TRACKER_LOG_LEVEL`
 ・`WEB_HOST`・`WEB_PORT`・`GOAL_RECORD_MODE`・`RANK_DELTA_DISTRIBUTION_SCOPE`)は、
-Python側にフォールバック用のデフォルト値を
-一切持たない。`.env`に値が設定されていることを前提に動作し、未設定または
-不正な値の場合は起動時に`ConfigError`を送出して明示的に失敗する(2026-07-22、
-Issue #89の決め事。以前は一部の項目に「未設定でも動作に支障が無い値だから」
-という理由でフォールバック値を持たせていたが、暗黙のデフォルトに気づかない
-まま運用してしまうことを避けるため、`ALLOWED_PLAYERS`を除き全項目で統一した)。
-`.env.example`側には各項目の実際の初期値をコメントアウトせずに記載してあるため、
-`.env.example`をコピーするだけでそのまま動く。値を変更したい場合や、`.env`から
-行ごと削除してしまった場合にのみ`ConfigError`に遭遇する。
+Python側にフォールバック用のデフォルト値を一切持たない。`.env`に値が設定されて
+いることを前提に動作し、未設定または不正な値の場合は起動時に`ConfigError`を
+送出して明示的に失敗する(暗黙のデフォルトに気づかないまま運用してしまうことを
+避けるため)。`.env.example`側には各項目の実際の初期値をコメントアウトせずに
+記載してあるため、`.env.example`をコピーするだけでそのまま動く。値を変更したい
+場合や、`.env`から行ごと削除してしまった場合にのみ`ConfigError`に遭遇する。
 
-`RANK_GRAPH_MATCH_LIMIT`(Issue #95)は、`ALLOWED_PLAYERS`に次ぐ2つ目の例外として
-空文字列を許容する。ランク推移グラフの対象を「直近何試合分にするか」を指定する値
-だが、空欄(未設定)の場合は「全期間を表示する」という安全側のデフォルト動作に
-なるため(`.env.example`側もこの空欄をデフォルト値として記載する、ユーザーとの
-相談で決定、2026-07-24)。数値を指定した場合はその値のint化を試み、数値化できない
-値・0以下の値はConfigErrorを送出する。
+`RANK_GRAPH_MATCH_LIMIT`は、`ALLOWED_PLAYERS`に次ぐ2つ目の例外として空文字列を
+許容する。ランク推移グラフの対象を「直近何試合分にするか」を指定する値だが、
+空欄(未設定)の場合は「全期間を表示する」という安全側のデフォルト動作になる
+ため(`.env.example`側もこの空欄をデフォルト値として記載する)。数値を指定した
+場合はその値のint化を試み、数値化できない値・0以下の値はConfigErrorを送出する。
 """
 
 import logging
@@ -57,9 +52,9 @@ def _require_env(name: str) -> str:
 def get_allowed_players() -> frozenset[str]:
     """許可リスト(ALLOWED_PLAYERS)を取得する。呼び出しのたびに.envから再読み込みする。
 
-    Issue #96: 許可リストが1名だけの場合、その人物=配信者本人であることが
-    自明なため、ダッシュボード上でプレイヤー名自体を表示しない簡略表示に
-    切り替える判定(呼び出し側でlen()==1を見る)にも使う。
+    許可リストが1名だけの場合、その人物=配信者本人であることが自明なため、
+    ダッシュボード上でプレイヤー名自体を表示しない簡略表示に切り替える判定
+    (呼び出し側でlen()==1を見る)にも使う。
     """
     raw = os.environ.get("ALLOWED_PLAYERS", "")
     return frozenset(name.strip() for name in raw.split(",") if name.strip())
@@ -144,7 +139,7 @@ def get_rank_graph_match_limit() -> Optional[int]:
 
 
 def get_rank_delta_distribution_scope() -> str:
-    """勝敗別ランク増減分布(箱ひげ図)の集計対象を取得する(Issue #101)。
+    """勝敗別ランク増減分布(箱ひげ図)の集計対象を取得する。
 
     "session"(現在の配信セッションのみ)/"all"(累計・全期間)のいずれか。
     未設定・不正な値の場合はConfigErrorを送出する(GOAL_RECORD_MODEと同じ扱い、
@@ -160,7 +155,7 @@ def get_rank_delta_distribution_scope() -> str:
 
 
 def get_goal_record_mode() -> str:
-    """ゴール/アシストをDBに記録する際の許可リストの扱いモードを取得する(Issue #88)。
+    """ゴール/アシストをDBに記録する際の許可リストの扱いモードを取得する。
 
     "all"(許可リストに関係なく全員記録)/"allowlist"(どちらかが許可リストに
     いれば両方そのまま記録)/"allowlist_redact"(どちらかが許可リストにいれば
