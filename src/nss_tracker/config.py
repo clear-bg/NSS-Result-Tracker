@@ -10,7 +10,8 @@
 
 `ALLOWED_PLAYERS`以外の設定項目(`CAPTURE_DEVICE_NAME`・`CAPTURE_WIDTH`・
 `CAPTURE_HEIGHT`・`DB_PATH`・`FRAME_READ_TIMEOUT_SECONDS`・`NSS_TRACKER_LOG_LEVEL`
-・`WEB_HOST`・`WEB_PORT`・`GOAL_RECORD_MODE`)は、Python側にフォールバック用のデフォルト値を
+・`WEB_HOST`・`WEB_PORT`・`GOAL_RECORD_MODE`・`RANK_DELTA_DISTRIBUTION_SCOPE`)は、
+Python側にフォールバック用のデフォルト値を
 一切持たない。`.env`に値が設定されていることを前提に動作し、未設定または
 不正な値の場合は起動時に`ConfigError`を送出して明示的に失敗する(2026-07-22、
 Issue #89の決め事。以前は一部の項目に「未設定でも動作に支障が無い値だから」
@@ -39,6 +40,7 @@ load_dotenv()
 
 _VALID_LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR")
 _VALID_GOAL_RECORD_MODES = ("all", "allowlist", "allowlist_redact")
+_VALID_RANK_DELTA_DISTRIBUTION_SCOPES = ("session", "all")
 
 
 class ConfigError(RuntimeError):
@@ -138,6 +140,22 @@ def get_rank_graph_match_limit() -> Optional[int]:
         )
     if value <= 0:
         raise ConfigError(f"RANK_GRAPH_MATCH_LIMITの値が不正です: {raw}(正の整数を指定してください)")
+    return value
+
+
+def get_rank_delta_distribution_scope() -> str:
+    """勝敗別ランク増減分布(箱ひげ図)の集計対象を取得する(Issue #101)。
+
+    "session"(現在の配信セッションのみ)/"all"(累計・全期間)のいずれか。
+    未設定・不正な値の場合はConfigErrorを送出する(GOAL_RECORD_MODEと同じ扱い、
+    空文字列は許容しない)。
+    """
+    value = _require_env("RANK_DELTA_DISTRIBUTION_SCOPE")
+    if value not in _VALID_RANK_DELTA_DISTRIBUTION_SCOPES:
+        raise ConfigError(
+            f"RANK_DELTA_DISTRIBUTION_SCOPEの値が不正です: {value}"
+            f"({'/'.join(_VALID_RANK_DELTA_DISTRIBUTION_SCOPES)}のいずれかを指定してください)"
+        )
     return value
 
 
