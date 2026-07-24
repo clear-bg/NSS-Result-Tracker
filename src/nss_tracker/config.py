@@ -52,7 +52,13 @@ def _require_env(name: str) -> str:
     return value
 
 
-def _load_allowed_players() -> frozenset[str]:
+def get_allowed_players() -> frozenset[str]:
+    """許可リスト(ALLOWED_PLAYERS)を取得する。呼び出しのたびに.envから再読み込みする。
+
+    Issue #96: 許可リストが1名だけの場合、その人物=配信者本人であることが
+    自明なため、ダッシュボード上でプレイヤー名自体を表示しない簡略表示に
+    切り替える判定(呼び出し側でlen()==1を見る)にも使う。
+    """
     raw = os.environ.get("ALLOWED_PLAYERS", "")
     return frozenset(name.strip() for name in raw.split(",") if name.strip())
 
@@ -63,7 +69,7 @@ def is_allowed_player(name: str) -> bool:
     ALLOWED_PLAYERSは呼び出しのたびに.envから再読み込みする
     (テストや運用中の設定変更を反映しやすくするため)。
     """
-    return name in _load_allowed_players()
+    return name in get_allowed_players()
 
 
 def get_capture_device_name() -> str:
