@@ -562,6 +562,74 @@ def test_overlay_goal_stats_page_shows_empty_message_when_no_data(tmp_path: Path
     assert "データがありません" in response.text
 
 
+def test_match_log_returns_recent_results_oldest_first(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    for result in ["win", "lose", "draw", "win"]:
+        db.save_match_result(
+            conn,
+            MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/match-log")
+
+    assert response.status_code == 200
+    assert response.json() == {"results": ["win", "lose", "draw", "win"]}
+
+
+def test_match_log_limited_to_fixed_recent_count(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    for i in range(15):
+        db.save_match_result(
+            conn,
+            MatchResult(result="win", rank_before=i, rank_after=i, league_changed=None, detected_at=now_jst()),
+        )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/match-log")
+
+    assert len(response.json()["results"]) == 10
+
+
+def test_overlay_match_log_page_shows_win_lose_draw_letters(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    for result in ["win", "win", "lose", "draw"]:
+        db.save_match_result(
+            conn,
+            MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/match-log")
+
+    assert response.status_code == 200
+    assert '<link rel="stylesheet" href="/static/overlay.css">' in response.text
+    assert "WWLD" in response.text
+
+    css_response = client.get("/static/overlay.css")
+    assert "background: transparent" in css_response.text
+
+
+def test_overlay_match_log_page_shows_empty_message_when_no_matches(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/match-log")
+
+    assert "データがありません" in response.text
+
+
 def test_start_web_server_thread_serves_requests_and_stops_cleanly(tmp_path: Path):
     """Issue #80のPoC: 別スレッドで起動したuvicornが実際にHTTPリクエストに
     応答し、stop()でスレッドごと正常終了できることを確認する
