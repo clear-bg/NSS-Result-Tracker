@@ -94,7 +94,7 @@ src/
     ├── detection_config.py # detection/配下のROI・色閾値をconfig/detection.tomlから読み込むローダー
     ├── state/              # 試合の状態遷移(バナー表示→ランクアニメ→確定→暗転→マッチング)の管理
     ├── database/           # SQLiteへの読み書き
-    └── web/                # 配信画面向けダッシュボード(server.py: FastAPIアプリ, runner.py: 別スレッドでのuvicorn起動)
+    └── web/                # 配信画面向けダッシュボード(server.py: FastAPIアプリ, runner.py: 別スレッドでのuvicorn起動, templates/: Jinja2テンプレート, static/: CSS等の静的ファイル)
 ```
 
 - `detection/`は当面`banner.py` / `rank_ocr.py` / `motion.py` / `league_change.py` / `goal.py` / `match_end.py`のフラット構成とする。追加OCRなど将来の機能追加が必要になった段階で、その都度サブディレクトリに整理し直してよい(先回りして細分化しない)
