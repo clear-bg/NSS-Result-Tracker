@@ -8,6 +8,7 @@ from nss_tracker.database.db import (
     fetch_all_goals,
     fetch_all_matches,
     fetch_current_session_id,
+    fetch_recent_matches,
     fetch_vs_slot_ranks,
     save_goal,
     save_match_result,
@@ -234,6 +235,43 @@ def test_fetch_all_matches_orders_by_id():
     rows = fetch_all_matches(conn)
     assert [row["id"] for row in rows] == [1, 2, 3]
     assert [row["result"] for row in rows] == ["win", "lose", "win"]
+
+
+def test_fetch_recent_matches_returns_last_n_in_ascending_order():
+    conn = connect(":memory:")
+    for i in range(5):
+        save_match_result(
+            conn,
+            MatchResult(
+                result="win",
+                rank_before=i,
+                rank_after=i + 1,
+                league_changed=None,
+                detected_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    rows = fetch_recent_matches(conn, limit=3)
+
+    assert [row["rank_before"] for row in rows] == [2, 3, 4]
+
+
+def test_fetch_recent_matches_returns_all_when_fewer_than_limit():
+    conn = connect(":memory:")
+    save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=2, league_changed=None, detected_at=datetime.now(timezone.utc)),
+    )
+
+    rows = fetch_recent_matches(conn, limit=10)
+
+    assert len(rows) == 1
+
+
+def test_fetch_recent_matches_returns_empty_list_when_no_matches():
+    conn = connect(":memory:")
+
+    assert fetch_recent_matches(conn, limit=10) == []
 
 
 def test_save_goal_for_allowed_player(monkeypatch):

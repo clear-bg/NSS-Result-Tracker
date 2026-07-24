@@ -12,6 +12,7 @@ from nss_tracker.config import (
     get_goal_record_mode,
     get_log_level,
     get_log_level_name,
+    get_rank_graph_match_limit,
     get_web_host,
     get_web_port,
     is_allowed_player,
@@ -153,3 +154,31 @@ def test_get_goal_record_mode_raises_for_invalid_value(monkeypatch):
 def test_get_goal_record_mode_uses_env_value(monkeypatch, mode):
     monkeypatch.setenv("GOAL_RECORD_MODE", mode)
     assert get_goal_record_mode() == mode
+
+
+def test_get_rank_graph_match_limit_returns_none_when_unset(monkeypatch):
+    monkeypatch.delenv("RANK_GRAPH_MATCH_LIMIT", raising=False)
+    assert get_rank_graph_match_limit() is None
+
+
+def test_get_rank_graph_match_limit_returns_none_when_blank(monkeypatch):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "  ")
+    assert get_rank_graph_match_limit() is None
+
+
+def test_get_rank_graph_match_limit_uses_env_value(monkeypatch):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "30")
+    assert get_rank_graph_match_limit() == 30
+
+
+def test_get_rank_graph_match_limit_raises_for_non_numeric_value(monkeypatch):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "abc")
+    with pytest.raises(ConfigError, match="RANK_GRAPH_MATCH_LIMIT"):
+        get_rank_graph_match_limit()
+
+
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_get_rank_graph_match_limit_raises_for_non_positive_value(monkeypatch, value):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", value)
+    with pytest.raises(ConfigError, match="RANK_GRAPH_MATCH_LIMIT"):
+        get_rank_graph_match_limit()
