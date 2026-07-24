@@ -10,10 +10,12 @@ from nss_tracker.state.match_state import MatchResult
 from nss_tracker.timeutil import now_jst
 from nss_tracker.web.runner import start_web_server_thread
 from nss_tracker.web.server import (
+    _OVERLAY_REFRESH_INTERVAL_MS,
     _RANK_GRAPH_LEFT_PADDING,
     _RANK_GRAPH_MARGIN_LEFT,
     _RANK_GRAPH_MARGIN_RIGHT,
     _RANK_GRAPH_VIEWBOX_WIDTH,
+    _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS,
     _aggregate_goal_stats,
     _compute_box_stats,
     _convert_rank_tier_to_unified_scale,
@@ -984,6 +986,74 @@ def test_overlay_rank_delta_distribution_page_shows_empty_message_when_no_data(t
     response = client.get("/overlay/rank-delta-distribution")
 
     assert "データがありません" in response.text
+
+
+def test_overlay_refresh_script_is_served_and_reads_the_page_it_is_embedded_in(tmp_path: Path):
+    """Issue #104: 共有の自動更新スクリプトが静的ファイルとして配信され、
+    自分自身のURLをfetchし直してbody差し替えする実装になっていることを確認する。
+    """
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/static/overlay-refresh.js")
+
+    assert response.status_code == 200
+    assert "window.location.href" in response.text
+    assert "document.body.innerHTML" in response.text
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/overlay/winrate",
+        "/overlay/rank-graph",
+        "/overlay/goal-stats",
+        "/overlay/match-log",
+        "/overlay/rank-delta-distribution",
+    ],
+)
+def test_overlay_pages_include_refresh_script_with_default_interval(tmp_path: Path, path: str, monkeypatch):
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get(path)
+
+    expected_tag = f'<script src="/static/overlay-refresh.js" data-interval-ms="{_OVERLAY_REFRESH_INTERVAL_MS}">'
+    assert expected_tag in response.text
+
+
+def test_overlay_vs_rank_comparison_page_uses_shorter_refresh_interval(tmp_path: Path):
+    """#100はVS画面確定後できるだけ早く反映してほしいという要望から、他より短い
+    間隔にしている(ユーザーとの相談で決定)。
+    """
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/vs-rank-comparison")
+
+    expected_tag = (
+        f'<script src="/static/overlay-refresh.js" data-interval-ms="{_VS_RANK_COMPARISON_REFRESH_INTERVAL_MS}">'
+    )
+    assert expected_tag in response.text
+    assert _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS < _OVERLAY_REFRESH_INTERVAL_MS
+
+
+def test_index_page_does_not_include_refresh_script(tmp_path: Path):
+    """値確認用の`/`ページはOBSへの配置を想定していないため、自動更新は不要。"""
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/")
+
+    assert "overlay-refresh.js" not in response.text
 
 
 def test_start_web_server_thread_serves_requests_and_stops_cleanly(tmp_path: Path):
