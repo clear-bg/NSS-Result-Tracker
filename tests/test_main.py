@@ -52,7 +52,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     呼び、finallyでweb_handle.stop()を呼ぶこと)だけを軽量に検証する。
     """
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(main, "run", lambda reader, machine, conn: None)
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id: None)
 
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
@@ -102,8 +102,9 @@ def test_run_wires_capture_state_and_database(videos_dir, monkeypatch):
         conn.row_factory = sqlite3.Row
         conn.executescript(db._SCHEMA)
         conn.commit()
+        session_id = db.create_session(conn)
 
-        main.run(reader, machine, conn)
+        main.run(reader, machine, conn, session_id)
 
         rows = db.fetch_all_matches(conn)
         assert len(rows) == 1, f"記録された試合数が{len(rows)}件(期待は1件)"
@@ -113,5 +114,6 @@ def test_run_wires_capture_state_and_database(videos_dir, monkeypatch):
         assert row["rank_after"] is not None
         assert row["created_at"] is not None
         assert row["updated_at"] is not None
+        assert row["session_id"] == session_id
     finally:
         conn.close()
