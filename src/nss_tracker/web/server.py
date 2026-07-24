@@ -357,6 +357,28 @@ def _fetch_goal_stats(db_path: Path) -> list[dict]:
     return _aggregate_goal_stats(rows)
 
 
+# Issue #99: 直近試合結果ログの対象範囲は#95(ランク推移グラフ)と同じく
+# 「配信セッションをまたいだ直近N試合」。表示件数は固定値(ユーザーとの相談で決定、
+# #95のRANK_GRAPH_MATCH_LIMITと異なり.env化はしない)
+MATCH_LOG_LIMIT = 10
+_MATCH_RESULT_LETTERS = {"win": "W", "lose": "L", "draw": "D"}
+
+
+def _fetch_match_log(db_path: Path, limit: int = MATCH_LOG_LIMIT) -> list[str]:
+    """直近limit件の試合結果('win'/'lose'/'draw')を古い順で返す。"""
+    conn = _connect(db_path)
+    try:
+        rows = fetch_recent_matches(conn, limit)
+    finally:
+        conn.close()
+    return [row["result"] for row in rows]
+
+
+def _format_match_log_letters(results: list[str]) -> str:
+    """試合結果のリストを'WWLWD'のような勝敗アイコンの並びに変換する。"""
+    return "".join(_MATCH_RESULT_LETTERS[result] for result in results)
+
+
 def create_app(db_path: Path) -> FastAPI:
     app = FastAPI()
     app.mount("/static", StaticFiles(directory=_WEB_DIR / "static"), name="static")
@@ -412,5 +434,15 @@ def create_app(db_path: Path) -> FastAPI:
         single_player_mode = len(get_allowed_players()) == 1
         context = {"players": players, "single_player_mode": single_player_mode}
         return _TEMPLATES.TemplateResponse(request, "overlay_goal_stats.html", context)
+
+    @app.get("/api/match-log")
+    def match_log() -> dict:
+        return {"results": _fetch_match_log(db_path)}
+
+    @app.get("/overlay/match-log")
+    def overlay_match_log(request: Request):
+        results = _fetch_match_log(db_path)
+        letters = _format_match_log_letters(results)
+        return _TEMPLATES.TemplateResponse(request, "overlay_match_log.html", {"letters": letters})
 
     return app

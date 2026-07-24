@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>直近試合結果</title>
+<link rel="stylesheet" href="/static/overlay.css">
+</head>
+<body>
+{% if letters %}
+<p>{{ letters }}</p>
+{% else %}
+<p>データがありません</p>
+{% endif %}
+</body>
+</html>
