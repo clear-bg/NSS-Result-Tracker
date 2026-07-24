@@ -20,8 +20,8 @@ import cv2
 
 from nss_tracker.detection.matchmaking import VS_ROI, is_vs_screen, read_vs_roi_hsv
 
-# 現行の狭い閾値(H62-77)を大きく上回って広めに取り、パルスで閾値を外れている
-# 区間そのものを見失わないようにする
+# 現行の狭い閾値(detection/matchmaking.pyのVS_HUE_RANGE等)を大きく上回って
+# 広めに取り、パルスで閾値を外れている区間そのものを見失わないようにする
 WIDE_HUE_RANGE = (40, 100)
 WIDE_SAT_RANGE = (30, 100)
 WIDE_VAL_MIN = 120
