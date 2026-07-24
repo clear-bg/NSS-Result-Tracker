@@ -159,8 +159,8 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     )
 
 
-def _record_match_result(conn: sqlite3.Connection, result: MatchResult) -> None:
-    match_id = db.save_match_result(conn, result)
+def _record_match_result(conn: sqlite3.Connection, session_id: Optional[int], result: MatchResult) -> None:
+    match_id = db.save_match_result(conn, result, session_id=session_id)
     logger.info(
         "試合結果を記録しました: id=%d result=%s rank=%s->%s league_changed=%s goals=%d",
         match_id,
@@ -206,7 +206,7 @@ def _warmup_ocr_engines() -> None:
     logger.info("OCRエンジンの初期化が完了しました")
 
 
-def run(reader: FfmpegFrameReader, machine: MatchStateMachine, conn: sqlite3.Connection) -> None:
+def run(reader: FfmpegFrameReader, machine: MatchStateMachine, conn: sqlite3.Connection, session_id: Optional[int]) -> None:
     prev_state = machine.current_state
     frame_read_timeout_seconds = get_frame_read_timeout_seconds()
     # Issue #71: Ctrl+C受信時にセッションサマリを出すための内訳カウンタ
@@ -240,7 +240,7 @@ def run(reader: FfmpegFrameReader, machine: MatchStateMachine, conn: sqlite3.Con
                 prev_state = machine.current_state
 
             if result is not None:
-                _record_match_result(conn, result)
+                _record_match_result(conn, session_id, result)
                 session_results[result.result] += 1
     except KeyboardInterrupt:
         total = sum(session_results.values())
@@ -303,12 +303,15 @@ def main() -> None:
         logger.info("動画ファイルを入力として使用します: %s", args.video)
     machine = _make_match_state_machine(fps)
     conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    logger.info("配信セッションを開始しました: session_id=%d", session_id)
     web_handle = start_web_server_thread(create_app(db_path), host=web_host, port=web_port)
     logger.info("Webダッシュボードを起動しました: http://%s:%d/", web_host, web_port)
     try:
-        run(reader, machine, conn)
+        run(reader, machine, conn, session_id)
     finally:
         web_handle.stop()
+        db.end_session(conn, session_id)
         conn.close()
 
 
