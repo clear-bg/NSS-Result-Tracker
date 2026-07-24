@@ -71,6 +71,108 @@ def test_index_page_shows_match_counts(tmp_path: Path):
     assert "draw: 0" in response.text
 
 
+def test_winrate_with_no_sessions_returns_empty_session_counts(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/winrate")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "session": {"total": 0, "win": 0, "lose": 0, "draw": 0},
+        "cumulative": {"total": 1, "win": 1, "lose": 0, "draw": 0},
+    }
+
+
+def test_winrate_splits_session_and_cumulative_counts(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    first_session_id = db.create_session(conn)
+    db.save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=first_session_id,
+    )
+    second_session_id = db.create_session(conn)
+    for result in ["win", "win"]:
+        db.save_match_result(
+            conn,
+            MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+            session_id=second_session_id,
+        )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/winrate")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "session": {"total": 2, "win": 2, "lose": 0, "draw": 0},
+        "cumulative": {"total": 3, "win": 2, "lose": 1, "draw": 0},
+    }
+
+
+def test_overlay_winrate_page_shows_readable_summary(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    for result in ["win", "win", "lose"]:
+        db.save_match_result(
+            conn,
+            MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+            session_id=session_id,
+        )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/winrate")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "配信セッション: 3試合" in response.text
+    assert "win 2 / lose 1 / draw 0" in response.text
+    assert "勝率 66.7%" in response.text
+    assert "累計: 3試合" in response.text
+
+
+def test_overlay_winrate_page_links_transparent_background_stylesheet(tmp_path: Path):
+    """OBSのブラウザソースに重ねて配置する想定のため、文字の無い部分が
+    背後の他の部品を隠さないよう背景を明示的に透過にしていることを確認する。
+    """
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    page_response = client.get("/overlay/winrate")
+    assert '<link rel="stylesheet" href="/static/overlay.css">' in page_response.text
+
+    css_response = client.get("/static/overlay.css")
+    assert css_response.status_code == 200
+    assert "background: transparent" in css_response.text
+
+
+def test_overlay_winrate_page_shows_dash_when_no_matches(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/winrate")
+
+    assert response.status_code == 200
+    assert "勝率 -" in response.text
+
+
 def test_start_web_server_thread_serves_requests_and_stops_cleanly(tmp_path: Path):
     """Issue #80のPoC: 別スレッドで起動したuvicornが実際にHTTPリクエストに
     応答し、stop()でスレッドごと正常終了できることを確認する
