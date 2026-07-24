@@ -38,6 +38,8 @@ from nss_tracker.config import (
     get_frame_read_timeout_seconds,
     get_goal_record_mode,
     get_log_level,
+    get_rank_delta_distribution_scope,
+    get_rank_graph_match_limit,
     get_web_host,
     get_web_port,
 )
@@ -290,6 +292,8 @@ def main() -> None:
         web_host = get_web_host()
         web_port = get_web_port()
         get_goal_record_mode()  # 値自体はdb.py/match_state.pyが都度参照するため、ここでは早期に検証するだけ
+        get_rank_graph_match_limit()  # 値自体はweb/server.pyが都度参照するため、ここでは早期に検証するだけ
+        get_rank_delta_distribution_scope()  # 値自体はweb/server.pyが都度参照するため、ここでは早期に検証するだけ
     except ConfigError as exc:
         logger.error("設定エラー: %s", exc)
         sys.exit(1)

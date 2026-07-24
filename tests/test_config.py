@@ -5,6 +5,7 @@ import pytest
 
 from nss_tracker.config import (
     ConfigError,
+    get_allowed_players,
     get_capture_device_name,
     get_capture_resolution,
     get_db_path,
@@ -12,10 +13,22 @@ from nss_tracker.config import (
     get_goal_record_mode,
     get_log_level,
     get_log_level_name,
+    get_rank_delta_distribution_scope,
+    get_rank_graph_match_limit,
     get_web_host,
     get_web_port,
     is_allowed_player,
 )
+
+
+def test_get_allowed_players_returns_frozenset(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    assert get_allowed_players() == frozenset({"Alice", "Bob"})
+
+
+def test_get_allowed_players_empty_when_unset(monkeypatch):
+    monkeypatch.delenv("ALLOWED_PLAYERS", raising=False)
+    assert get_allowed_players() == frozenset()
 
 
 def test_is_allowed_player_true_for_listed_name(monkeypatch):
@@ -153,3 +166,49 @@ def test_get_goal_record_mode_raises_for_invalid_value(monkeypatch):
 def test_get_goal_record_mode_uses_env_value(monkeypatch, mode):
     monkeypatch.setenv("GOAL_RECORD_MODE", mode)
     assert get_goal_record_mode() == mode
+
+
+def test_get_rank_delta_distribution_scope_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("RANK_DELTA_DISTRIBUTION_SCOPE", raising=False)
+    with pytest.raises(ConfigError, match="RANK_DELTA_DISTRIBUTION_SCOPE"):
+        get_rank_delta_distribution_scope()
+
+
+def test_get_rank_delta_distribution_scope_raises_for_invalid_value(monkeypatch):
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "everything")
+    with pytest.raises(ConfigError, match="RANK_DELTA_DISTRIBUTION_SCOPE"):
+        get_rank_delta_distribution_scope()
+
+
+@pytest.mark.parametrize("scope", ["session", "all"])
+def test_get_rank_delta_distribution_scope_uses_env_value(monkeypatch, scope):
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", scope)
+    assert get_rank_delta_distribution_scope() == scope
+
+
+def test_get_rank_graph_match_limit_returns_none_when_unset(monkeypatch):
+    monkeypatch.delenv("RANK_GRAPH_MATCH_LIMIT", raising=False)
+    assert get_rank_graph_match_limit() is None
+
+
+def test_get_rank_graph_match_limit_returns_none_when_blank(monkeypatch):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "  ")
+    assert get_rank_graph_match_limit() is None
+
+
+def test_get_rank_graph_match_limit_uses_env_value(monkeypatch):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "30")
+    assert get_rank_graph_match_limit() == 30
+
+
+def test_get_rank_graph_match_limit_raises_for_non_numeric_value(monkeypatch):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "abc")
+    with pytest.raises(ConfigError, match="RANK_GRAPH_MATCH_LIMIT"):
+        get_rank_graph_match_limit()
+
+
+@pytest.mark.parametrize("value", ["0", "-5"])
+def test_get_rank_graph_match_limit_raises_for_non_positive_value(monkeypatch, value):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", value)
+    with pytest.raises(ConfigError, match="RANK_GRAPH_MATCH_LIMIT"):
+        get_rank_graph_match_limit()

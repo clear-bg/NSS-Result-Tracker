@@ -249,6 +249,25 @@ def fetch_all_matches(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM matches ORDER BY id").fetchall()
 
 
+def fetch_recent_matches(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
+    """直近limit件の試合を、古い順(id昇順)で返す。
+
+    配信セッションをまたいで「直近N試合」を時系列グラフ・一覧表示したい
+    ウィジェット向け(Issue #95のランク推移グラフ等)。該当件数がlimit未満の
+    場合はある分だけ返す。
+    """
+    rows = conn.execute("SELECT * FROM matches ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return list(reversed(rows))
+
+
+def fetch_matches_for_session(conn: sqlite3.Connection, session_id: int) -> list[sqlite3.Row]:
+    """指定した配信セッションに属する試合を記録順(id昇順)で取得する。
+
+    Issue #101(勝敗別ランク増減分布)向け。
+    """
+    return conn.execute("SELECT * FROM matches WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()
+
+
 def save_goal(
     conn: sqlite3.Connection,
     match_id: int,
@@ -300,6 +319,21 @@ def save_goal(
 def fetch_all_goals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """保存済みのゴールを記録順(id昇順)ですべて取得する。"""
     return conn.execute("SELECT * FROM goals ORDER BY id").fetchall()
+
+
+def fetch_goals_for_session(conn: sqlite3.Connection, session_id: int) -> list[sqlite3.Row]:
+    """指定した配信セッションに属する試合のゴールを記録順(id昇順)で取得する。
+
+    Issue #96(ゴール/アシスト統計、配信セッション単位のみ)向け。matches.session_id
+    経由で絞り込む(goalsテーブル自体はsession_idを持たない)。
+    """
+    return conn.execute(
+        "SELECT goals.* FROM goals "
+        "JOIN matches ON goals.match_id = matches.id "
+        "WHERE matches.session_id = ? "
+        "ORDER BY goals.id",
+        (session_id,),
+    ).fetchall()
 
 
 def save_vs_slot_ranks(

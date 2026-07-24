@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ゴール/アシスト統計</title>
+<link rel="stylesheet" href="/static/overlay.css">
+</head>
+<body>
+{% if players %}
+{% if single_player_mode %}
+{% set player = players[0] %}
+<p>得点 {{ player.goals }} / アシスト {{ player.assists }} (関与 {{ player.involvement }})</p>
+{% else %}
+{% for player in players %}
+<p>{{ player.name }}: 得点 {{ player.goals }} / アシスト {{ player.assists }} (関与 {{ player.involvement }})</p>
+{% endfor %}
+{% endif %}
+{% else %}
+<p>データがありません</p>
+{% endif %}
+</body>
+</html>

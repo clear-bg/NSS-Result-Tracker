@@ -8,6 +8,9 @@ from nss_tracker.database.db import (
     fetch_all_goals,
     fetch_all_matches,
     fetch_current_session_id,
+    fetch_goals_for_session,
+    fetch_matches_for_session,
+    fetch_recent_matches,
     fetch_vs_slot_ranks,
     save_goal,
     save_match_result,
@@ -234,6 +237,105 @@ def test_fetch_all_matches_orders_by_id():
     rows = fetch_all_matches(conn)
     assert [row["id"] for row in rows] == [1, 2, 3]
     assert [row["result"] for row in rows] == ["win", "lose", "win"]
+
+
+def test_fetch_recent_matches_returns_last_n_in_ascending_order():
+    conn = connect(":memory:")
+    for i in range(5):
+        save_match_result(
+            conn,
+            MatchResult(
+                result="win",
+                rank_before=i,
+                rank_after=i + 1,
+                league_changed=None,
+                detected_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    rows = fetch_recent_matches(conn, limit=3)
+
+    assert [row["rank_before"] for row in rows] == [2, 3, 4]
+
+
+def test_fetch_recent_matches_returns_all_when_fewer_than_limit():
+    conn = connect(":memory:")
+    save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=2, league_changed=None, detected_at=datetime.now(timezone.utc)),
+    )
+
+    rows = fetch_recent_matches(conn, limit=10)
+
+    assert len(rows) == 1
+
+
+def test_fetch_recent_matches_returns_empty_list_when_no_matches():
+    conn = connect(":memory:")
+
+    assert fetch_recent_matches(conn, limit=10) == []
+
+
+def test_fetch_goals_for_session_only_returns_goals_from_that_session(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    conn = connect(":memory:")
+
+    first_session_id = create_session(conn)
+    first_match_id = save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=datetime.now(timezone.utc)),
+        session_id=first_session_id,
+    )
+    save_goal(conn, first_match_id, "Alice", None, datetime.now(timezone.utc))
+
+    second_session_id = create_session(conn)
+    second_match_id = save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=datetime.now(timezone.utc)),
+        session_id=second_session_id,
+    )
+    save_goal(conn, second_match_id, "Bob", None, datetime.now(timezone.utc))
+
+    rows = fetch_goals_for_session(conn, second_session_id)
+
+    assert len(rows) == 1
+    assert rows[0]["scorer_name"] == "Bob"
+
+
+def test_fetch_goals_for_session_returns_empty_list_when_no_goals(monkeypatch):
+    conn = connect(":memory:")
+    session_id = create_session(conn)
+
+    assert fetch_goals_for_session(conn, session_id) == []
+
+
+def test_fetch_matches_for_session_only_returns_matches_from_that_session():
+    conn = connect(":memory:")
+    first_session_id = create_session(conn)
+    save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=2, league_changed=None, detected_at=datetime.now(timezone.utc)),
+        session_id=first_session_id,
+    )
+    second_session_id = create_session(conn)
+    save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=5, rank_after=4, league_changed=None, detected_at=datetime.now(timezone.utc)),
+        session_id=second_session_id,
+    )
+
+    rows = fetch_matches_for_session(conn, second_session_id)
+
+    assert len(rows) == 1
+    assert rows[0]["result"] == "lose"
+
+
+def test_fetch_matches_for_session_returns_empty_list_when_no_matches():
+    conn = connect(":memory:")
+    session_id = create_session(conn)
+
+    assert fetch_matches_for_session(conn, session_id) == []
 
 
 def test_save_goal_for_allowed_player(monkeypatch):

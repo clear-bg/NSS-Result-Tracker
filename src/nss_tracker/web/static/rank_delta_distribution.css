@@ -1,0 +1,60 @@
+/* Issue #101: 勝敗別ランク増減分布(横向き箱ひげ図2段)専用のスタイル。
+   overlay.cssの透過背景・文字色は共通で使う。勝ち(win)は緑系、負け(lose)は
+   赤系で色分けし、どちらが増減幅が大きいか一目で分かるようにする。 */
+.rank-delta-box.rank-delta-win {
+    fill: rgba(76, 175, 80, 0.25);
+    stroke: #4caf50;
+    stroke-width: 2;
+}
+
+.rank-delta-box.rank-delta-lose {
+    fill: rgba(255, 77, 77, 0.25);
+    stroke: #ff4d4d;
+    stroke-width: 2;
+}
+
+.rank-delta-whisker.rank-delta-win,
+.rank-delta-cap.rank-delta-win {
+    stroke: #4caf50;
+    stroke-width: 2;
+}
+
+.rank-delta-whisker.rank-delta-lose,
+.rank-delta-cap.rank-delta-lose {
+    stroke: #ff4d4d;
+    stroke-width: 2;
+}
+
+.rank-delta-median {
+    stroke: #fff;
+    stroke-width: 2;
+}
+
+.rank-delta-mean {
+    fill: gold;
+}
+
+.rank-delta-gridline {
+    stroke: #fff;
+    stroke-width: 1;
+    opacity: 0.15;
+}
+
+.rank-delta-tick {
+    stroke: #fff;
+    stroke-width: 1;
+    opacity: 0.8;
+}
+
+.rank-delta-tick-label,
+.rank-delta-row-label {
+    fill: #fff;
+    font-family: sans-serif;
+    font-size: 12px;
+}
+
+.rank-delta-empty {
+    fill: #fff;
+    font-family: sans-serif;
+    font-size: 16px;
+}
