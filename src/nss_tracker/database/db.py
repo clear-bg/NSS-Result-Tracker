@@ -260,6 +260,14 @@ def fetch_recent_matches(conn: sqlite3.Connection, limit: int) -> list[sqlite3.R
     return list(reversed(rows))
 
 
+def fetch_matches_for_session(conn: sqlite3.Connection, session_id: int) -> list[sqlite3.Row]:
+    """指定した配信セッションに属する試合を記録順(id昇順)で取得する。
+
+    Issue #101(勝敗別ランク増減分布)向け。
+    """
+    return conn.execute("SELECT * FROM matches WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()
+
+
 def save_goal(
     conn: sqlite3.Connection,
     match_id: int,

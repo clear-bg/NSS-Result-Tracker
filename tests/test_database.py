@@ -9,6 +9,7 @@ from nss_tracker.database.db import (
     fetch_all_matches,
     fetch_current_session_id,
     fetch_goals_for_session,
+    fetch_matches_for_session,
     fetch_recent_matches,
     fetch_vs_slot_ranks,
     save_goal,
@@ -307,6 +308,34 @@ def test_fetch_goals_for_session_returns_empty_list_when_no_goals(monkeypatch):
     session_id = create_session(conn)
 
     assert fetch_goals_for_session(conn, session_id) == []
+
+
+def test_fetch_matches_for_session_only_returns_matches_from_that_session():
+    conn = connect(":memory:")
+    first_session_id = create_session(conn)
+    save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=2, league_changed=None, detected_at=datetime.now(timezone.utc)),
+        session_id=first_session_id,
+    )
+    second_session_id = create_session(conn)
+    save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=5, rank_after=4, league_changed=None, detected_at=datetime.now(timezone.utc)),
+        session_id=second_session_id,
+    )
+
+    rows = fetch_matches_for_session(conn, second_session_id)
+
+    assert len(rows) == 1
+    assert rows[0]["result"] == "lose"
+
+
+def test_fetch_matches_for_session_returns_empty_list_when_no_matches():
+    conn = connect(":memory:")
+    session_id = create_session(conn)
+
+    assert fetch_matches_for_session(conn, session_id) == []
 
 
 def test_save_goal_for_allowed_player(monkeypatch):

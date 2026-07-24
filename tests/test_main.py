@@ -60,6 +60,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     monkeypatch.setenv("WEB_PORT", "8768")
     monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "INFO")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
     monkeypatch.setattr(sys, "argv", ["main.py", "--video", "dummy.mp4"])
 
     original_start = main.start_web_server_thread

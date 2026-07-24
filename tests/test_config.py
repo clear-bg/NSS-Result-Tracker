@@ -13,6 +13,7 @@ from nss_tracker.config import (
     get_goal_record_mode,
     get_log_level,
     get_log_level_name,
+    get_rank_delta_distribution_scope,
     get_rank_graph_match_limit,
     get_web_host,
     get_web_port,
@@ -165,6 +166,24 @@ def test_get_goal_record_mode_raises_for_invalid_value(monkeypatch):
 def test_get_goal_record_mode_uses_env_value(monkeypatch, mode):
     monkeypatch.setenv("GOAL_RECORD_MODE", mode)
     assert get_goal_record_mode() == mode
+
+
+def test_get_rank_delta_distribution_scope_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("RANK_DELTA_DISTRIBUTION_SCOPE", raising=False)
+    with pytest.raises(ConfigError, match="RANK_DELTA_DISTRIBUTION_SCOPE"):
+        get_rank_delta_distribution_scope()
+
+
+def test_get_rank_delta_distribution_scope_raises_for_invalid_value(monkeypatch):
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "everything")
+    with pytest.raises(ConfigError, match="RANK_DELTA_DISTRIBUTION_SCOPE"):
+        get_rank_delta_distribution_scope()
+
+
+@pytest.mark.parametrize("scope", ["session", "all"])
+def test_get_rank_delta_distribution_scope_uses_env_value(monkeypatch, scope):
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", scope)
+    assert get_rank_delta_distribution_scope() == scope
 
 
 def test_get_rank_graph_match_limit_returns_none_when_unset(monkeypatch):
