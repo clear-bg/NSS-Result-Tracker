@@ -159,6 +159,66 @@ def test_connect_matches_migration_is_idempotent_for_already_migrated_schema(tmp
     assert session_id_column["notnull"] == 0
 
 
+def test_connect_migrates_legacy_vs_slot_ranks_without_rank_tier_label(tmp_path):
+    """Issue #119: rank_tier_label列が無い移行前のDBファイルに対しても、connect()を
+    呼ぶだけで列が追加され、save_vs_slot_ranksが正常に動作するようになることを確認する。
+    """
+    db_path = tmp_path / "legacy.db"
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.executescript(
+        """
+        CREATE TABLE matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            result TEXT NOT NULL,
+            rank_before REAL,
+            rank_after REAL,
+            league_changed TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE vs_slot_ranks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER NOT NULL REFERENCES matches(id),
+            side TEXT NOT NULL,
+            slot_index INTEGER NOT NULL,
+            rank_tier INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    conn = connect(db_path)
+
+    columns = conn.execute("PRAGMA table_info(vs_slot_ranks)").fetchall()
+    rank_tier_label_column = next(c for c in columns if c["name"] == "rank_tier_label")
+    assert rank_tier_label_column["notnull"] == 0
+
+    match_id = _make_match(conn)
+    save_vs_slot_ranks(
+        conn,
+        match_id=match_id,
+        mine_ranks=[SlotRank("∞", 38), SlotRank(None, None), SlotRank(None, None), SlotRank(None, None)],
+        opponent_ranks=[SlotRank(None, None)] * 4,
+    )
+
+    rows = fetch_vs_slot_ranks(conn, match_id)
+    assert rows[0]["rank_tier_label"] == "∞"
+
+
+def test_connect_vs_slot_ranks_migration_is_idempotent_for_already_migrated_schema(tmp_path):
+    """新規DB(最初からrank_tier_label列あり)にconnect()を複数回呼んでもエラーにならないこと。"""
+    db_path = tmp_path / "fresh.db"
+    connect(db_path).close()
+    conn = connect(db_path)
+    columns = conn.execute("PRAGMA table_info(vs_slot_ranks)").fetchall()
+    rank_tier_label_column = next(c for c in columns if c["name"] == "rank_tier_label")
+    assert rank_tier_label_column["notnull"] == 0
+
+
 def test_save_and_fetch_match_result():
     conn = connect(":memory:")
     match = MatchResult(
