@@ -1,9 +1,11 @@
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from nss_tracker.database import db
+from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchResult
 from nss_tracker.timeutil import now_jst
 from nss_tracker.web.runner import start_web_server_thread
@@ -13,10 +15,12 @@ from nss_tracker.web.server import (
     _RANK_GRAPH_MARGIN_RIGHT,
     _RANK_GRAPH_VIEWBOX_WIDTH,
     _aggregate_goal_stats,
+    _convert_rank_tier_to_unified_scale,
     _rank_graph_x_axis_max,
     _rank_graph_x_tick_values,
     _rank_graph_y_bounds,
     _render_rank_graph_svg,
+    _summarize_vs_slot_ranks,
     create_app,
 )
 
@@ -626,6 +630,147 @@ def test_overlay_match_log_page_shows_empty_message_when_no_matches(tmp_path: Pa
     client = TestClient(create_app(db_path))
 
     response = client.get("/overlay/match-log")
+
+    assert "データがありません" in response.text
+
+
+@pytest.mark.parametrize(
+    "tier_label, tier_value, expected",
+    [
+        ("∞", 42, 42),
+        ("∞", 0, 0),
+        ("S", 9, -1),
+        ("S", 0, -10),
+        ("A", 29, -11),
+        ("A", 0, -40),
+        (None, None, None),
+        ("∞", None, None),
+        ("B", 5, None),
+    ],
+)
+def test_convert_rank_tier_to_unified_scale(tier_label, tier_value, expected):
+    assert _convert_rank_tier_to_unified_scale(tier_label, tier_value) == expected
+
+
+def test_convert_rank_tier_unified_scale_preserves_promotion_order():
+    # A29(-11) < S0(-10) < S9(-1) < 無限0(0) の順序が保たれること
+    a29 = _convert_rank_tier_to_unified_scale("A", 29)
+    s0 = _convert_rank_tier_to_unified_scale("S", 0)
+    s9 = _convert_rank_tier_to_unified_scale("S", 9)
+    mu0 = _convert_rank_tier_to_unified_scale("∞", 0)
+
+    assert a29 < s0 < s9 < mu0
+
+
+def test_summarize_vs_slot_ranks_sums_known_members_and_counts_unknown():
+    rows = [
+        {"rank_tier_label": "∞", "rank_tier": 40},
+        {"rank_tier_label": "S", "rank_tier": 9},
+        {"rank_tier_label": None, "rank_tier": None},
+        {"rank_tier_label": None, "rank_tier": None},
+    ]
+
+    summary = _summarize_vs_slot_ranks(rows)
+
+    assert summary == {"total": 39, "known_count": 2, "unknown_count": 2}
+
+
+def test_summarize_vs_slot_ranks_total_none_when_all_unknown():
+    rows = [{"rank_tier_label": None, "rank_tier": None}] * 4
+
+    summary = _summarize_vs_slot_ranks(rows)
+
+    assert summary == {"total": None, "known_count": 0, "unknown_count": 4}
+
+
+def test_vs_rank_comparison_endpoint_uses_latest_match(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+    )
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank("∞", 40), SlotRank("S", 9), SlotRank(None, None), SlotRank(None, None)],
+        opponent_ranks=[SlotRank("A", 29), SlotRank("A", 0), SlotRank(None, None), SlotRank(None, None)],
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/vs-rank-comparison")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "mine": {"total": 39, "known_count": 2, "unknown_count": 2},
+        "opponent": {"total": -51, "known_count": 2, "unknown_count": 2},
+    }
+
+
+def test_vs_rank_comparison_endpoint_none_when_no_matches(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/vs-rank-comparison")
+
+    assert response.json() == {"mine": None, "opponent": None}
+
+
+def test_vs_rank_comparison_endpoint_none_when_latest_match_has_no_vs_data(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/vs-rank-comparison")
+
+    assert response.json() == {"mine": None, "opponent": None}
+
+
+def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+    )
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank("∞", 40)] * 4,
+        opponent_ranks=[SlotRank("∞", 10)] * 4,
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/vs-rank-comparison")
+
+    assert response.status_code == 200
+    assert '<link rel="stylesheet" href="/static/overlay.css">' in response.text
+    assert '<link rel="stylesheet" href="/static/vs_rank_comparison.css">' in response.text
+    assert '<span class="vs-rank-mine">160</span>' in response.text
+    assert '<span class="vs-rank-opponent">40</span>' in response.text
+    assert "合計ランク：" in response.text
+    assert "160</span> VS <span" in response.text
+
+
+def test_overlay_vs_rank_comparison_page_shows_empty_message_when_no_data(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/vs-rank-comparison")
 
     assert "データがありません" in response.text
 
