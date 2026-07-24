@@ -44,11 +44,17 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from nss_tracker.config import get_allowed_players, get_rank_graph_match_limit, is_allowed_player
+from nss_tracker.config import (
+    get_allowed_players,
+    get_rank_delta_distribution_scope,
+    get_rank_graph_match_limit,
+    is_allowed_player,
+)
 from nss_tracker.database.db import (
     fetch_all_matches,
     fetch_current_session_id,
     fetch_goals_for_session,
+    fetch_matches_for_session,
     fetch_recent_matches,
     fetch_vs_slot_ranks,
 )
@@ -457,6 +463,211 @@ def _format_match_log_letters(results: list[str]) -> str:
     return "".join(_MATCH_RESULT_LETTERS[result] for result in results)
 
 
+def _fetch_rank_delta_distribution(db_path: Path) -> dict:
+    """勝ち試合のランク増加量・負け試合のランク減少量を集計する。
+
+    集計対象は.envのRANK_DELTA_DISTRIBUTION_SCOPEで切り替える(Issue #101):
+    "session"なら現在の配信セッションのみ、"all"なら累計(全期間)。
+    Issue #101: 「勝ったのにあまり増えていない」「負けた時は勝った時より明らかに
+    多く減っている」という非対称性を絶対値ベースで直接比較できるようにするため、
+    負け試合の変化量は絶対値にして返す(ユーザーとの相談で決定。符号を揃えず
+    そのまま返すと、勝ちが正・負けが負の値になり単純な大小比較がしづらいため)。
+    draw(引き分け)、rank_before/rank_afterのいずれかがNULLの試合は対象外。
+    "session"指定時に配信セッションが1件も無い場合は両方とも空リストを返す。
+    """
+    scope = get_rank_delta_distribution_scope()
+    conn = _connect(db_path)
+    try:
+        if scope == "all":
+            rows = fetch_all_matches(conn)
+        else:
+            session_id = fetch_current_session_id(conn)
+            if session_id is None:
+                return {"win": [], "lose": []}
+            rows = fetch_matches_for_session(conn, session_id)
+    finally:
+        conn.close()
+
+    win_deltas: list[float] = []
+    lose_deltas: list[float] = []
+    for row in rows:
+        if row["rank_before"] is None or row["rank_after"] is None:
+            continue
+        delta = row["rank_after"] - row["rank_before"]
+        if row["result"] == "win":
+            win_deltas.append(delta)
+        elif row["result"] == "lose":
+            lose_deltas.append(abs(delta))
+    return {"win": win_deltas, "lose": lose_deltas}
+
+
+def _percentile(sorted_values: list[float], pct: float) -> float:
+    """線形補間によるパーセンタイル値を返す(numpyのデフォルト'linear'法相当)。
+
+    sorted_valuesは昇順ソート済み・1件以上であること。
+    """
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = (len(sorted_values) - 1) * (pct / 100)
+    lower_index, upper_index = math.floor(rank), math.ceil(rank)
+    if lower_index == upper_index:
+        return sorted_values[int(rank)]
+    fraction = rank - lower_index
+    return sorted_values[lower_index] + (sorted_values[upper_index] - sorted_values[lower_index]) * fraction
+
+
+def _compute_box_stats(values: list[float]) -> Optional[dict]:
+    """箱ひげ図に必要な統計値(最小・第1四分位・中央値・第3四分位・最大・平均)を返す。
+
+    値が1件も無い場合はNoneを返す。
+    """
+    if not values:
+        return None
+    sorted_values = sorted(values)
+    return {
+        "min": sorted_values[0],
+        "q1": _percentile(sorted_values, 25),
+        "median": _percentile(sorted_values, 50),
+        "q3": _percentile(sorted_values, 75),
+        "max": sorted_values[-1],
+        "mean": sum(values) / len(values),
+    }
+
+
+# 勝敗別ランク増減分布グラフのSVG座標系。数直線(横軸)を下側に描き、その上に
+# 「勝ち」「負け」2段の横向き箱ひげ図を積む(縦に2段並べる)構成にする
+# (ユーザーとの相談で決定)。原点は常に0で、正の方向(右)にのみ伸ばす
+# (負け側もabsで正の値にしてあるため、軸は0〜最大値のみで足りる)
+_BOX_PLOT_VIEWBOX_WIDTH = 640
+_BOX_PLOT_VIEWBOX_HEIGHT = 160
+_BOX_PLOT_MARGIN_LEFT = 60
+_BOX_PLOT_MARGIN_RIGHT = 30
+_BOX_PLOT_MARGIN_TOP = 15
+_BOX_PLOT_MARGIN_BOTTOM = 30
+_BOX_PLOT_ROW_HEIGHT_RATIO = 0.5  # 各段の高さのうち箱ひげ図本体が占める割合
+# 横軸(数直線)の目盛りは、この値の倍数(0.1, 0.2, 0.3, ...)の位置に固定間隔で置く
+# (#99の横軸と同じ考え方。ユーザーとの相談で決定)
+_BOX_PLOT_X_TICK_STEP = 0.1
+_BOX_PLOT_ROWS = (("win", "増加"), ("lose", "減少"))
+
+
+def _rank_delta_axis_max(stats_by_category: dict) -> float:
+    """横軸(数直線)の右端の値を返す。
+
+    実データの最大値を必ず上回る、_BOX_PLOT_X_TICK_STEPの倍数にする(一番右の
+    値が軸の端に接しないようにするため、#95のランク推移グラフの軸拡張と同じ
+    考え方)。データが1件も無い場合は_BOX_PLOT_X_TICK_STEPを返す(空のグラフ
+    でも軸自体は描画できるようにする)。
+    """
+    max_values = [stats["max"] for stats in stats_by_category.values() if stats is not None]
+    if not max_values:
+        return _BOX_PLOT_X_TICK_STEP
+    # 浮動小数点誤差を避けるため、目盛り単位の整数(何個分の0.1か)で計算してから戻す
+    raw_max = max(max_values)
+    steps = math.floor(raw_max / _BOX_PLOT_X_TICK_STEP + 1e-9)
+    return round((steps + 1) * _BOX_PLOT_X_TICK_STEP, 10)
+
+
+def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[float]) -> str:
+    """勝ち試合の増加量・負け試合の減少量(絶対値)を、横向きの箱ひげ図2段でSVG描画する。
+
+    JS・外部チャートライブラリは使わずサーバー側でSVGを組み立てる(#95と同じ方針)。
+    """
+    width, height = _BOX_PLOT_VIEWBOX_WIDTH, _BOX_PLOT_VIEWBOX_HEIGHT
+    svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+
+    stats_by_category = {"win": _compute_box_stats(win_values), "lose": _compute_box_stats(lose_values)}
+    if stats_by_category["win"] is None and stats_by_category["lose"] is None:
+        return (
+            f"{svg_open}"
+            f'<text x="{width / 2}" y="{height / 2}" text-anchor="middle" class="rank-delta-empty">'
+            "データがありません</text></svg>"
+        )
+
+    plot_left, plot_right = _BOX_PLOT_MARGIN_LEFT, width - _BOX_PLOT_MARGIN_RIGHT
+    plot_top, plot_bottom = _BOX_PLOT_MARGIN_TOP, height - _BOX_PLOT_MARGIN_BOTTOM
+    axis_max = _rank_delta_axis_max(stats_by_category)
+
+    def x_at(value: float) -> float:
+        return plot_left + (plot_right - plot_left) * value / axis_max
+
+    # 横軸目盛り: 縦向きの薄いグリッド線+下側に短い目盛り線+数値ラベル。
+    # axis_maxは_BOX_PLOT_X_TICK_STEPの倍数になるよう構成済みなので、0から
+    # axis_maxまで単純に刻んでいけば必ず右端がちょうど目盛りに乗る
+    axis_svg = []
+    tick_count = round(axis_max / _BOX_PLOT_X_TICK_STEP) + 1
+    for i in range(tick_count):
+        tick_value = round(i * _BOX_PLOT_X_TICK_STEP, 10)
+        x = x_at(tick_value)
+        axis_svg.append(
+            f'<line x1="{x:.1f}" y1="{plot_top}" x2="{x:.1f}" y2="{plot_bottom}" class="rank-delta-gridline" />'
+        )
+        axis_svg.append(
+            f'<line x1="{x:.1f}" y1="{plot_bottom}" x2="{x:.1f}" y2="{plot_bottom + 5}" class="rank-delta-tick" />'
+        )
+        axis_svg.append(
+            f'<text x="{x:.1f}" y="{plot_bottom + 18}" text-anchor="middle" class="rank-delta-tick-label">'
+            f"{tick_value:.1f}</text>"
+        )
+
+    row_height = (plot_bottom - plot_top) / len(_BOX_PLOT_ROWS)
+    box_height = row_height * _BOX_PLOT_ROW_HEIGHT_RATIO
+
+    rows_svg = []
+    for index, (category, category_label) in enumerate(_BOX_PLOT_ROWS):
+        row_center_y = plot_top + row_height * (index + 0.5)
+        rows_svg.append(
+            f'<text x="{plot_left - 8}" y="{row_center_y:.1f}" text-anchor="end" dominant-baseline="middle" '
+            f'class="rank-delta-row-label">{category_label}</text>'
+        )
+        stats = stats_by_category[category]
+        if stats is None:
+            continue
+        box_top, box_bottom = row_center_y - box_height / 2, row_center_y + box_height / 2
+        min_x, q1_x, median_x, q3_x, max_x, mean_x = (
+            x_at(stats["min"]),
+            x_at(stats["q1"]),
+            x_at(stats["median"]),
+            x_at(stats["q3"]),
+            x_at(stats["max"]),
+            x_at(stats["mean"]),
+        )
+        css_class = f"rank-delta-{category}"
+        # ひげ(最小〜第1四分位、第3四分位〜最大)+ 両端のキャップ
+        rows_svg.append(
+            f'<line x1="{min_x:.1f}" y1="{row_center_y:.1f}" x2="{q1_x:.1f}" y2="{row_center_y:.1f}" '
+            f'class="rank-delta-whisker {css_class}" />'
+        )
+        rows_svg.append(
+            f'<line x1="{q3_x:.1f}" y1="{row_center_y:.1f}" x2="{max_x:.1f}" y2="{row_center_y:.1f}" '
+            f'class="rank-delta-whisker {css_class}" />'
+        )
+        rows_svg.append(
+            f'<line x1="{min_x:.1f}" y1="{box_top:.1f}" x2="{min_x:.1f}" y2="{box_bottom:.1f}" '
+            f'class="rank-delta-cap {css_class}" />'
+        )
+        rows_svg.append(
+            f'<line x1="{max_x:.1f}" y1="{box_top:.1f}" x2="{max_x:.1f}" y2="{box_bottom:.1f}" '
+            f'class="rank-delta-cap {css_class}" />'
+        )
+        # 箱(第1四分位〜第3四分位)
+        rows_svg.append(
+            f'<rect x="{min(q1_x, q3_x):.1f}" y="{box_top:.1f}" width="{abs(q3_x - q1_x):.1f}" '
+            f'height="{box_height:.1f}" class="rank-delta-box {css_class}" />'
+        )
+        # 中央値(箱の中の縦線)
+        rows_svg.append(
+            f'<line x1="{median_x:.1f}" y1="{box_top:.1f}" x2="{median_x:.1f}" y2="{box_bottom:.1f}" '
+            'class="rank-delta-median" />'
+        )
+        # 平均(丸マーカー)
+        rows_svg.append(
+            f'<circle cx="{mean_x:.1f}" cy="{row_center_y:.1f}" r="4" class="rank-delta-mean" />'
+        )
+
+    return f"{svg_open}{''.join(axis_svg)}{''.join(rows_svg)}</svg>"
+
+
 def create_app(db_path: Path) -> FastAPI:
     app = FastAPI()
     app.mount("/static", StaticFiles(directory=_WEB_DIR / "static"), name="static")
@@ -542,5 +753,15 @@ def create_app(db_path: Path) -> FastAPI:
             else {"mine_value": None, "opponent_value": None}
         )
         return _TEMPLATES.TemplateResponse(request, "overlay_vs_rank_comparison.html", context)
+
+    @app.get("/api/rank-delta-distribution")
+    def rank_delta_distribution() -> dict:
+        return _fetch_rank_delta_distribution(db_path)
+
+    @app.get("/overlay/rank-delta-distribution")
+    def overlay_rank_delta_distribution(request: Request):
+        distribution = _fetch_rank_delta_distribution(db_path)
+        svg = _render_rank_delta_box_plot_svg(distribution["win"], distribution["lose"])
+        return _TEMPLATES.TemplateResponse(request, "overlay_rank_delta_distribution.html", {"svg": svg})
 
     return app
