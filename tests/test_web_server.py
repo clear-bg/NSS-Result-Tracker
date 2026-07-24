@@ -15,10 +15,14 @@ from nss_tracker.web.server import (
     _RANK_GRAPH_MARGIN_RIGHT,
     _RANK_GRAPH_VIEWBOX_WIDTH,
     _aggregate_goal_stats,
+    _compute_box_stats,
     _convert_rank_tier_to_unified_scale,
+    _percentile,
+    _rank_delta_axis_max,
     _rank_graph_x_axis_max,
     _rank_graph_x_tick_values,
     _rank_graph_y_bounds,
+    _render_rank_delta_box_plot_svg,
     _render_rank_graph_svg,
     _summarize_vs_slot_ranks,
     create_app,
@@ -771,6 +775,213 @@ def test_overlay_vs_rank_comparison_page_shows_empty_message_when_no_data(tmp_pa
     client = TestClient(create_app(db_path))
 
     response = client.get("/overlay/vs-rank-comparison")
+
+    assert "データがありません" in response.text
+
+
+def test_percentile_linear_interpolation():
+    sorted_values = [1, 2, 3, 4]
+
+    assert _percentile(sorted_values, 0) == 1
+    assert _percentile(sorted_values, 25) == 1.75
+    assert _percentile(sorted_values, 50) == 2.5
+    assert _percentile(sorted_values, 75) == 3.25
+    assert _percentile(sorted_values, 100) == 4
+
+
+def test_percentile_single_value():
+    assert _percentile([5], 50) == 5
+
+
+def test_compute_box_stats_returns_expected_summary():
+    stats = _compute_box_stats([1, 2, 3, 4])
+
+    assert stats == {"min": 1, "q1": 1.75, "median": 2.5, "q3": 3.25, "max": 4, "mean": 2.5}
+
+
+def test_compute_box_stats_returns_none_for_empty_list():
+    assert _compute_box_stats([]) is None
+
+
+def test_rank_delta_distribution_endpoint_separates_win_and_lose_and_excludes_draw(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=10, rank_after=12, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    db.save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=10, rank_after=8, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    db.save_match_result(
+        conn,
+        MatchResult(result="draw", rank_before=10, rank_after=10, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=None, rank_after=None, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-delta-distribution")
+
+    assert response.status_code == 200
+    assert response.json() == {"win": [2], "lose": [2]}
+
+
+def test_rank_delta_distribution_endpoint_scoped_to_current_session(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    old_session_id = db.create_session(conn)
+    db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=10, rank_after=15, league_changed=None, detected_at=now_jst()),
+        session_id=old_session_id,
+    )
+    db.create_session(conn)
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-delta-distribution")
+
+    assert response.json() == {"win": [], "lose": []}
+
+
+def test_rank_delta_distribution_endpoint_empty_when_no_sessions(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-delta-distribution")
+
+    assert response.json() == {"win": [], "lose": []}
+
+
+def test_rank_delta_distribution_endpoint_uses_all_matches_when_scope_is_all(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    old_session_id = db.create_session(conn)
+    db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=10, rank_after=13, league_changed=None, detected_at=now_jst()),
+        session_id=old_session_id,
+    )
+    current_session_id = db.create_session(conn)
+    db.save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=10, rank_after=9, league_changed=None, detected_at=now_jst()),
+        session_id=current_session_id,
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-delta-distribution")
+
+    # scope=allの場合、旧セッションの試合も含めて全期間を対象にする
+    assert response.json() == {"win": [3], "lose": [1]}
+
+
+def test_rank_delta_axis_max_extends_to_next_tenth():
+    stats_by_category = {"win": _compute_box_stats([0.55]), "lose": None}
+
+    assert _rank_delta_axis_max(stats_by_category) == 0.6
+
+
+def test_rank_delta_axis_max_widens_when_max_lands_exactly_on_a_tenth():
+    stats_by_category = {"win": _compute_box_stats([0.3]), "lose": None}
+
+    assert _rank_delta_axis_max(stats_by_category) == 0.4
+
+
+def test_rank_delta_axis_max_default_when_no_data():
+    assert _rank_delta_axis_max({"win": None, "lose": None}) == 0.1
+
+
+def test_render_rank_delta_box_plot_svg_uses_fixed_tenth_tick_step():
+    svg = _render_rank_delta_box_plot_svg([0.25], [0.4])
+
+    # 最大値0.4 -> 軸は0.5まで拡張され、0.0刻みで0.1ずつの目盛りが並ぶ
+    for expected_label in ["0.0", "0.1", "0.2", "0.3", "0.4", "0.5"]:
+        assert f">{expected_label}<" in svg
+
+
+def test_render_rank_delta_box_plot_svg_with_no_data_shows_empty_message():
+    svg = _render_rank_delta_box_plot_svg([], [])
+
+    assert "データがありません" in svg
+    assert "rank-delta-box" not in svg
+
+
+def test_render_rank_delta_box_plot_svg_draws_both_categories():
+    svg = _render_rank_delta_box_plot_svg([1, 2, 3], [4, 5])
+
+    assert svg.count('class="rank-delta-box rank-delta-win"') == 1
+    assert svg.count('class="rank-delta-box rank-delta-lose"') == 1
+    assert svg.count('class="rank-delta-mean"') == 2
+    assert svg.count('class="rank-delta-median"') == 2
+
+
+def test_render_rank_delta_box_plot_svg_handles_one_category_missing():
+    svg = _render_rank_delta_box_plot_svg([1, 2, 3], [])
+
+    assert svg.count('class="rank-delta-box rank-delta-win"') == 1
+    assert "rank-delta-box rank-delta-lose" not in svg
+
+
+def test_render_rank_delta_box_plot_svg_single_value_does_not_crash():
+    svg = _render_rank_delta_box_plot_svg([2], [3])
+
+    assert svg.count('class="rank-delta-mean"') == 2
+
+
+def test_overlay_rank_delta_distribution_page_links_transparent_background_stylesheet(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=10, rank_after=12, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/rank-delta-distribution")
+
+    assert response.status_code == 200
+    assert '<link rel="stylesheet" href="/static/overlay.css">' in response.text
+    assert '<link rel="stylesheet" href="/static/rank_delta_distribution.css">' in response.text
+    assert "<svg" in response.text
+
+    css_response = client.get("/static/overlay.css")
+    assert "background: transparent" in css_response.text
+
+
+def test_overlay_rank_delta_distribution_page_shows_empty_message_when_no_data(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/rank-delta-distribution")
 
     assert "データがありません" in response.text
 
