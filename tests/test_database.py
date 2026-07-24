@@ -3,8 +3,11 @@ from datetime import datetime, timezone
 
 from nss_tracker.database.db import (
     connect,
+    create_session,
+    end_session,
     fetch_all_goals,
     fetch_all_matches,
+    fetch_current_session_id,
     fetch_vs_slot_ranks,
     save_goal,
     save_match_result,
@@ -21,6 +24,136 @@ def test_connect_creates_matches_table():
     assert "matches" in table_names
     assert "goals" in table_names
     assert "vs_slot_ranks" in table_names
+    assert "sessions" in table_names
+
+
+def test_create_session_inserts_row_with_null_ended_at():
+    conn = connect(":memory:")
+
+    session_id = create_session(conn)
+
+    row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    assert row["started_at"] is not None
+    assert row["ended_at"] is None
+    assert row["created_at"] == row["updated_at"]
+
+
+def test_end_session_sets_ended_at():
+    conn = connect(":memory:")
+    session_id = create_session(conn)
+
+    end_session(conn, session_id)
+
+    row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    assert row["ended_at"] is not None
+
+
+def test_fetch_current_session_id_returns_latest_session():
+    conn = connect(":memory:")
+    create_session(conn)
+    latest_id = create_session(conn)
+
+    assert fetch_current_session_id(conn) == latest_id
+
+
+def test_fetch_current_session_id_returns_none_when_no_sessions():
+    conn = connect(":memory:")
+
+    assert fetch_current_session_id(conn) is None
+
+
+def test_save_match_result_stores_session_id():
+    conn = connect(":memory:")
+    session_id = create_session(conn)
+    match = MatchResult(
+        result="win",
+        rank_before=1,
+        rank_after=2,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    match_id = save_match_result(conn, match, session_id=session_id)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["session_id"] == session_id
+
+
+def test_save_match_result_without_session_id_leaves_it_null():
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=1,
+        rank_after=2,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["session_id"] is None
+
+
+def test_connect_migrates_legacy_matches_without_session_id(tmp_path):
+    """Issue #93: session_id列が無い移行前のDBファイルに対しても、connect()を
+    呼ぶだけで列が追加され、既存データを保持したまま新しいmatchesを
+    session_id付きで挿入できるようになることを確認する。
+    """
+    db_path = tmp_path / "legacy.db"
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.executescript(
+        """
+        CREATE TABLE matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            result TEXT NOT NULL,
+            rank_before REAL,
+            rank_after REAL,
+            league_changed TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO matches (detected_at, result, created_at, updated_at)
+            VALUES ('2026-07-01T00:00:00+09:00', 'win', '2026-07-01T00:00:00+09:00', '2026-07-01T00:00:00+09:00');
+        """
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    conn = connect(db_path)
+
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    session_id_column = next(c for c in columns if c["name"] == "session_id")
+    assert session_id_column["notnull"] == 0
+
+    rows = fetch_all_matches(conn)
+    assert len(rows) == 1
+    assert rows[0]["session_id"] is None
+
+    session_id = create_session(conn)
+    match = MatchResult(
+        result="lose",
+        rank_before=5,
+        rank_after=4,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    save_match_result(conn, match, session_id=session_id)
+
+    rows = fetch_all_matches(conn)
+    assert len(rows) == 2
+    assert rows[1]["session_id"] == session_id
+
+
+def test_connect_matches_migration_is_idempotent_for_already_migrated_schema(tmp_path):
+    """新規DB(最初からsession_id列あり)にconnect()を複数回呼んでもエラーにならないこと。"""
+    db_path = tmp_path / "fresh.db"
+    connect(db_path).close()
+    conn = connect(db_path)
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    session_id_column = next(c for c in columns if c["name"] == "session_id")
+    assert session_id_column["notnull"] == 0
 
 
 def test_save_and_fetch_match_result():
