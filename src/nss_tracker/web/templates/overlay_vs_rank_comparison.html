@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>対戦相手ランク比較</title>
+<link rel="stylesheet" href="/static/overlay.css">
+<link rel="stylesheet" href="/static/vs_rank_comparison.css">
+</head>
+<body>
+{% if mine_value is not none %}
+<p class="vs-rank-comparison">合計ランク：<span class="vs-rank-mine">{{ mine_value }}</span> VS <span class="vs-rank-opponent">{{ opponent_value }}</span></p>
+{% else %}
+<p>データがありません</p>
+{% endif %}
+</body>
+</html>
