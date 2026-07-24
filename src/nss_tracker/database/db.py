@@ -249,6 +249,17 @@ def fetch_all_matches(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM matches ORDER BY id").fetchall()
 
 
+def fetch_recent_matches(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
+    """直近limit件の試合を、古い順(id昇順)で返す。
+
+    配信セッションをまたいで「直近N試合」を時系列グラフ・一覧表示したい
+    ウィジェット向け(Issue #95のランク推移グラフ等)。該当件数がlimit未満の
+    場合はある分だけ返す。
+    """
+    rows = conn.execute("SELECT * FROM matches ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return list(reversed(rows))
+
+
 def save_goal(
     conn: sqlite3.Connection,
     match_id: int,
