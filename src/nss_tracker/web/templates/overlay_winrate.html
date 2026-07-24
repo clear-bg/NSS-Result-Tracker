@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>勝率</title>
+<link rel="stylesheet" href="/static/overlay.css">
+</head>
+<body>
+<p>配信セッション: {{ session.total }}試合(win {{ session.win }} / lose {{ session.lose }} / draw {{ session.draw }}) 勝率 {{ session_win_rate_text }}</p>
+<p>累計: {{ cumulative.total }}試合(win {{ cumulative.win }} / lose {{ cumulative.lose }} / draw {{ cumulative.draw }}) 勝率 {{ cumulative_win_rate_text }}</p>
+</body>
+</html>
