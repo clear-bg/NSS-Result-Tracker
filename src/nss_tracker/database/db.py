@@ -313,6 +313,21 @@ def fetch_all_goals(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM goals ORDER BY id").fetchall()
 
 
+def fetch_goals_for_session(conn: sqlite3.Connection, session_id: int) -> list[sqlite3.Row]:
+    """指定した配信セッションに属する試合のゴールを記録順(id昇順)で取得する。
+
+    Issue #96(ゴール/アシスト統計、配信セッション単位のみ)向け。matches.session_id
+    経由で絞り込む(goalsテーブル自体はsession_idを持たない)。
+    """
+    return conn.execute(
+        "SELECT goals.* FROM goals "
+        "JOIN matches ON goals.match_id = matches.id "
+        "WHERE matches.session_id = ? "
+        "ORDER BY goals.id",
+        (session_id,),
+    ).fetchall()
+
+
 def save_vs_slot_ranks(
     conn: sqlite3.Connection,
     match_id: int,
