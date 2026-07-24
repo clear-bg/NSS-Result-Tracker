@@ -40,9 +40,15 @@ S/A識別の検証に使用する(B/C/D/Eの参照素材はまだ無い)。
 
 2026-07-21にNintendo Switch側のHDR設定を無効化した後の実プレイ録画から
 切り出した画像。`11`/`12`/`14`/`15`/`70`/`71`はいずれもHDR設定変更前の色
-(H62-77等)で撮影されており現在の環境では再現しないため、`is_vs_screen`の
-真陽性判定にはこちらを使う(`detection/matchmaking.py`のモジュールdocstring
-参照)。
+(H62-77等)で撮影されており現在の環境では再現しない。
+
+Issue #116(2026-07-24)対応で`is_vs_screen`の閾値を実機ライブパイプライン
+(FfmpegFrameReader)の実測値に更新したため、`72`/`73`(cv2.imread経由で読む
+静止画)はもはや真陽性判定には使えない(cv2.imreadの色変換経路がライブ
+パイプラインと異なるため。`detection/matchmaking.py`のモジュールdocstring
+参照)。真陽性の検証は実測HSV値を使った合成フレームのテスト
+(`tests/test_matchmaking.py`)に置き換えた。`72`/`73`自体はVS画面の見た目の
+参照素材として引き続き残す。
 
 - [x] マッチング（ランク無し、HDR無効化後）`72_matching_hdr_off_1`
 - [x] マッチング（ランク無し、HDR無効化後）`73_matching_hdr_off_2`

@@ -1,24 +1,17 @@
-"""実際の配信クリップを使ったis_vs_screenの回帰テスト。
+"""実際の配信クリップを使ったis_vs_screenの回帰テスト(誤検知防止側のみ)。
 
-fixtures/videos/12_win_red_vs_screen_to_result.mp4(frame 1750, 1850)、
-fixtures/videos/13_win_red_vs_screen_without_rank.mp4(frame 1700)、
-fixtures/videos/16_matching_wait_3.mp4(frame 1400)は、実際に該当フレームの
-静止画を目視確認して「VS」画面が写っていることを確認済み(is_vs_screen自体の
-出力を転記したものではない)。ただしIssue #68対応でVS_HUE_RANGE等を
-2026-07-21のHDR無効化後の実測値に更新したため、これら3本(旧色で撮影)は
-現在の閾値ではVS画面を検知できない側になった。真陽性の回帰テストは同日の
-HDR無効化後ローカル録画から切り出したfixtures/videos/22・
-23_vs_screen_hdr_off_*.mp4に置き換えている(detection/matchmaking.pyの
-モジュールdocstring参照)。12/13/16は「マッチング完了直後の遷移」を捉えた
-fixtureとして他用途に残し、本ファイルの回帰テストからは外した。
+Issue #116: VS_HUE_RANGE等を2026-07-24の実機ライブパイプライン(FfmpegFrameReader)
+実測値に更新した(detection/matchmaking.pyのモジュールdocstring参照)。この変更に
+伴い、fixtures/videos/22・23_vs_screen_hdr_off_*.mp4(cv2.VideoCaptureで読む)を
+使った真陽性の回帰テストは意味を失った(cv2.VideoCaptureの色変換経路がライブ
+パイプラインと異なり、どんな実機録画から切り出した動画でもcv2経由では新しい
+閾値の色域を再現できないため。実測: 両動画ともH97-98までは近いがS65-66で新閾値
+S88-98の範囲外)。真陽性の検証はtests/test_matchmaking.pyの合成フレームによる
+テストに置き換えている。
 
-単発フレームでは試合中の演出アイコン等がROIに重なり稀に誤検知することがある
-(video 12のframe 4397、プレイヤー頭上のミント色アイコンが1フレームだけ
-重なるケースを確認済み、最長でも7フレーム程度)。一方、本物のVS画面は
-fixtures/videos 22/23の実測で少なくとも600フレーム(60fps換算で10秒)以上
-連続して表示され続けるため、banner.pyの結果バナー判定と同じ基準(1.0秒)を
-デバウンス閾値として採用する。30fps環境では30フレームに相当し、実測ケースに
-対して十分な余裕がある(detection/matchmaking.pyのモジュールdocstring参照)。
+本ファイルはVS画面を含まない動画で誤検知が無いことの回帰テストのみ残す
+(この観点は読み込み経路によらず有効)。12/13/16/22/23番はVS画面を捉えた
+fixtureとして他用途(マッチング完了直後の遷移の参照素材等)に残す。
 """
 
 import cv2
@@ -28,9 +21,7 @@ from conftest import requires_video_fixtures
 from nss_tracker.detection.matchmaking import is_vs_screen
 from nss_tracker.detection.motion import find_confirmed_value
 
-# banner.pyの結果バナー判定と同じ基準(1.0秒 = 30fps換算で30フレーム)。
-# 実測ではVS画面は最短でも158フレーム(約5.3秒)連続して表示されるため、
-# この閾値でも約5倍の余裕がある
+# banner.pyの結果バナー判定と同じ基準(1.0秒 = 30fps換算で30フレーム)
 MIN_CONFIRM_SECONDS = 1.0
 
 
@@ -52,27 +43,9 @@ def _confirmed_vs_screen(path, min_confirm_seconds: float = MIN_CONFIRM_SECONDS)
         cap.release()
 
 
-# VS画面を含むことを目視確認済みの動画(Issue #68、HDR無効化後の実測値に対応)
-VS_SCREEN_VIDEOS = [
-    "22_vs_screen_hdr_off_1.mp4",
-    "23_vs_screen_hdr_off_2.mp4",
-]
-
-
-@requires_video_fixtures
-@pytest.mark.parametrize("video_name", VS_SCREEN_VIDEOS)
-def test_confirmed_vs_screen_detected_in_known_vs_clips(videos_dir, video_name):
-    video_path = videos_dir / video_name
-    if not video_path.is_file():
-        pytest.skip(f"{video_name} が見つからない")
-
-    assert _confirmed_vs_screen(video_path), f"{video_name}: VS画面を確定検知できなかった"
-
-
 # VS画面を含まない(結果バナー付近のみ切り出した、またはマッチング待機のみの)動画。
 # いずれも試合中の演出アイコン等による単発フレームの誤検知はあり得るが、
-# デバウンス後は一度も確定しないはず。24番はIssue #68対応(閾値をHDR無効化後の
-# 実測値に更新)後の通常プレイ中の誤検知チェック用に追加した
+# デバウンス後は一度も確定しないはず
 NO_VS_SCREEN_VIDEOS = [
     "00_lose_red_2-3.mp4",
     "01_win_blue_2-1.mp4",
@@ -82,6 +55,8 @@ NO_VS_SCREEN_VIDEOS = [
     "11_lose_blue_minimal_rank_decrease.mp4",
     "14_matching_wait_1.mp4",
     "15_matching_wait_2.mp4",
+    "22_vs_screen_hdr_off_1.mp4",
+    "23_vs_screen_hdr_off_2.mp4",
     "24_no_vs_screen_hdr_off_gameplay.mp4",
 ]
 
