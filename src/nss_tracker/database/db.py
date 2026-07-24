@@ -42,7 +42,9 @@ vs_slot_ranksテーブルは、VS画面(マッチング完了)確定時点の両
 rank_tier_labelは'∞'/'S'/'A'のいずれか(Issue #40)。B/C/D/Eバッジ・ランク非表示・
 読み取り失敗はいずれも区別せずrank_tier/rank_tier_labelともNULLのまま全スロット分
 そのまま保存する(detection.vs_rank側もポリシーを持たず見えたものをそのまま報告
-する設計と対応させている)。
+する設計と対応させている)。rank_tier_label列追加時に既存DBファイルへの移行関数を
+用意し忘れており、VS画面検知が実機で機能する(Issue #116)まで発覚しなかった
+(Issue #119、_migrate_vs_slot_ranks_add_rank_tier_label参照)。
 
 sessionsテーブルは「配信セッション」(Issue #93)を表す。1セッション=main.pyの
 プロセス起動1回に対応する(手動起動のみを想定する現状の運用と一致させるため、
@@ -165,6 +167,28 @@ def _migrate_matches_add_session_id(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_vs_slot_ranks_add_rank_tier_label(conn: sqlite3.Connection) -> None:
+    """Issue #119: 既存DBファイルのvs_slot_ranksテーブルにrank_tier_label列を追加する。
+
+    rank_tier_label自体はIssue #40(S/A帯識別)でスキーマに追加した列だが、
+    _migrate_matches_add_session_idのような移行関数が無かったため、それより前に
+    vs_slot_ranksテーブルが作られた既存DBファイルには反映されないまま残っていた
+    (CREATE TABLE IF NOT EXISTSは既存テーブルがあると列追加をしてくれないため)。
+    VS画面検知(Issue #39/#68/#116)が実機で機能するまでsave_vs_slot_ranks自体が
+    一度も実行されていなかったため、この欠落が長らく発覚しなかった。
+    NOT NULL制約が絡まない列追加のため、_migrate_matches_add_session_idと同じく
+    ALTER TABLE ADD COLUMNだけで済む。新規DBでは_SCHEMA自体に既にrank_tier_label
+    列を含むため、この関数は無害にreturnする。
+    """
+    columns = conn.execute("PRAGMA table_info(vs_slot_ranks)").fetchall()
+    if any(c["name"] == "rank_tier_label" for c in columns):
+        return
+
+    logger.info("vs_slot_ranksテーブルにrank_tier_label列を追加しています")
+    conn.execute("ALTER TABLE vs_slot_ranks ADD COLUMN rank_tier_label TEXT")
+    conn.commit()
+
+
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """DBに接続し、テーブルが無ければ作成して返す。
 
@@ -180,6 +204,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     conn.commit()
     _migrate_goals_scorer_name_nullable(conn)
     _migrate_matches_add_session_id(conn)
+    _migrate_vs_slot_ranks_add_rank_tier_label(conn)
     logger.info("DBに接続しました: %s", Path(db_path).resolve())
     return conn
 
