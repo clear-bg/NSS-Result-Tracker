@@ -24,6 +24,7 @@ from nss_tracker.web.server import (
     _rank_graph_x_axis_max,
     _rank_graph_x_tick_values,
     _rank_graph_y_bounds,
+    _rank_graph_y_tick_step,
     _render_rank_delta_box_plot_svg,
     _render_rank_graph_svg,
     _summarize_vs_slot_ranks,
@@ -255,6 +256,18 @@ def test_rank_graph_y_bounds_single_flat_value():
     assert _rank_graph_y_bounds(42, 42) == (41, 43)
 
 
+def test_rank_graph_y_tick_step_stays_one_for_narrow_range():
+    """通常運用の狭い範囲(数〜十数)では、これまで通り間隔1のまま変わらないことを確認する。"""
+    assert _rank_graph_y_tick_step(2) == 1
+    assert _rank_graph_y_tick_step(15) == 1
+
+
+def test_rank_graph_y_tick_step_widens_for_outlier_range():
+    """Issue #123: OCR誤読等の外れ値で軸の範囲が広がっても、きりの良い間隔に広がることを確認する。"""
+    assert _rank_graph_y_tick_step(411) == 50
+    assert _rank_graph_y_tick_step(0) == 1
+
+
 def test_rank_history_returns_all_matches_when_limit_env_unset(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("RANK_GRAPH_MATCH_LIMIT", raising=False)
     db_path = tmp_path / "test.db"
@@ -342,6 +355,18 @@ def test_render_rank_graph_svg_draws_frame_and_axis_ticks():
     assert ">1<" in svg
     assert ">5<" in svg
     assert ">10<" in svg
+
+
+def test_render_rank_graph_svg_outlier_value_does_not_flood_y_axis_ticks():
+    """Issue #123: OCR誤読等で1件だけ極端な外れ値が混ざり縦軸の範囲が広がっても、
+    目盛りラベルの本数が一定数以下に収まることを確認する(修正前は412本の目盛りが
+    密集して描画が崩れていた)。
+    """
+    history = [{"rank_after": value, "league_changed": None} for value in [40, 41, 40, 2, 41, 40, 411, 40]]
+
+    svg = _render_rank_graph_svg(history)
+
+    assert svg.count('class="rank-graph-tick-label"') <= 25
 
 
 def test_render_rank_graph_svg_draws_vertical_gridlines_at_x_ticks():

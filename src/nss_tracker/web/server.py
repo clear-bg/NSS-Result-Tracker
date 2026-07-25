@@ -200,6 +200,26 @@ _RANK_GRAPH_LEFT_PADDING = 24
 # ユーザーとの相談で決定)
 _RANK_GRAPH_X_TICK_STEP = 5
 
+# Issue #123: 縦軸(ランク値)の目盛り間隔は横軸と異なり固定値にできない。OCR誤読等の
+# 外れ値がrank_afterに混ざると縦軸の範囲(_rank_graph_y_bounds)が数百に広がることがあり、
+# 間隔1のままだと目盛り線・ラベルが密集して描画自体が崩れる(実データで確認済み、
+# 縦軸が1〜412に広がり417本の目盛りが220の高さに詰め込まれた)。目盛りの本数が
+# この値を超えないよう、1・2・5・10・20...の「きりの良い」間隔から動的に選ぶ
+# (_rank_graph_y_tick_step参照)。通常運用の狭い範囲(数〜十数)では引き続き間隔1のまま
+_RANK_GRAPH_Y_TICK_MAX_COUNT = 20
+_RANK_GRAPH_Y_TICK_STEPS = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
+
+
+def _rank_graph_y_tick_step(axis_range: int) -> int:
+    """縦軸の目盛り間隔を、本数が_RANK_GRAPH_Y_TICK_MAX_COUNTを超えないよう動的に決める。"""
+    if axis_range <= 0:
+        return 1
+    raw_step = axis_range / _RANK_GRAPH_Y_TICK_MAX_COUNT
+    for step in _RANK_GRAPH_Y_TICK_STEPS:
+        if step >= raw_step:
+            return step
+    return _RANK_GRAPH_Y_TICK_STEPS[-1]
+
 
 def _rank_graph_y_bounds(min_value: float, max_value: float) -> tuple[int, int]:
     """縦軸の下限・上限を整数で返す(ユーザーとの相談で決定)。
@@ -282,11 +302,12 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
         return plot_top + plot_height * (1 - (value - axis_min) / axis_range)
 
     # 縦軸目盛り: 横向きの薄いグリッド線+左側にランク値のラベル+横軸と同様の短い
-    # 目盛り線。整数のみ・間隔1(ユーザーとの相談で決定)。軸の下限・上限自体を
-    # 実データより広げてあるため(_rank_graph_y_bounds参照)、一番上・一番下の点は
-    # 自然に軸の端から離れる
+    # 目盛り線。整数のみ・間隔は_rank_graph_y_tick_stepで動的に決める(Issue #123、
+    # 通常運用の狭い範囲では間隔1のまま)。軸の下限・上限自体を実データより広げてあるため
+    # (_rank_graph_y_bounds参照)、一番上・一番下の点は自然に軸の端から離れる
+    y_tick_step = _rank_graph_y_tick_step(axis_range)
     y_axis_svg = []
-    for tick_value in range(axis_min, axis_max + 1):
+    for tick_value in range(axis_min, axis_max + 1, y_tick_step):
         y = y_at(tick_value)
         y_axis_svg.append(
             f'<line x1="{plot_left}" y1="{y:.1f}" x2="{plot_right}" y2="{y:.1f}" class="rank-graph-gridline" />'
