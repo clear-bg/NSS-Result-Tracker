@@ -15,7 +15,7 @@
 .rank-graph-empty {
     fill: #fff;
     font-family: sans-serif;
-    font-size: 16px;
+    font-size: 22px;
 }
 
 .rank-graph-frame {
@@ -40,5 +40,5 @@
 .rank-graph-tick-label {
     fill: #fff;
     font-family: sans-serif;
-    font-size: 12px;
+    font-size: 17px;
 }

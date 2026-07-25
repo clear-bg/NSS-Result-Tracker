@@ -184,7 +184,7 @@ def _fetch_rank_history(db_path: Path) -> list[dict]:
 # ランク推移グラフのSVG座標系(viewBox内の論理サイズ)。width/height="100%"で
 # 実際の表示サイズ(OBSブラウザソースの矩形)まで引き伸ばす。左右上下でマージンを
 # 分けているのは、左に縦軸のラベル・下に横軸のラベル分の余白が必要なため
-_RANK_GRAPH_VIEWBOX_WIDTH = 640
+_RANK_GRAPH_VIEWBOX_WIDTH = 540
 _RANK_GRAPH_VIEWBOX_HEIGHT = 220
 _RANK_GRAPH_MARGIN_LEFT = 50
 _RANK_GRAPH_MARGIN_RIGHT = 20
