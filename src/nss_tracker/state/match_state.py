@@ -108,6 +108,16 @@ MatchResult/GoalEventのdetected_atはJST(timeutil.now_jst参照)で記録する
 また、結果バナー確定時・試合終了確定時にランクバッジのOCRが失敗した場合
 (バッジがそもそも表示されていない場合と見た目上区別できない)は、後から
 記録結果だけを見ても原因が分からないためログに残す。
+
+Issue #83: OBSシーン自動切り替え(obs_control.ObsSceneController)のトリガーとして
+`in_match`プロパティを公開する。VS画面確定(_check_for_vs_screen)でTrueになり、
+_finalize()(ランク確定・league_changed判定を含む試合結果の確定)でFalseに戻る。
+「試合終了検知(match_end)の時点で即座に試合間シーンへ切り替える」案も検討したが、
+ランクを賭けた試合ではランク変動アニメーションもフルスクリーンの試合画面側で
+見せたいというユーザーの意向により不採用とし、_finalize()完了(ランク確定後)を
+唯一の切り替えタイミングとした。VS画面を見逃した試合ではin_matchがTrueにならず
+試合中シーンへ切り替わらないが、Issue #39の「VS画面検知は任意のエンリッチ」という
+既存方針と同じ考え方で許容する(見逃しても以降のフローに影響しない)。
 """
 
 from dataclasses import dataclass, field
@@ -247,6 +257,8 @@ class MatchStateMachine:
         self._match_end_streak = 0
         self._match_end_recorded_this_event = False
         self._match_end_seen = False
+        # Issue #83: OBSシーン切替のトリガー用。VS画面確定でTrue、_finalize()でFalseに戻す
+        self._in_match = False
         # Issue #71: セッション内の試合数カウンタ。「試合開始」ログ(VS画面確定時)
         # でのみ増加する。VS画面を見逃した試合では増加しないため、その場合の
         # 「試合終了」「結果」ログは直前に増加させた番号を使い回す(ユーザーと
@@ -257,6 +269,14 @@ class MatchStateMachine:
     def current_state(self) -> str:
         """現在の状態("watching" / "tracking_rank" / "cooldown")。テスト等での観測用。"""
         return self._state.label
+
+    @property
+    def in_match(self) -> bool:
+        """VS画面確定〜試合結果確定(ランク確定含む)までの間True。
+
+        Issue #83: OBSシーン自動切り替えのトリガーに使う(モジュールdocstring参照)。
+        """
+        return self._in_match
 
     def process_frame(self, frame: np.ndarray) -> Optional[MatchResult]:
         if self._state is _State.WATCHING:
@@ -286,6 +306,7 @@ class MatchStateMachine:
         if self._vs_streak >= self._vs_screen_confirm_frames and not self._vs_recorded_this_match:
             self._pending_vs_mine_ranks, self._pending_vs_opponent_ranks = read_vs_screen_ranks(frame)
             self._vs_recorded_this_match = True
+            self._in_match = True
             self._session_match_no += 1
             logger.info("%d試合目開始", self._session_match_no)
 
@@ -525,6 +546,7 @@ class MatchStateMachine:
         self._pending_vs_opponent_ranks = []
         self._vs_streak = 0
         self._vs_recorded_this_match = False
+        self._in_match = False
         self._absence_streak = 0
         self._state = _State.COOLDOWN
         return match_result

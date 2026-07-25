@@ -52,7 +52,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     呼び、finallyでweb_handle.stop()を呼ぶこと)だけを軽量に検証する。
     """
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id: None)
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller: None)
 
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
@@ -61,6 +61,12 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "INFO")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    # OBS未起動でもmain()が異常終了しないことを兼ねて確認する(Issue #83、接続失敗はWARNINGログのみ)
+    monkeypatch.setenv("OBS_WEBSOCKET_HOST", "127.0.0.1")
+    monkeypatch.setenv("OBS_WEBSOCKET_PORT", "48765")
+    monkeypatch.setenv("OBS_WEBSOCKET_PASSWORD", "")
+    monkeypatch.setenv("OBS_SCENE_IN_MATCH", "InMatch")
+    monkeypatch.setenv("OBS_SCENE_BETWEEN_MATCHES", "BetweenMatches")
     monkeypatch.setattr(sys, "argv", ["main.py", "--video", "dummy.mp4"])
 
     original_start = main.start_web_server_thread
@@ -105,7 +111,11 @@ def test_run_wires_capture_state_and_database(videos_dir, monkeypatch):
         conn.commit()
         session_id = db.create_session(conn)
 
-        main.run(reader, machine, conn, session_id)
+        class _NoOpObsController:
+            def set_in_match(self, in_match: bool) -> None:
+                pass
+
+        main.run(reader, machine, conn, session_id, _NoOpObsController())
 
         rows = db.fetch_all_matches(conn)
         assert len(rows) == 1, f"記録された試合数が{len(rows)}件(期待は1件)"

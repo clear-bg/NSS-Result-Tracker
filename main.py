@@ -38,6 +38,11 @@ from nss_tracker.config import (
     get_frame_read_timeout_seconds,
     get_goal_record_mode,
     get_log_level,
+    get_obs_scene_between_matches,
+    get_obs_scene_in_match,
+    get_obs_websocket_host,
+    get_obs_websocket_password,
+    get_obs_websocket_port,
     get_rank_delta_distribution_scope,
     get_rank_graph_match_limit,
     get_web_host,
@@ -48,6 +53,7 @@ from nss_tracker.detection.goal import _get_name_reader
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import RANK_ROI, _get_reader
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
+from nss_tracker.obs_control import ObsSceneController
 from nss_tracker.state.match_state import MatchResult, MatchStateMachine
 from nss_tracker.timeutil import JST
 from nss_tracker.web.runner import start_web_server_thread
@@ -208,8 +214,15 @@ def _warmup_ocr_engines() -> None:
     logger.info("OCRエンジンの初期化が完了しました")
 
 
-def run(reader: FfmpegFrameReader, machine: MatchStateMachine, conn: sqlite3.Connection, session_id: Optional[int]) -> None:
+def run(
+    reader: FfmpegFrameReader,
+    machine: MatchStateMachine,
+    conn: sqlite3.Connection,
+    session_id: Optional[int],
+    obs_controller: ObsSceneController,
+) -> None:
     prev_state = machine.current_state
+    prev_in_match = machine.in_match
     frame_read_timeout_seconds = get_frame_read_timeout_seconds()
     # Issue #71: Ctrl+C受信時にセッションサマリを出すための内訳カウンタ
     session_results = {"win": 0, "lose": 0, "draw": 0}
@@ -240,6 +253,10 @@ def run(reader: FfmpegFrameReader, machine: MatchStateMachine, conn: sqlite3.Con
             if machine.current_state != prev_state:
                 logger.info("状態遷移: %s -> %s", prev_state, machine.current_state)
                 prev_state = machine.current_state
+
+            if machine.in_match != prev_in_match:
+                obs_controller.set_in_match(machine.in_match)
+                prev_in_match = machine.in_match
 
             if result is not None:
                 _record_match_result(conn, session_id, result)
@@ -291,6 +308,11 @@ def main() -> None:
         db_path = get_db_path()
         web_host = get_web_host()
         web_port = get_web_port()
+        obs_host = get_obs_websocket_host()
+        obs_port = get_obs_websocket_port()
+        obs_password = get_obs_websocket_password()
+        obs_scene_in_match = get_obs_scene_in_match()
+        obs_scene_between_matches = get_obs_scene_between_matches()
         get_goal_record_mode()  # 値自体はdb.py/match_state.pyが都度参照するため、ここでは早期に検証するだけ
         get_rank_graph_match_limit()  # 値自体はweb/server.pyが都度参照するため、ここでは早期に検証するだけ
         get_rank_delta_distribution_scope()  # 値自体はweb/server.pyが都度参照するため、ここでは早期に検証するだけ
@@ -311,9 +333,17 @@ def main() -> None:
     logger.info("配信セッションを開始しました: session_id=%d", session_id)
     web_handle = start_web_server_thread(create_app(db_path), host=web_host, port=web_port)
     logger.info("Webダッシュボードを起動しました: http://%s:%d/", web_host, web_port)
+    obs_controller = ObsSceneController(
+        host=obs_host,
+        port=obs_port,
+        password=obs_password,
+        scene_in_match=obs_scene_in_match,
+        scene_between_matches=obs_scene_between_matches,
+    )
     try:
-        run(reader, machine, conn, session_id)
+        run(reader, machine, conn, session_id, obs_controller)
     finally:
+        obs_controller.close()
         web_handle.stop()
         db.end_session(conn, session_id)
         conn.close()
