@@ -113,6 +113,16 @@ class SlotRank(NamedTuple):
     tier: Optional[str]
     value: Optional[int]
 
+    def __repr__(self) -> str:
+        # Issue #121: ログにそのまま出す用の簡潔表記(例: "∞39"/"S9")。
+        # tierがNoneの場合は未識別・非表示・B~Eのいずれか区別しないため"-"、
+        # tierはあるがvalue(数値ピルのOCR)が失敗した場合は"S?"のように表す。
+        if self.tier is None:
+            return "-"
+        if self.value is None:
+            return f"{self.tier}?"
+        return f"{self.tier}{self.value}"
+
 
 def _xywh_to_roi(x1: int, y1: int, w: int, h: int) -> tuple[int, int, int, int]:
     return (x1, y1, x1 + w, y1 + h)
