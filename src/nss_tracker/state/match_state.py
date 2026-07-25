@@ -309,6 +309,15 @@ class MatchStateMachine:
             self._in_match = True
             self._session_match_no += 1
             logger.info("%d試合目開始", self._session_match_no)
+            # Issue #121: ゴール検知(_check_for_goal)と同じく、DBへの記録タイミング
+            # (main.py側のsave_vs_slot_ranks時)を待たず、VS画面確定を検知した瞬間に
+            # 読み取ったランクをそのまま報告する
+            logger.info(
+                "%d試合目 VS画面ランク: mine=%s opponent=%s",
+                self._session_match_no,
+                self._pending_vs_mine_ranks,
+                self._pending_vs_opponent_ranks,
+            )
 
     def _check_for_match_end(self, frame: np.ndarray) -> None:
         if not is_match_end_screen(frame):
