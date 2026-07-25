@@ -713,6 +713,34 @@ def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
     assert result.vs_opponent_ranks == [SlotRank("∞", 10), SlotRank("∞", 12), SlotRank("∞", 33), SlotRank("∞", 18)]
 
 
+def test_vs_screen_confirmation_logs_ranks_at_info_level(monkeypatch, caplog):
+    """Issue #121: VS画面確定を検知した瞬間(DBへの記録を待たず)に、読み取った
+    mine/opponentのランクをSlotRankの簡潔な表記("∞39"等)でINFOログに出すことを
+    確認する。
+    """
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: True)
+    monkeypatch.setattr(
+        match_state_module,
+        "read_vs_screen_ranks",
+        lambda frame: (
+            [SlotRank("∞", 39), SlotRank(None, None)],
+            [SlotRank("S", 9), SlotRank(None, None)],
+        ),
+    )
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(vs_screen_confirm_frames=2)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(3):
+            machine.process_frame(frame)
+
+    assert "1試合目 VS画面ランク: mine=[∞39, -] opponent=[S9, -]" in caplog.text
+
+
 def test_vs_screen_not_detected_results_in_empty_vs_ranks(monkeypatch):
     """VS画面を一度も検知しなかった試合では、vs_mine_ranks/vs_opponent_ranksが
     空リストのままになることを確認する(Issue #39: VS画面検知は任意のエンリッチ

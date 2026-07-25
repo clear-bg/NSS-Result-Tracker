@@ -15,6 +15,22 @@ def _none():
     return SlotRank(None, None)
 
 
+@pytest.mark.parametrize(
+    "slot_rank, expected",
+    [
+        (SlotRank("∞", 39), "∞39"),
+        (SlotRank("S", 9), "S9"),
+        (SlotRank("A", 0), "A0"),
+        (SlotRank("S", None), "S?"),
+        (SlotRank(None, None), "-"),
+    ],
+)
+def test_slot_rank_repr(slot_rank, expected):
+    """Issue #121: ログにそのまま出せる簡潔表記("∞39"等)になることを確認する。"""
+    assert repr(slot_rank) == expected
+    assert str([slot_rank]) == f"[{expected}]"
+
+
 # 正解値は各fixtureの静止画を目視確認して得たもの(read_vs_screen_ranks自体の出力を
 # 転記したものではない)。スロット0が画面手前(自チーム側は自分自身)、スロット3が
 # 最も奥。70/71は文字階級(S/A)バッジのスロットを含む。Issue #40対応時
