@@ -39,6 +39,7 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
   - リーグ昇格/降格の判定には必ず帯番号(整数)側を使うこと。小数のランク値同士で比較すると、帯自体は変わっていないのにゲージの僅かな増減だけで誤検知するため(`state/match_state.py`参照)
   - Issue #73対応で`read_rank_tier(frame, roi=RANK_ROI)`を追加し、バッジのアイコン部分から`'∞'`/`'S'`/`'A'`/`None`を識別できる(`read_rank()`と同じROIをallowlistなしでOCRし、最も上側のテキストをアイコンとみなす方式。新規のROI測定は不要)。ただし∞帯は既存fixtureで実データ検証済みな一方、**S/A帯は結果バナー画面での参照fixtureが無く未検証**(vs_rank.py用のVS画面アイコンROIを代用して試したが、バッジが小さすぎてEasyOCRが文字自体を安定して検出できず代用にならないと判明した)。B/C/D/E帯・`match_state.py`/DBへの統合(戻り値の設計、league_changed判定への組み込み等)は未着手(Issue #43でS/A帯の結果バナーfixtureが集まり次第、実データで検証・着手する)
 - VS画面(マッチング完了直後)の両チーム最大4人分のランクバッジは`detection/vs_rank.py`が別途読み取る(結果バナー側の`rank_ocr.py`とはROI・OCRエンジンとも別実装、Issue #39/#52)。∞帯に加え、Issue #40対応でS/A帯も識別できる(`SlotRank(tier, value)`で返す。`tier`は`'∞'`/`'S'`/`'A'`/`None`)。B/C/D/Eは参照fixtureがまだ無く未着手(Issue #43でfixture収集後に着手)
+- チームカラー(青/赤/ピンク等)は`detection/team_color.py`がVS画面から検知する(Issue #113、Webダッシュボードの対戦相手ランク比較ウィジェットでの装飾用途のみ)。「青/赤/ピンク」という固定色への分類はせず、VS画面の名前タグ背景(スロット0、文字やバッジが重ならない右寄りの帯)から実際に描画されている色をそのまま平均RGBでhex文字列としてサンプリングする方式にした(分類の閾値ロジックが不要になり誤判定リスクも無いため、ユーザーとの相談で決定)。fixtures/screenshots(11/12番=青系、14/15番=ピンク系のVS画面)で実測し、同じ色系統ならRGB各chの差が10未満に収まることを確認済み。VS画面確定と同じタイミング(`state/match_state.py`の`_check_for_vs_screen`)で1回だけ読み取り、`matches`テーブルの`mine_team_color`/`opponent_team_color`列(hex文字列、VS画面を検知できなかった試合はどちらもNULL)に保存する
 - 状態監視(アニメーション中かどうかの判定)は固定領域のピクセル差分・平均色で行う。軽量な処理なので高頻度に回してよい
 
 ### サンプリング戦略(重要)

@@ -2,9 +2,7 @@
    試合中(ゲーム画面が全画面の間)ゲーム映像に重ねて常時表示する想定のため、
    「合計ランク：<自チーム> VS <相手チーム>」という1行のコンパクトな表示にする
    (ユーザーとの相談で決定)。自チームが先(VS画面の左側)、相手チームが後
-   (VS画面の右側)の順で読めるようにしている。
-   将来的にチームカラー(青/赤/ピンクなど)に応じて数値の色を変える予定だが、
-   今回はまだ未実装(白のまま)。 */
+   (VS画面の右側)の順で読めるようにしている。 */
 .vs-rank-comparison {
     /* pタグのブラウザ標準マージン(1行だけなのに上下に余白が生まれ、OBSブラウザ
        ソースの高さをぴったりに設定するとスクロールバーが出てしまう原因になる)
@@ -12,7 +10,20 @@
     margin: 0;
 }
 
-.vs-rank-mine,
-.vs-rank-opponent {
-    font-weight: bold;
+/* Issue #113: ゲーム内のライブスコア表示(角丸ピル背景+白い太字の数字)に
+   見た目を寄せる。チームカラーはdetection/team_color.pyがVS画面から実測した
+   色をピルの背景色として使う(server.py側でstyle属性にbackground-colorを
+   直接埋め込む。CSSファイルは静的なため動的な色はここでは持てない)。
+   文字が細く見えるという指摘から、font-weightは通常のboldではなく最大の900
+   にしている。tabular-numsは桁数が変わっても数字の幅が変わらないようにするため */
+.vs-rank-pill {
+    display: inline-block;
+    min-width: 1.6em;
+    padding: 1px 14px;
+    border-radius: 999px;
+    color: #fff;
+    font-weight: 900;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    letter-spacing: 0.02em;
 }
