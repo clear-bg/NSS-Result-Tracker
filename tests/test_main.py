@@ -64,7 +64,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     # OBS未起動でもmain()が異常終了しないことを兼ねて確認する(Issue #83、接続失敗はWARNINGログのみ)
     monkeypatch.setenv("OBS_WEBSOCKET_HOST", "127.0.0.1")
     monkeypatch.setenv("OBS_WEBSOCKET_PORT", "48765")
-    monkeypatch.setenv("OBS_WEBSOCKET_PASSWORD", "")
+    monkeypatch.setenv("OBS_WEBSOCKET_PASSWORD", "none")
     monkeypatch.setenv("OBS_SCENE_IN_MATCH", "InMatch")
     monkeypatch.setenv("OBS_SCENE_BETWEEN_MATCHES", "BetweenMatches")
     monkeypatch.setattr(sys, "argv", ["main.py", "--video", "dummy.mp4"])

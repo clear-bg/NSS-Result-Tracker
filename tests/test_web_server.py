@@ -268,8 +268,8 @@ def test_rank_graph_y_tick_step_widens_for_outlier_range():
     assert _rank_graph_y_tick_step(0) == 1
 
 
-def test_rank_history_returns_all_matches_when_limit_env_unset(tmp_path: Path, monkeypatch):
-    monkeypatch.delenv("RANK_GRAPH_MATCH_LIMIT", raising=False)
+def test_rank_history_returns_all_matches_when_limit_env_is_all(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for i in range(35):
