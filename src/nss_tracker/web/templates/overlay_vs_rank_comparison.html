@@ -7,11 +7,7 @@
 <link rel="stylesheet" href="/static/vs_rank_comparison.css">
 </head>
 <body>
-{% if mine_value is not none %}
 <p class="vs-rank-comparison">合計ランク：<span class="vs-rank-mine">{{ mine_value }}</span> VS <span class="vs-rank-opponent">{{ opponent_value }}</span></p>
-{% else %}
-<p>データがありません</p>
-{% endif %}
 <script src="/static/overlay-refresh.js" data-interval-ms="{{ refresh_interval_ms }}"></script>
 </body>
 </html>

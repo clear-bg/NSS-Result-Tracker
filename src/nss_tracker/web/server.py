@@ -198,11 +198,11 @@ def _fetch_rank_history(db_path: Path) -> list[dict]:
 # ランク推移グラフのSVG座標系(viewBox内の論理サイズ)。width/height="100%"で
 # 実際の表示サイズ(OBSブラウザソースの矩形)まで引き伸ばす。左右上下でマージンを
 # 分けているのは、左に縦軸のラベル・下に横軸のラベル分の余白が必要なため
-_RANK_GRAPH_VIEWBOX_WIDTH = 540
+_RANK_GRAPH_VIEWBOX_WIDTH = 786
 _RANK_GRAPH_VIEWBOX_HEIGHT = 220
 _RANK_GRAPH_MARGIN_LEFT = 50
 _RANK_GRAPH_MARGIN_RIGHT = 20
-_RANK_GRAPH_MARGIN_TOP = 38  # タイトル分の余白を含む(_RANK_GRAPH_TITLE参照)
+_RANK_GRAPH_MARGIN_TOP = 46  # タイトル分の余白を含む(_RANK_GRAPH_TITLE参照)
 _RANK_GRAPH_MARGIN_BOTTOM = 30
 _RANK_GRAPH_TITLE = "ランク推移"
 # 一番左の点がプロット領域の左端(枠)に接しないための余白(px)。右側は
@@ -291,7 +291,7 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
     # 一番背面に来るようにする
     panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-graph-panel" />'
-    title_svg = f'<text x="{width / 2}" y="18" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
+    title_svg = f'<text x="{width / 2}" y="26" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
 
     if not history:
         return (
@@ -597,11 +597,11 @@ def _compute_box_stats(values: list[float]) -> Optional[dict]:
 # 「勝ち」「負け」2段の横向き箱ひげ図を積む(縦に2段並べる)構成にする
 # (ユーザーとの相談で決定)。原点は常に0で、正の方向(右)にのみ伸ばす
 # (負け側もabsで正の値にしてあるため、軸は0〜最大値のみで足りる)
-_BOX_PLOT_VIEWBOX_WIDTH = 540
+_BOX_PLOT_VIEWBOX_WIDTH = 779
 _BOX_PLOT_VIEWBOX_HEIGHT = 160
 _BOX_PLOT_MARGIN_LEFT = 60
 _BOX_PLOT_MARGIN_RIGHT = 30
-_BOX_PLOT_MARGIN_TOP = 33  # タイトル分の余白を含む(_BOX_PLOT_TITLE参照)
+_BOX_PLOT_MARGIN_TOP = 41  # タイトル分の余白を含む(_BOX_PLOT_TITLE参照)
 _BOX_PLOT_MARGIN_BOTTOM = 30
 _BOX_PLOT_TITLE = "ランク増減分布"
 _BOX_PLOT_ROW_HEIGHT_RATIO = 0.5  # 各段の高さのうち箱ひげ図本体が占める割合
@@ -638,7 +638,7 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
     # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
     # 一番背面に来るようにする
     panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-delta-panel" />'
-    title_svg = f'<text x="{width / 2}" y="16" text-anchor="middle" class="rank-delta-title">{_BOX_PLOT_TITLE}</text>'
+    title_svg = f'<text x="{width / 2}" y="24" text-anchor="middle" class="rank-delta-title">{_BOX_PLOT_TITLE}</text>'
 
     stats_by_category = {"win": _compute_box_stats(win_values), "lose": _compute_box_stats(lose_values)}
     if stats_by_category["win"] is None and stats_by_category["lose"] is None:
@@ -842,13 +842,15 @@ def create_app(db_path: Path) -> FastAPI:
     @app.get("/overlay/vs-rank-comparison")
     def overlay_vs_rank_comparison(request: Request):
         comparison = _fetch_vs_rank_comparison(db_path)
+        # 試合が1件も無い・直近試合でVS画面を検知できなかった場合も「合計ランク：」の
+        # 表示形式自体は崩さず、値をnoneにするだけにする(ユーザーとの相談で決定)
         context = (
             {
                 "mine_value": _format_vs_rank_value(comparison["mine"]),
                 "opponent_value": _format_vs_rank_value(comparison["opponent"]),
             }
             if comparison is not None
-            else {"mine_value": None, "opponent_value": None}
+            else {"mine_value": "none", "opponent_value": "none"}
         )
         # 他ウィジェットより短い間隔にし、VS画面確定後できるだけ早く新しい試合の
         # 値に切り替わるようにする(#100、ユーザーとの相談で決定)

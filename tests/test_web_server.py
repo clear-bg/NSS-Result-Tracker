@@ -819,7 +819,8 @@ def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
     assert "160</span> VS <span" in response.text
 
 
-def test_overlay_vs_rank_comparison_page_shows_empty_message_when_no_data(tmp_path: Path):
+def test_overlay_vs_rank_comparison_page_shows_none_placeholders_when_no_data(tmp_path: Path):
+    """データが無い場合も「合計ランク：」の表示形式は崩さず、値をnoneにするだけにする。"""
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
@@ -827,7 +828,9 @@ def test_overlay_vs_rank_comparison_page_shows_empty_message_when_no_data(tmp_pa
 
     response = client.get("/overlay/vs-rank-comparison")
 
-    assert "データがありません" in response.text
+    assert '<span class="vs-rank-mine">none</span>' in response.text
+    assert '<span class="vs-rank-opponent">none</span>' in response.text
+    assert "合計ランク：" in response.text
 
 
 def test_percentile_linear_interpolation():
