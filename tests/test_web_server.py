@@ -22,6 +22,7 @@ from nss_tracker.web.server import (
     _aggregate_goal_stats,
     _compute_box_stats,
     _convert_rank_tier_to_unified_scale,
+    _format_vs_rank_value,
     _percentile,
     _rank_delta_axis_max,
     _rank_graph_x_axis_max,
@@ -738,6 +739,15 @@ def test_summarize_vs_slot_ranks_total_none_when_all_unknown():
     assert summary == {"total": None, "known_count": 0, "unknown_count": 4}
 
 
+def test_format_vs_rank_value_returns_total_as_string():
+    assert _format_vs_rank_value({"total": 160, "known_count": 4, "unknown_count": 0}) == "160"
+
+
+def test_format_vs_rank_value_returns_none_when_total_missing():
+    """Issue #113: 直近試合自体が無い場合の表示(合計ランク：none VS none)と表記を揃える。"""
+    assert _format_vs_rank_value({"total": None, "known_count": 0, "unknown_count": 4}) == "none"
+
+
 def test_vs_rank_comparison_endpoint_uses_latest_match(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
@@ -831,6 +841,30 @@ def test_overlay_vs_rank_comparison_page_shows_none_placeholders_when_no_data(tm
     assert '<span class="vs-rank-mine">none</span>' in response.text
     assert '<span class="vs-rank-opponent">none</span>' in response.text
     assert "合計ランク：" in response.text
+
+
+def test_overlay_vs_rank_comparison_page_shows_none_for_side_with_only_unknown_members(tmp_path: Path):
+    """Issue #113: 試合自体は検知できているが片側が全員不明人数の場合も、noneで表記を揃える。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+    )
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank("∞", 40)] * 4,
+        opponent_ranks=[SlotRank(None, None)] * 4,
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/vs-rank-comparison")
+
+    assert '<span class="vs-rank-mine">160</span>' in response.text
+    assert '<span class="vs-rank-opponent">none</span>' in response.text
 
 
 def test_percentile_linear_interpolation():

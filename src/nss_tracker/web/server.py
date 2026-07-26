@@ -202,7 +202,7 @@ _RANK_GRAPH_VIEWBOX_WIDTH = 786
 _RANK_GRAPH_VIEWBOX_HEIGHT = 220
 _RANK_GRAPH_MARGIN_LEFT = 50
 _RANK_GRAPH_MARGIN_RIGHT = 20
-_RANK_GRAPH_MARGIN_TOP = 46  # タイトル分の余白を含む(_RANK_GRAPH_TITLE参照)
+_RANK_GRAPH_MARGIN_TOP = 54  # タイトル分の余白を含む(_RANK_GRAPH_TITLE参照)
 _RANK_GRAPH_MARGIN_BOTTOM = 30
 _RANK_GRAPH_TITLE = "ランク推移"
 # 一番左の点がプロット領域の左端(枠)に接しないための余白(px)。右側は
@@ -291,7 +291,7 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
     # 一番背面に来るようにする
     panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-graph-panel" />'
-    title_svg = f'<text x="{width / 2}" y="26" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
+    title_svg = f'<text x="{width / 2}" y="34" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
 
     if not history:
         return (
@@ -495,9 +495,10 @@ def _format_vs_rank_value(summary: dict) -> str:
 
     このウィジェットは試合中(ゲーム画面が全画面の間)ゲーム映像に重ねて常時表示する
     想定のため、他のウィジェットと異なり文字数を極力減らす(ユーザーとの相談で決定、
-    Issue #100)。
+    Issue #100)。値が無い場合(不明人数のみ等)は、直近試合自体が無い場合の表示
+    (「合計ランク：none VS none」)と表記を揃えるため"none"を返す(Issue #113)。
     """
-    return str(summary["total"]) if summary["total"] is not None else "-"
+    return str(summary["total"]) if summary["total"] is not None else "none"
 
 
 # Issue #99: 直近試合結果ログの対象範囲は#95(ランク推移グラフ)と同じく
@@ -601,7 +602,7 @@ _BOX_PLOT_VIEWBOX_WIDTH = 779
 _BOX_PLOT_VIEWBOX_HEIGHT = 160
 _BOX_PLOT_MARGIN_LEFT = 60
 _BOX_PLOT_MARGIN_RIGHT = 30
-_BOX_PLOT_MARGIN_TOP = 41  # タイトル分の余白を含む(_BOX_PLOT_TITLE参照)
+_BOX_PLOT_MARGIN_TOP = 49  # タイトル分の余白を含む(_BOX_PLOT_TITLE参照)
 _BOX_PLOT_MARGIN_BOTTOM = 30
 _BOX_PLOT_TITLE = "ランク増減分布"
 _BOX_PLOT_ROW_HEIGHT_RATIO = 0.5  # 各段の高さのうち箱ひげ図本体が占める割合
@@ -638,7 +639,7 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
     # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
     # 一番背面に来るようにする
     panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-delta-panel" />'
-    title_svg = f'<text x="{width / 2}" y="24" text-anchor="middle" class="rank-delta-title">{_BOX_PLOT_TITLE}</text>'
+    title_svg = f'<text x="{width / 2}" y="32" text-anchor="middle" class="rank-delta-title">{_BOX_PLOT_TITLE}</text>'
 
     stats_by_category = {"win": _compute_box_stats(win_values), "lose": _compute_box_stats(lose_values)}
     if stats_by_category["win"] is None and stats_by_category["lose"] is None:
