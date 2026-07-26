@@ -188,8 +188,9 @@ _RANK_GRAPH_VIEWBOX_WIDTH = 540
 _RANK_GRAPH_VIEWBOX_HEIGHT = 220
 _RANK_GRAPH_MARGIN_LEFT = 50
 _RANK_GRAPH_MARGIN_RIGHT = 20
-_RANK_GRAPH_MARGIN_TOP = 20
+_RANK_GRAPH_MARGIN_TOP = 38  # タイトル分の余白を含む(_RANK_GRAPH_TITLE参照)
 _RANK_GRAPH_MARGIN_BOTTOM = 30
+_RANK_GRAPH_TITLE = "ランク推移"
 # 一番左の点がプロット領域の左端(枠)に接しないための余白(px)。右側は
 # _rank_graph_x_axis_maxで軸自体の右端(試合番号の上限)を実際の試合数より
 # 広げることで余白を作る(縦軸の_rank_graph_y_boundsと同じ考え方)ため、
@@ -273,10 +274,11 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     """
     width, height = _RANK_GRAPH_VIEWBOX_WIDTH, _RANK_GRAPH_VIEWBOX_HEIGHT
     svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+    title_svg = f'<text x="{width / 2}" y="18" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
 
     if not history:
         return (
-            f"{svg_open}"
+            f"{svg_open}{title_svg}"
             f'<text x="{width / 2}" y="{height / 2}" text-anchor="middle" class="rank-graph-empty">'
             "データがありません</text></svg>"
         )
@@ -349,7 +351,7 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     markers = [f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" class="rank-graph-point" />' for x, y in coords]
 
     return (
-        f"{svg_open}"
+        f"{svg_open}{title_svg}"
         f"{''.join(y_axis_svg)}"
         f"{frame_svg}"
         f"{''.join(x_axis_svg)}"
@@ -582,8 +584,9 @@ _BOX_PLOT_VIEWBOX_WIDTH = 540
 _BOX_PLOT_VIEWBOX_HEIGHT = 160
 _BOX_PLOT_MARGIN_LEFT = 60
 _BOX_PLOT_MARGIN_RIGHT = 30
-_BOX_PLOT_MARGIN_TOP = 15
+_BOX_PLOT_MARGIN_TOP = 33  # タイトル分の余白を含む(_BOX_PLOT_TITLE参照)
 _BOX_PLOT_MARGIN_BOTTOM = 30
+_BOX_PLOT_TITLE = "ランク増減分布"
 _BOX_PLOT_ROW_HEIGHT_RATIO = 0.5  # 各段の高さのうち箱ひげ図本体が占める割合
 # 横軸(数直線)の目盛りは、この値の倍数(0.1, 0.2, 0.3, ...)の位置に固定間隔で置く
 # (#99の横軸と同じ考え方。ユーザーとの相談で決定)
@@ -615,11 +618,12 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
     """
     width, height = _BOX_PLOT_VIEWBOX_WIDTH, _BOX_PLOT_VIEWBOX_HEIGHT
     svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+    title_svg = f'<text x="{width / 2}" y="16" text-anchor="middle" class="rank-delta-title">{_BOX_PLOT_TITLE}</text>'
 
     stats_by_category = {"win": _compute_box_stats(win_values), "lose": _compute_box_stats(lose_values)}
     if stats_by_category["win"] is None and stats_by_category["lose"] is None:
         return (
-            f"{svg_open}"
+            f"{svg_open}{title_svg}"
             f'<text x="{width / 2}" y="{height / 2}" text-anchor="middle" class="rank-delta-empty">'
             "データがありません</text></svg>"
         )
@@ -705,7 +709,7 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
             f'<circle cx="{mean_x:.1f}" cy="{row_center_y:.1f}" r="4" class="rank-delta-mean" />'
         )
 
-    return f"{svg_open}{''.join(axis_svg)}{''.join(rows_svg)}</svg>"
+    return f"{svg_open}{title_svg}{''.join(axis_svg)}{''.join(rows_svg)}</svg>"
 
 
 def create_app(db_path: Path) -> FastAPI:

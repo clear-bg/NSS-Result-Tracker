@@ -10,10 +10,12 @@ from nss_tracker.state.match_state import MatchResult
 from nss_tracker.timeutil import now_jst
 from nss_tracker.web.runner import start_web_server_thread
 from nss_tracker.web.server import (
+    _BOX_PLOT_TITLE,
     _OVERLAY_REFRESH_INTERVAL_MS,
     _RANK_GRAPH_LEFT_PADDING,
     _RANK_GRAPH_MARGIN_LEFT,
     _RANK_GRAPH_MARGIN_RIGHT,
+    _RANK_GRAPH_TITLE,
     _RANK_GRAPH_VIEWBOX_WIDTH,
     _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS,
     _aggregate_goal_stats,
@@ -312,6 +314,13 @@ def test_render_rank_graph_svg_with_no_data_shows_empty_message():
 
     assert "データがありません" in svg
     assert "<polyline" not in svg
+
+
+def test_render_rank_graph_svg_always_shows_title():
+    history = [{"rank_after": value, "league_changed": None} for value in [10, 20, 15]]
+
+    assert f'class="rank-graph-title">{_RANK_GRAPH_TITLE}<' in _render_rank_graph_svg(history)
+    assert f'class="rank-graph-title">{_RANK_GRAPH_TITLE}<' in _render_rank_graph_svg([])
 
 
 def test_render_rank_graph_svg_with_single_point_does_not_divide_by_zero():
@@ -948,6 +957,11 @@ def test_render_rank_delta_box_plot_svg_uses_fixed_tenth_tick_step():
     # 最大値0.4 -> 軸は0.5まで拡張され、0.0刻みで0.1ずつの目盛りが並ぶ
     for expected_label in ["0.0", "0.1", "0.2", "0.3", "0.4", "0.5"]:
         assert f">{expected_label}<" in svg
+
+
+def test_render_rank_delta_box_plot_svg_always_shows_title():
+    assert f'class="rank-delta-title">{_BOX_PLOT_TITLE}<' in _render_rank_delta_box_plot_svg([1, 2], [3, 4])
+    assert f'class="rank-delta-title">{_BOX_PLOT_TITLE}<' in _render_rank_delta_box_plot_svg([], [])
 
 
 def test_render_rank_delta_box_plot_svg_with_no_data_shows_empty_message():

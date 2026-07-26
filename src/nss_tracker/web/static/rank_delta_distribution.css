@@ -58,3 +58,10 @@
     font-family: sans-serif;
     font-size: 22px;
 }
+
+.rank-delta-title {
+    fill: #fff;
+    font-family: sans-serif;
+    font-size: 20px;
+    font-weight: bold;
+}
