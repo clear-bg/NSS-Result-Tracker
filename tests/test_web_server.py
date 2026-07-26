@@ -323,6 +323,17 @@ def test_render_rank_graph_svg_always_shows_title():
     assert f'class="rank-graph-title">{_RANK_GRAPH_TITLE}<' in _render_rank_graph_svg([])
 
 
+def test_render_rank_graph_svg_always_shows_panel_behind_other_elements():
+    """Issue #113: 配信画面での視認性対策の半透明パネルは、他の要素より先(=一番背面)に描画する。"""
+    history = [{"rank_after": value, "league_changed": None} for value in [10, 20, 15]]
+
+    svg = _render_rank_graph_svg(history)
+
+    assert 'class="rank-graph-panel"' in svg
+    assert svg.index('class="rank-graph-panel"') < svg.index('class="rank-graph-title"')
+    assert 'class="rank-graph-panel"' in _render_rank_graph_svg([])
+
+
 def test_render_rank_graph_svg_with_single_point_does_not_divide_by_zero():
     svg = _render_rank_graph_svg([{"rank_after": 10, "league_changed": None}])
 
@@ -962,6 +973,15 @@ def test_render_rank_delta_box_plot_svg_uses_fixed_tenth_tick_step():
 def test_render_rank_delta_box_plot_svg_always_shows_title():
     assert f'class="rank-delta-title">{_BOX_PLOT_TITLE}<' in _render_rank_delta_box_plot_svg([1, 2], [3, 4])
     assert f'class="rank-delta-title">{_BOX_PLOT_TITLE}<' in _render_rank_delta_box_plot_svg([], [])
+
+
+def test_render_rank_delta_box_plot_svg_always_shows_panel_behind_other_elements():
+    """Issue #113: 配信画面での視認性対策の半透明パネルは、他の要素より先(=一番背面)に描画する。"""
+    svg = _render_rank_delta_box_plot_svg([1, 2], [3, 4])
+
+    assert 'class="rank-delta-panel"' in svg
+    assert svg.index('class="rank-delta-panel"') < svg.index('class="rank-delta-title"')
+    assert 'class="rank-delta-panel"' in _render_rank_delta_box_plot_svg([], [])
 
 
 def test_render_rank_delta_box_plot_svg_with_no_data_shows_empty_message():

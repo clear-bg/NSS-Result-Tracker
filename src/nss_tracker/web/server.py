@@ -274,11 +274,14 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     """
     width, height = _RANK_GRAPH_VIEWBOX_WIDTH, _RANK_GRAPH_VIEWBOX_HEIGHT
     svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+    # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
+    # 一番背面に来るようにする
+    panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-graph-panel" />'
     title_svg = f'<text x="{width / 2}" y="18" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
 
     if not history:
         return (
-            f"{svg_open}{title_svg}"
+            f"{svg_open}{panel_svg}{title_svg}"
             f'<text x="{width / 2}" y="{height / 2}" text-anchor="middle" class="rank-graph-empty">'
             "データがありません</text></svg>"
         )
@@ -351,7 +354,7 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     markers = [f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" class="rank-graph-point" />' for x, y in coords]
 
     return (
-        f"{svg_open}{title_svg}"
+        f"{svg_open}{panel_svg}{title_svg}"
         f"{''.join(y_axis_svg)}"
         f"{frame_svg}"
         f"{''.join(x_axis_svg)}"
@@ -618,12 +621,15 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
     """
     width, height = _BOX_PLOT_VIEWBOX_WIDTH, _BOX_PLOT_VIEWBOX_HEIGHT
     svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+    # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
+    # 一番背面に来るようにする
+    panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-delta-panel" />'
     title_svg = f'<text x="{width / 2}" y="16" text-anchor="middle" class="rank-delta-title">{_BOX_PLOT_TITLE}</text>'
 
     stats_by_category = {"win": _compute_box_stats(win_values), "lose": _compute_box_stats(lose_values)}
     if stats_by_category["win"] is None and stats_by_category["lose"] is None:
         return (
-            f"{svg_open}{title_svg}"
+            f"{svg_open}{panel_svg}{title_svg}"
             f'<text x="{width / 2}" y="{height / 2}" text-anchor="middle" class="rank-delta-empty">'
             "データがありません</text></svg>"
         )
@@ -709,7 +715,7 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
             f'<circle cx="{mean_x:.1f}" cy="{row_center_y:.1f}" r="4" class="rank-delta-mean" />'
         )
 
-    return f"{svg_open}{title_svg}{''.join(axis_svg)}{''.join(rows_svg)}</svg>"
+    return f"{svg_open}{panel_svg}{title_svg}{''.join(axis_svg)}{''.join(rows_svg)}</svg>"
 
 
 def create_app(db_path: Path) -> FastAPI:
