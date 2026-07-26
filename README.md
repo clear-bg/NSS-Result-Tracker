@@ -152,7 +152,7 @@ uv run python main.py --video fixtures/videos/01_win_blue_2-1.mp4
 
 試合状態(試合中/試合間)に応じてOBSのシーンを自動切り替えたい場合、以下を設定する。
 
-1. OBSの「ツール」メニュー→「WebSocketサーバー設定」で、obs-websocketを有効化する(OBS 28以降は標準搭載)。ホスト・ポート・パスワードを`.env`の`OBS_WEBSOCKET_HOST`/`OBS_WEBSOCKET_PORT`/`OBS_WEBSOCKET_PASSWORD`に設定する(認証を無効化している場合は`OBS_WEBSOCKET_PASSWORD`を空欄のままにする)
+1. OBSの「ツール」メニュー→「WebSocketサーバー設定」で、obs-websocketを有効化する(OBS 28以降は標準搭載)。ホスト・ポート・パスワードを`.env`の`OBS_WEBSOCKET_HOST`/`OBS_WEBSOCKET_PORT`/`OBS_WEBSOCKET_PASSWORD`に設定する(認証を無効化している場合は`OBS_WEBSOCKET_PASSWORD`を`none`にする)
 2. OBS側に「試合中(ゲーム画面全画面)」「試合間(ワイプ+ダッシュボード)」用のシーンをそれぞれ作成し、そのシーン名を`.env`の`OBS_SCENE_IN_MATCH`/`OBS_SCENE_BETWEEN_MATCHES`に設定する
 
 OBSが未起動・obs-websocketが無効・パスワード不一致等で接続に失敗しても、検知・DB記録などの本来の機能には影響しない(WARNINGログを出したままシーン自動切替のみ無効化されて起動を継続する)。

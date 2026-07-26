@@ -191,13 +191,20 @@ def test_get_rank_delta_distribution_scope_uses_env_value(monkeypatch, scope):
     assert get_rank_delta_distribution_scope() == scope
 
 
-def test_get_rank_graph_match_limit_returns_none_when_unset(monkeypatch):
+def test_get_rank_graph_match_limit_raises_when_unset(monkeypatch):
     monkeypatch.delenv("RANK_GRAPH_MATCH_LIMIT", raising=False)
-    assert get_rank_graph_match_limit() is None
+    with pytest.raises(ConfigError, match="RANK_GRAPH_MATCH_LIMIT"):
+        get_rank_graph_match_limit()
 
 
-def test_get_rank_graph_match_limit_returns_none_when_blank(monkeypatch):
+def test_get_rank_graph_match_limit_raises_when_blank(monkeypatch):
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "  ")
+    with pytest.raises(ConfigError, match="RANK_GRAPH_MATCH_LIMIT"):
+        get_rank_graph_match_limit()
+
+
+def test_get_rank_graph_match_limit_returns_none_for_all(monkeypatch):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     assert get_rank_graph_match_limit() is None
 
 
@@ -241,9 +248,15 @@ def test_get_obs_websocket_port_uses_env_value(monkeypatch):
     assert get_obs_websocket_port() == 4455
 
 
-def test_get_obs_websocket_password_returns_empty_string_when_unset(monkeypatch):
-    """OBS側で認証を無効化している場合、空欄が正しい値のためConfigErrorを送出しない。"""
+def test_get_obs_websocket_password_raises_when_unset(monkeypatch):
     monkeypatch.delenv("OBS_WEBSOCKET_PASSWORD", raising=False)
+    with pytest.raises(ConfigError, match="OBS_WEBSOCKET_PASSWORD"):
+        get_obs_websocket_password()
+
+
+def test_get_obs_websocket_password_returns_empty_string_for_none(monkeypatch):
+    """OBS側で認証を無効化している場合、noneを空文字列のパスワードとして扱う。"""
+    monkeypatch.setenv("OBS_WEBSOCKET_PASSWORD", "none")
     assert get_obs_websocket_password() == ""
 
 

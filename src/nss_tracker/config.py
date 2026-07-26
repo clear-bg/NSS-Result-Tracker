@@ -10,8 +10,8 @@
 `ALLOWED_PLAYERS`以外の設定項目(`CAPTURE_DEVICE_NAME`・`CAPTURE_WIDTH`・
 `CAPTURE_HEIGHT`・`DB_PATH`・`FRAME_READ_TIMEOUT_SECONDS`・`NSS_TRACKER_LOG_LEVEL`
 ・`WEB_HOST`・`WEB_PORT`・`GOAL_RECORD_MODE`・`RANK_DELTA_DISTRIBUTION_SCOPE`・
-`OBS_WEBSOCKET_HOST`・`OBS_WEBSOCKET_PORT`・`OBS_WEBSOCKET_PASSWORD`・
-`OBS_SCENE_IN_MATCH`・`OBS_SCENE_BETWEEN_MATCHES`)は、
+`RANK_GRAPH_MATCH_LIMIT`・`OBS_WEBSOCKET_HOST`・`OBS_WEBSOCKET_PORT`・
+`OBS_WEBSOCKET_PASSWORD`・`OBS_SCENE_IN_MATCH`・`OBS_SCENE_BETWEEN_MATCHES`)は、
 Python側にフォールバック用のデフォルト値を一切持たない。`.env`に値が設定されて
 いることを前提に動作し、未設定または不正な値の場合は起動時に`ConfigError`を
 送出して明示的に失敗する(暗黙のデフォルトに気づかないまま運用してしまうことを
@@ -19,14 +19,19 @@ Python側にフォールバック用のデフォルト値を一切持たない�
 記載してあるため、`.env.example`をコピーするだけでそのまま動く。値を変更したい
 場合や、`.env`から行ごと削除してしまった場合にのみ`ConfigError`に遭遇する。
 
-`RANK_GRAPH_MATCH_LIMIT`は、`ALLOWED_PLAYERS`に次ぐ2つ目の例外として空文字列を
-許容する。ランク推移グラフの対象を「直近何試合分にするか」を指定する値だが、
-空欄(未設定)の場合は「全期間を表示する」という安全側のデフォルト動作になる
-ため(`.env.example`側もこの空欄をデフォルト値として記載する)。数値を指定した
-場合はその値のint化を試み、数値化できない値・0以下の値はConfigErrorを送出する。
+`RANK_GRAPH_MATCH_LIMIT`・`OBS_WEBSOCKET_PASSWORD`は以前、空文字列を「全期間表示」
+「認証無効」を意味する値として許容していたが、この「空欄=意図した設定」という
+状態はIssue #89がそもそも避けたかった「未設定に気づかないまま運用してしまう」
+ケースと見分けがつかないため、Issue #126で廃止した。現在は`ALLOWED_PLAYERS`のみが
+唯一の例外であり、それ以外は空文字列を含め値が不正な場合ConfigErrorを送出する。
 
-`OBS_WEBSOCKET_PASSWORD`は3つ目の例外として空文字列を許容する(Issue #83)。
-obs-websocketはOBS側の設定で認証を無効化できるため、その場合は空欄が正しい値になる。
+`RANK_GRAPH_MATCH_LIMIT`はランク推移グラフの対象を「直近何試合分にするか」を
+指定する値。文字列`"all"`(全期間を表示する)、または正の整数の文字列を受け付ける。
+それ以外の値(空文字列含む)はConfigErrorを送出する。
+
+`OBS_WEBSOCKET_PASSWORD`はobs-websocketの接続パスワード。OBS側で認証を無効化して
+いる場合は文字列`"none"`を指定する(空文字列のパスワードとして扱われる)。
+それ以外の値(空文字列含む)は実際のパスワードとしてそのまま使う。
 """
 
 import logging
@@ -125,18 +130,18 @@ def get_web_port() -> int:
 def get_rank_graph_match_limit() -> Optional[int]:
     """ランク推移グラフの対象範囲(直近何試合分か)を取得する。
 
-    未設定・空文字列の場合はNone(全期間を表示する)を返す(モジュールdocstring
-    参照、ALLOWED_PLAYERSに次ぐ2つ目の「空文字列を許容する」例外)。数値化できない
-    値、または0以下の値はConfigErrorを送出する。
+    値が`"all"`の場合はNone(全期間を表示する)を返す。それ以外は正の整数として
+    解釈を試み、数値化できない値・0以下の値・空文字列はConfigErrorを送出する
+    (Issue #126、モジュールdocstring参照)。
     """
-    raw = os.environ.get("RANK_GRAPH_MATCH_LIMIT", "").strip()
-    if not raw:
+    raw = _require_env("RANK_GRAPH_MATCH_LIMIT").strip()
+    if raw == "all":
         return None
     try:
         value = int(raw)
     except ValueError:
         raise ConfigError(
-            f"RANK_GRAPH_MATCH_LIMITの値が不正です: {raw}(空欄で全期間、または正の整数を指定してください)"
+            f"RANK_GRAPH_MATCH_LIMITの値が不正です: {raw}(allまたは正の整数を指定してください)"
         )
     if value <= 0:
         raise ConfigError(f"RANK_GRAPH_MATCH_LIMITの値が不正です: {raw}(正の整数を指定してください)")
@@ -172,11 +177,14 @@ def get_obs_websocket_port() -> int:
 def get_obs_websocket_password() -> str:
     """obs-websocketの接続パスワードを取得する。
 
-    OBS側で認証を無効化している場合は空欄が正しい値のため、モジュールdocstring
-    記載のとおりALLOWED_PLAYERS・RANK_GRAPH_MATCH_LIMITに次ぐ3つ目の例外として
-    空文字列を許容する(ConfigErrorを送出しない)。
+    値が`"none"`の場合は空文字列(認証無効)を返す。それ以外は実際のパスワードと
+    してそのまま返す。未設定・空文字列はConfigErrorを送出する(Issue #126、
+    モジュールdocstring参照)。
     """
-    return os.environ.get("OBS_WEBSOCKET_PASSWORD", "")
+    raw = _require_env("OBS_WEBSOCKET_PASSWORD")
+    if raw == "none":
+        return ""
+    return raw
 
 
 def get_obs_scene_in_match() -> str:
