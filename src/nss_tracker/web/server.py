@@ -578,7 +578,7 @@ def _compute_box_stats(values: list[float]) -> Optional[dict]:
 # 「勝ち」「負け」2段の横向き箱ひげ図を積む(縦に2段並べる)構成にする
 # (ユーザーとの相談で決定)。原点は常に0で、正の方向(右)にのみ伸ばす
 # (負け側もabsで正の値にしてあるため、軸は0〜最大値のみで足りる)
-_BOX_PLOT_VIEWBOX_WIDTH = 640
+_BOX_PLOT_VIEWBOX_WIDTH = 540
 _BOX_PLOT_VIEWBOX_HEIGHT = 160
 _BOX_PLOT_MARGIN_LEFT = 60
 _BOX_PLOT_MARGIN_RIGHT = 30
