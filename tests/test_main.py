@@ -61,6 +61,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "INFO")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     # OBS未起動でもmain()が異常終了しないことを兼ねて確認する(Issue #83、接続失敗はWARNINGログのみ)
     monkeypatch.setenv("OBS_WEBSOCKET_HOST", "127.0.0.1")
     monkeypatch.setenv("OBS_WEBSOCKET_PORT", "48765")

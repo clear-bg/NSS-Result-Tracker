@@ -195,7 +195,8 @@ def test_overlay_winrate_page_shows_dash_when_no_matches(tmp_path: Path):
     assert "勝率 -" in response.text
 
 
-def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path):
+def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for i, league_changed in enumerate([None, "up", None]):
@@ -225,7 +226,8 @@ def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path):
     }
 
 
-def test_rank_history_skips_matches_without_rank_after(tmp_path: Path):
+def test_rank_history_skips_matches_without_rank_after(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     db.save_match_result(
@@ -440,7 +442,8 @@ def test_render_rank_graph_svg_flat_values_widens_y_axis_around_the_value():
     assert ">43<" in svg
 
 
-def test_overlay_rank_graph_page_links_transparent_background_stylesheet(tmp_path: Path):
+def test_overlay_rank_graph_page_links_transparent_background_stylesheet(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     db.save_match_result(
@@ -1040,6 +1043,7 @@ def test_overlay_refresh_script_is_served_and_reads_the_page_it_is_embedded_in(t
 )
 def test_overlay_pages_include_refresh_script_with_default_interval(tmp_path: Path, path: str, monkeypatch):
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
