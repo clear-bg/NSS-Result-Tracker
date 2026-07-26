@@ -52,6 +52,7 @@ OBSのブラウザソースは一度読み込むと明示的にリロードし�
 という要望から`_VS_RANK_COMPARISON_REFRESH_INTERVAL_MS`(1秒)を使う。
 """
 
+import logging
 import math
 import sqlite3
 from pathlib import Path
@@ -83,6 +84,7 @@ from nss_tracker.database.db import (
 
 _WEB_DIR = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=_WEB_DIR / "templates")
+_logger = logging.getLogger("nss_tracker.web")
 
 # Issue #104: 全overlay系ページ共通の自動更新間隔(ミリ秒)。static/overlay-refresh.js
 # のdata-interval-ms属性に渡す。対戦相手ランク比較([#100](../issues/100))のみ、
@@ -763,17 +765,19 @@ def create_app(db_path: Path) -> FastAPI:
         rank_graph_match_limit: str = Form(...),
         rank_delta_distribution_scope: str = Form(...),
     ):
+        old_values = get_editable_settings()
+        new_values = {
+            "ALLOWED_PLAYERS": allowed_players,
+            "GOAL_RECORD_MODE": goal_record_mode,
+            "RANK_GRAPH_MATCH_LIMIT": rank_graph_match_limit,
+            "RANK_DELTA_DISTRIBUTION_SCOPE": rank_delta_distribution_scope,
+        }
         try:
-            update_editable_settings(
-                {
-                    "ALLOWED_PLAYERS": allowed_players,
-                    "GOAL_RECORD_MODE": goal_record_mode,
-                    "RANK_GRAPH_MATCH_LIMIT": rank_graph_match_limit,
-                    "RANK_DELTA_DISTRIBUTION_SCOPE": rank_delta_distribution_scope,
-                }
-            )
+            update_editable_settings(new_values)
         except ConfigError as exc:
+            _logger.warning("設定画面(/admin)からの更新が拒否されました: %s(送信値: %s)", exc, new_values)
             return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
+        _logger.info("設定画面(/admin)から設定を更新しました: %s -> %s", old_values, new_values)
         return RedirectResponse("/admin?status=updated", status_code=303)
 
     @app.get("/overlay/winrate")
