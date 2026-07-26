@@ -157,6 +157,10 @@ uv run python main.py --video fixtures/videos/01_win_blue_2-1.mp4
 
 OBSが未起動・obs-websocketが無効・パスワード不一致等で接続に失敗しても、検知・DB記録などの本来の機能には影響しない(WARNINGログを出したままシーン自動切替のみ無効化されて起動を継続する)。
 
+### 配信中の設定変更(`/admin`)
+
+`ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・`RANK_DELTA_DISTRIBUTION_SCOPE`の4項目は、`main.py`起動時に自動的に開くブラウザの設定画面(`http://<WEB_HOST>:<WEB_PORT>/admin`)からGUIで編集できる。「更新」ボタンを押すと即座に反映され(検知ループの再起動不要)、`.env`ファイルにも書き込まれるため次回起動時にも引き継がれる。この4項目以外(キャプチャ設定・OBS接続情報等)は配信開始前に一度決めれば十分なため対象外で、`.env`の手動編集が必要。
+
 ## フォルダ構成
 
 ```txt

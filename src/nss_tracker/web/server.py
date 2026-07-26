@@ -26,6 +26,13 @@ html/bodyの背景を明示的に`transparent`にする。CSSで背景色を何�
 背後の他の部品を隠してしまう)。値確認用の`/`ページはOBSへの配置を想定していない
 (通常のブラウザで見る用)ため、この透過スタイルは適用しない。
 
+Issue #129: `/admin`は配信中に調整したくなり得る4項目(ALLOWED_PLAYERS・
+GOAL_RECORD_MODE・RANK_GRAPH_MATCH_LIMIT・RANK_DELTA_DISTRIBUTION_SCOPE、
+`config.py`の`_EDITABLE_ENV_KEYS`参照)をブラウザから編集する管理画面。`/`と
+同様にOBSへの配置を想定しないため`overlay.css`の透過スタイルは使わない。
+POST後は同じ`/admin`へのリダイレクト(PRGパターン)で結果(成功/エラー文言)を
+クエリパラメータ経由で表示し、ブラウザの再読み込みで二重送信されないようにする。
+
 エンドポイントごとに新規のsqlite3コネクションを開いて処理後すぐ閉じる。
 sqlite3のコネクションはデフォルトでは開いたスレッド以外から使えず
 (check_same_thread=True)、FastAPI/uvicornは同期defのエンドポイントを
@@ -49,16 +56,21 @@ import math
 import sqlite3
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Form, Request
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from nss_tracker.config import (
+    ConfigError,
     get_allowed_players,
+    get_editable_settings,
     get_rank_delta_distribution_scope,
     get_rank_graph_match_limit,
     is_allowed_player,
+    update_editable_settings,
 )
 from nss_tracker.database.db import (
     fetch_all_matches,
@@ -738,6 +750,31 @@ def create_app(db_path: Path) -> FastAPI:
     def index(request: Request):
         counts = _fetch_matches_count(db_path)
         return _TEMPLATES.TemplateResponse(request, "index.html", {"counts": counts})
+
+    @app.get("/admin")
+    def admin(request: Request, status: Optional[str] = None, error: Optional[str] = None):
+        context = {"settings": get_editable_settings(), "status": status, "error": error}
+        return _TEMPLATES.TemplateResponse(request, "admin.html", context)
+
+    @app.post("/admin")
+    def admin_update(
+        allowed_players: str = Form(""),
+        goal_record_mode: str = Form(...),
+        rank_graph_match_limit: str = Form(...),
+        rank_delta_distribution_scope: str = Form(...),
+    ):
+        try:
+            update_editable_settings(
+                {
+                    "ALLOWED_PLAYERS": allowed_players,
+                    "GOAL_RECORD_MODE": goal_record_mode,
+                    "RANK_GRAPH_MATCH_LIMIT": rank_graph_match_limit,
+                    "RANK_DELTA_DISTRIBUTION_SCOPE": rank_delta_distribution_scope,
+                }
+            )
+        except ConfigError as exc:
+            return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
+        return RedirectResponse("/admin?status=updated", status_code=303)
 
     @app.get("/overlay/winrate")
     def overlay_winrate(request: Request):

@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 
 import pytest
+from dotenv import dotenv_values
 
 from nss_tracker.config import (
     ConfigError,
@@ -9,6 +10,7 @@ from nss_tracker.config import (
     get_capture_device_name,
     get_capture_resolution,
     get_db_path,
+    get_editable_settings,
     get_frame_read_timeout_seconds,
     get_goal_record_mode,
     get_log_level,
@@ -23,6 +25,7 @@ from nss_tracker.config import (
     get_web_host,
     get_web_port,
     is_allowed_player,
+    update_editable_settings,
 )
 
 
@@ -285,3 +288,88 @@ def test_get_obs_scene_between_matches_raises_when_unset(monkeypatch):
 def test_get_obs_scene_between_matches_uses_env_value(monkeypatch):
     monkeypatch.setenv("OBS_SCENE_BETWEEN_MATCHES", "BetweenMatches")
     assert get_obs_scene_between_matches() == "BetweenMatches"
+
+
+def test_get_editable_settings_returns_current_env_values(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "30")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+
+    assert get_editable_settings() == {
+        "ALLOWED_PLAYERS": "Alice,Bob",
+        "GOAL_RECORD_MODE": "allowlist",
+        "RANK_GRAPH_MATCH_LIMIT": "30",
+        "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
+    }
+
+
+def _write_env_file(path: Path) -> None:
+    path.write_text(
+        "ALLOWED_PLAYERS=OldName\n"
+        "GOAL_RECORD_MODE=all\n"
+        "RANK_GRAPH_MATCH_LIMIT=all\n"
+        "RANK_DELTA_DISTRIBUTION_SCOPE=all\n",
+        encoding="utf-8",
+    )
+
+
+def test_update_editable_settings_updates_environ_and_env_file(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    _write_env_file(env_path)
+    monkeypatch.setattr("nss_tracker.config.find_dotenv", lambda: str(env_path))
+    monkeypatch.setenv("ALLOWED_PLAYERS", "OldName")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+
+    update_editable_settings(
+        {
+            "ALLOWED_PLAYERS": "NewName,Second",
+            "GOAL_RECORD_MODE": "allowlist",
+            "RANK_GRAPH_MATCH_LIMIT": "10",
+            "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
+        }
+    )
+
+    assert get_editable_settings() == {
+        "ALLOWED_PLAYERS": "NewName,Second",
+        "GOAL_RECORD_MODE": "allowlist",
+        "RANK_GRAPH_MATCH_LIMIT": "10",
+        "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
+    }
+    persisted = dotenv_values(env_path)
+    assert persisted["ALLOWED_PLAYERS"] == "NewName,Second"
+    assert persisted["GOAL_RECORD_MODE"] == "allowlist"
+    assert persisted["RANK_GRAPH_MATCH_LIMIT"] == "10"
+    assert persisted["RANK_DELTA_DISTRIBUTION_SCOPE"] == "session"
+
+
+def test_update_editable_settings_raises_and_applies_nothing_when_one_value_invalid(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    _write_env_file(env_path)
+    monkeypatch.setattr("nss_tracker.config.find_dotenv", lambda: str(env_path))
+    monkeypatch.setenv("ALLOWED_PLAYERS", "OldName")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+
+    with pytest.raises(ConfigError, match="GOAL_RECORD_MODE"):
+        update_editable_settings(
+            {
+                "ALLOWED_PLAYERS": "NewName",
+                "GOAL_RECORD_MODE": "not-a-real-mode",
+                "RANK_GRAPH_MATCH_LIMIT": "10",
+                "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
+            }
+        )
+
+    # 一部の項目が不正な場合、他の正しい項目も含めて何一つ反映されない(部分適用を避ける)
+    assert get_editable_settings() == {
+        "ALLOWED_PLAYERS": "OldName",
+        "GOAL_RECORD_MODE": "all",
+        "RANK_GRAPH_MATCH_LIMIT": "all",
+        "RANK_DELTA_DISTRIBUTION_SCOPE": "all",
+    }
+    persisted = dotenv_values(env_path)
+    assert persisted["ALLOWED_PLAYERS"] == "OldName"

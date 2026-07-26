@@ -23,6 +23,7 @@ import logging
 import sqlite3
 import sys
 import time
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -333,6 +334,14 @@ def main() -> None:
     logger.info("配信セッションを開始しました: session_id=%d", session_id)
     web_handle = start_web_server_thread(create_app(db_path), host=web_host, port=web_port)
     logger.info("Webダッシュボードを起動しました: http://%s:%d/", web_host, web_port)
+    admin_url = f"http://{web_host}:{web_port}/admin"
+    # Issue #129: 配信中に調整したくなり得る設定項目(ALLOWED_PLAYERS等)をGUIで
+    # 編集できる管理画面を起動時に自動的に開く。失敗してもアプリ全体を止める
+    # 理由にはならない(ブラウザが無い環境等)ため、WARNINGログのみで継続する
+    try:
+        webbrowser.open(admin_url)
+    except Exception:
+        logger.warning("設定画面を自動的に開けませんでした。手動で開いてください: %s", admin_url)
     obs_controller = ObsSceneController(
         host=obs_host,
         port=obs_port,
