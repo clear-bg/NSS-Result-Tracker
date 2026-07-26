@@ -713,6 +713,90 @@ def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
     assert result.vs_opponent_ranks == [SlotRank("∞", 10), SlotRank("∞", 12), SlotRank("∞", 33), SlotRank("∞", 18)]
 
 
+def test_team_colors_attached_to_match_result(monkeypatch):
+    """Issue #113: VS画面確定時にread_team_colors()で1回だけ読み取った
+    チームカラーがMatchResultへ払い出されることを確認する
+    (read_team_colors自体の実装はtest_team_color.pyで別途検証済みのため、
+    ここではモックする)。
+    """
+    calls = {"n": 0}
+
+    def fake_is_vs_screen(frame):
+        return calls["n"] < 3
+
+    def fake_classify_banner(frame):
+        n = calls["n"]
+        calls["n"] += 1
+        return None if n < 5 else "win"
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
+    monkeypatch.setattr(
+        match_state_module,
+        "read_vs_screen_ranks",
+        lambda frame: ([SlotRank("∞", 38)], [SlotRank("∞", 10)]),
+    )
+    monkeypatch.setattr(match_state_module, "read_team_colors", lambda frame: ("#64bde2", "#f87abe"))
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        vs_screen_confirm_frames=2,
+        league_change_grace_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(15):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.mine_team_color == "#64bde2"
+    assert result.opponent_team_color == "#f87abe"
+
+
+def test_vs_screen_not_detected_results_in_none_team_colors(monkeypatch):
+    """VS画面を一度も検知しなかった試合では、mine_team_color/opponent_team_colorが
+    Noneのままになることを確認する(vs_mine_ranks等と同じ「任意のエンリッチ」の考え方)。
+    """
+    calls = {"n": 0}
+
+    def fake_classify_banner(frame):
+        n = calls["n"]
+        calls["n"] += 1
+        return None if n < 5 else "win"
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(15):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.mine_team_color is None
+    assert result.opponent_team_color is None
+
+
 def test_vs_screen_confirmation_logs_ranks_at_info_level(monkeypatch, caplog):
     """Issue #121: VS画面確定を検知した瞬間(DBへの記録を待たず)に、読み取った
     mine/opponentのランクをSlotRankの簡潔な表記("∞39"等)でINFOログに出すことを

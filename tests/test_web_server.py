@@ -753,7 +753,15 @@ def test_vs_rank_comparison_endpoint_uses_latest_match(tmp_path: Path):
     conn = db.connect(db_path)
     match_id = db.save_match_result(
         conn,
-        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        MatchResult(
+            result="win",
+            rank_before=1,
+            rank_after=1,
+            league_changed=None,
+            detected_at=now_jst(),
+            mine_team_color="#64bde2",
+            opponent_team_color="#f87abe",
+        ),
     )
     db.save_vs_slot_ranks(
         conn,
@@ -771,6 +779,8 @@ def test_vs_rank_comparison_endpoint_uses_latest_match(tmp_path: Path):
     assert response.json() == {
         "mine": {"total": 39, "known_count": 2, "unknown_count": 2},
         "opponent": {"total": -51, "known_count": 2, "unknown_count": 2},
+        "mine_team_color": "#64bde2",
+        "opponent_team_color": "#f87abe",
     }
 
 
@@ -806,7 +816,15 @@ def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
     conn = db.connect(db_path)
     match_id = db.save_match_result(
         conn,
-        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        MatchResult(
+            result="win",
+            rank_before=1,
+            rank_after=1,
+            league_changed=None,
+            detected_at=now_jst(),
+            mine_team_color="#64bde2",
+            opponent_team_color="#f87abe",
+        ),
     )
     db.save_vs_slot_ranks(
         conn,
@@ -823,8 +841,8 @@ def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
     assert response.status_code == 200
     assert '<link rel="stylesheet" href="/static/overlay.css">' in response.text
     assert '<link rel="stylesheet" href="/static/vs_rank_comparison.css">' in response.text
-    assert '<span class="vs-rank-mine">160</span>' in response.text
-    assert '<span class="vs-rank-opponent">40</span>' in response.text
+    assert '<span class="vs-rank-pill" style="background-color: #64bde2;">160</span>' in response.text
+    assert '<span class="vs-rank-pill" style="background-color: #f87abe;">40</span>' in response.text
     assert "合計ランク：" in response.text
     assert "160</span> VS <span" in response.text
 
@@ -838,8 +856,7 @@ def test_overlay_vs_rank_comparison_page_shows_none_placeholders_when_no_data(tm
 
     response = client.get("/overlay/vs-rank-comparison")
 
-    assert '<span class="vs-rank-mine">none</span>' in response.text
-    assert '<span class="vs-rank-opponent">none</span>' in response.text
+    assert '<span class="vs-rank-pill" style="background-color: #666666;">none</span>' in response.text
     assert "合計ランク：" in response.text
 
 
@@ -849,7 +866,15 @@ def test_overlay_vs_rank_comparison_page_shows_none_for_side_with_only_unknown_m
     conn = db.connect(db_path)
     match_id = db.save_match_result(
         conn,
-        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        MatchResult(
+            result="win",
+            rank_before=1,
+            rank_after=1,
+            league_changed=None,
+            detected_at=now_jst(),
+            mine_team_color="#64bde2",
+            opponent_team_color="#f87abe",
+        ),
     )
     db.save_vs_slot_ranks(
         conn,
@@ -863,8 +888,32 @@ def test_overlay_vs_rank_comparison_page_shows_none_for_side_with_only_unknown_m
 
     response = client.get("/overlay/vs-rank-comparison")
 
-    assert '<span class="vs-rank-mine">160</span>' in response.text
-    assert '<span class="vs-rank-opponent">none</span>' in response.text
+    assert '<span class="vs-rank-pill" style="background-color: #64bde2;">160</span>' in response.text
+    assert '<span class="vs-rank-pill" style="background-color: #f87abe;">none</span>' in response.text
+
+
+def test_overlay_vs_rank_comparison_page_uses_default_color_when_team_color_not_detected(tmp_path: Path):
+    """Issue #113: VS画面自体は検知できたがチームカラーが未検知(古いDB等)の場合もフォールバック色で表示する。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+    )
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank("∞", 40)] * 4,
+        opponent_ranks=[SlotRank("∞", 10)] * 4,
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/vs-rank-comparison")
+
+    assert '<span class="vs-rank-pill" style="background-color: #666666;">160</span>' in response.text
+    assert '<span class="vs-rank-pill" style="background-color: #666666;">40</span>' in response.text
 
 
 def test_percentile_linear_interpolation():

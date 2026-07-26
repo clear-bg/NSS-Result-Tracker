@@ -465,19 +465,25 @@ def _summarize_vs_slot_ranks(rows: list[sqlite3.Row]) -> dict:
     }
 
 
+_DEFAULT_TEAM_COLOR = "#666666"  # チームカラーが未検知の場合のフォールバック(ニュートラルな灰色)
+
+
 def _fetch_vs_rank_comparison(db_path: Path) -> Optional[dict]:
     """直近試合のvs_slot_ranksから、自チーム・相手チームそれぞれの統一スケール合計を算出する。
 
     試合が1件も無い、または直近試合でVS画面のランクが記録されていない場合(VS画面を
     検知できなかった場合等)はNoneを返す。配信セッション単位ではなく単純に直近1試合を
-    見る(VS画面はマッチングごとに1回だけ確定するデータのため)。
+    見る(VS画面はマッチングごとに1回だけ確定するデータのため)。チームカラー
+    (Issue #113、detection.team_color参照)も同じVS画面確定タイミングで検知した
+    値のため、あわせてここで返す。
     """
     conn = _connect(db_path)
     try:
         recent_matches = fetch_recent_matches(conn, 1)
         if not recent_matches:
             return None
-        rows = fetch_vs_slot_ranks(conn, recent_matches[0]["id"])
+        match_row = recent_matches[0]
+        rows = fetch_vs_slot_ranks(conn, match_row["id"])
     finally:
         conn.close()
     if not rows:
@@ -487,6 +493,8 @@ def _fetch_vs_rank_comparison(db_path: Path) -> Optional[dict]:
     return {
         "mine": _summarize_vs_slot_ranks(mine_rows),
         "opponent": _summarize_vs_slot_ranks(opponent_rows),
+        "mine_team_color": match_row["mine_team_color"] or _DEFAULT_TEAM_COLOR,
+        "opponent_team_color": match_row["opponent_team_color"] or _DEFAULT_TEAM_COLOR,
     }
 
 
@@ -844,14 +852,22 @@ def create_app(db_path: Path) -> FastAPI:
     def overlay_vs_rank_comparison(request: Request):
         comparison = _fetch_vs_rank_comparison(db_path)
         # 試合が1件も無い・直近試合でVS画面を検知できなかった場合も「合計ランク：」の
-        # 表示形式自体は崩さず、値をnoneにするだけにする(ユーザーとの相談で決定)
+        # 表示形式自体は崩さず、値をnoneにするだけにする(ユーザーとの相談で決定)。
+        # チームカラーも同様に検知できていない場合は_DEFAULT_TEAM_COLORにする
         context = (
             {
                 "mine_value": _format_vs_rank_value(comparison["mine"]),
                 "opponent_value": _format_vs_rank_value(comparison["opponent"]),
+                "mine_team_color": comparison["mine_team_color"],
+                "opponent_team_color": comparison["opponent_team_color"],
             }
             if comparison is not None
-            else {"mine_value": "none", "opponent_value": "none"}
+            else {
+                "mine_value": "none",
+                "opponent_value": "none",
+                "mine_team_color": _DEFAULT_TEAM_COLOR,
+                "opponent_team_color": _DEFAULT_TEAM_COLOR,
+            }
         )
         # 他ウィジェットより短い間隔にし、VS画面確定後できるだけ早く新しい試合の
         # 値に切り替わるようにする(#100、ユーザーとの相談で決定)

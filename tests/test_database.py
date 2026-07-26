@@ -219,6 +219,72 @@ def test_connect_vs_slot_ranks_migration_is_idempotent_for_already_migrated_sche
     assert rank_tier_label_column["notnull"] == 0
 
 
+def test_connect_migrates_legacy_matches_without_team_color(tmp_path):
+    """Issue #113: mine_team_color/opponent_team_color列が無い移行前のDBファイルに
+    対しても、connect()を呼ぶだけで列が追加され、既存データを保持したまま
+    新しいmatchesをチームカラー付きで挿入できるようになることを確認する。
+    """
+    db_path = tmp_path / "legacy.db"
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.executescript(
+        """
+        CREATE TABLE matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER,
+            detected_at TEXT NOT NULL,
+            result TEXT NOT NULL,
+            rank_before REAL,
+            rank_after REAL,
+            league_changed TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO matches (detected_at, result, created_at, updated_at)
+            VALUES ('2026-07-01T00:00:00+09:00', 'win', '2026-07-01T00:00:00+09:00', '2026-07-01T00:00:00+09:00');
+        """
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    conn = connect(db_path)
+
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    mine_color_column = next(c for c in columns if c["name"] == "mine_team_color")
+    opponent_color_column = next(c for c in columns if c["name"] == "opponent_team_color")
+    assert mine_color_column["notnull"] == 0
+    assert opponent_color_column["notnull"] == 0
+
+    rows = fetch_all_matches(conn)
+    assert len(rows) == 1
+    assert rows[0]["mine_team_color"] is None
+
+    match = MatchResult(
+        result="lose",
+        rank_before=5,
+        rank_after=4,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+    )
+    save_match_result(conn, match)
+
+    rows = fetch_all_matches(conn)
+    assert len(rows) == 2
+    assert rows[1]["mine_team_color"] == "#64bde2"
+    assert rows[1]["opponent_team_color"] == "#f87abe"
+
+
+def test_connect_matches_team_color_migration_is_idempotent_for_already_migrated_schema(tmp_path):
+    """新規DB(最初からteam_color列あり)にconnect()を複数回呼んでもエラーにならないこと。"""
+    db_path = tmp_path / "fresh.db"
+    connect(db_path).close()
+    conn = connect(db_path)
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    mine_color_column = next(c for c in columns if c["name"] == "mine_team_color")
+    assert mine_color_column["notnull"] == 0
+
+
 def test_save_and_fetch_match_result():
     conn = connect(":memory:")
     match = MatchResult(
@@ -262,6 +328,42 @@ def test_save_match_result_with_none_fields():
     assert row["rank_before"] is None
     assert row["rank_after"] is None
     assert row["league_changed"] is None
+
+
+def test_save_match_result_with_team_color():
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=39,
+        rank_after=40,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+    )
+
+    save_match_result(conn, match)
+
+    row = fetch_all_matches(conn)[0]
+    assert row["mine_team_color"] == "#64bde2"
+    assert row["opponent_team_color"] == "#f87abe"
+
+
+def test_save_match_result_team_color_defaults_to_none():
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=39,
+        rank_after=40,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    save_match_result(conn, match)
+
+    row = fetch_all_matches(conn)[0]
+    assert row["mine_team_color"] is None
+    assert row["opponent_team_color"] is None
 
 
 def test_save_match_result_draw():

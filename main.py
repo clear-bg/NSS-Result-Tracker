@@ -171,13 +171,16 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
 def _record_match_result(conn: sqlite3.Connection, session_id: Optional[int], result: MatchResult) -> None:
     match_id = db.save_match_result(conn, result, session_id=session_id)
     logger.info(
-        "試合結果を記録しました: id=%d result=%s rank=%s->%s league_changed=%s goals=%d",
+        "試合結果を記録しました: id=%d result=%s rank=%s->%s league_changed=%s goals=%d "
+        "team_color=%s->%s",
         match_id,
         result.result,
         result.rank_before,
         result.rank_after,
         result.league_changed,
         len(result.goals),
+        result.mine_team_color,
+        result.opponent_team_color,
     )
     for goal in result.goals:
         goal_id = db.save_goal(conn, match_id, goal.scorer_name, goal.assist_name, goal.detected_at)

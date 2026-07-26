@@ -90,6 +90,8 @@ CREATE TABLE IF NOT EXISTS matches (
     rank_before REAL,               -- 結果バナー表示時点のランク値
     rank_after REAL,                -- ランク変動確定後の値
     league_changed TEXT,            -- 'up' / 'down' / NULL
+    mine_team_color TEXT,           -- VS画面で実測した自チームの色(hex文字列、例: '#64bde2')。Issue #113
+    opponent_team_color TEXT,       -- 同、相手チーム。VS画面を検知できなかった試合ではどちらもNULL
     created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601, JST)
     updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601, JST)
 );
@@ -189,6 +191,23 @@ def _migrate_vs_slot_ranks_add_rank_tier_label(conn: sqlite3.Connection) -> None
     conn.commit()
 
 
+def _migrate_matches_add_team_color(conn: sqlite3.Connection) -> None:
+    """Issue #113: 既存DBファイルのmatchesテーブルにmine_team_color/opponent_team_color列を追加する。
+
+    NOT NULL制約が絡まない列追加のため、_migrate_matches_add_session_idと同じく
+    ALTER TABLE ADD COLUMNだけで済む。新規DBでは_SCHEMA自体に既に両列を含むため、
+    この関数は無害にreturnする。
+    """
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    if any(c["name"] == "mine_team_color" for c in columns):
+        return
+
+    logger.info("matchesテーブルにmine_team_color/opponent_team_color列を追加しています")
+    conn.execute("ALTER TABLE matches ADD COLUMN mine_team_color TEXT")
+    conn.execute("ALTER TABLE matches ADD COLUMN opponent_team_color TEXT")
+    conn.commit()
+
+
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """DBに接続し、テーブルが無ければ作成して返す。
 
@@ -205,6 +224,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     _migrate_goals_scorer_name_nullable(conn)
     _migrate_matches_add_session_id(conn)
     _migrate_vs_slot_ranks_add_rank_tier_label(conn)
+    _migrate_matches_add_team_color(conn)
     logger.info("DBに接続しました: %s", Path(db_path).resolve())
     return conn
 
@@ -252,8 +272,9 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
     now = now_jst().isoformat()
     cursor = conn.execute(
         "INSERT INTO matches "
-        "(session_id, detected_at, result, rank_before, rank_after, league_changed, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "(session_id, detected_at, result, rank_before, rank_after, league_changed, "
+        "mine_team_color, opponent_team_color, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             session_id,
             match.detected_at.isoformat(),
@@ -261,6 +282,8 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
             match.rank_before,
             match.rank_after,
             match.league_changed,
+            match.mine_team_color,
+            match.opponent_team_color,
             now,
             now,
         ),

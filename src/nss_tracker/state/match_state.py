@@ -136,6 +136,7 @@ from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end
 from nss_tracker.detection.matchmaking import is_vs_screen, read_vs_roi_hsv
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED, RANK_ROI, read_precise_rank
+from nss_tracker.detection.team_color import read_team_colors
 from nss_tracker.detection.vs_rank import SlotRank, read_vs_screen_ranks
 from nss_tracker.detection_config import get_detection_value
 from nss_tracker.timeutil import now_jst
@@ -205,6 +206,10 @@ class MatchResult:
     # (Issue #39: VS画面検知は任意のエンリッチであり必須の前提にしない)
     vs_mine_ranks: list[SlotRank] = field(default_factory=list)
     vs_opponent_ranks: list[SlotRank] = field(default_factory=list)
+    # チームカラー(Issue #113)。vs_mine_ranks等と同じくVS画面を見逃した試合では
+    # 両方Noneのまま(必須の前提にしない)
+    mine_team_color: Optional[str] = None
+    opponent_team_color: Optional[str] = None
 
 
 class MatchStateMachine:
@@ -254,6 +259,8 @@ class MatchStateMachine:
         self._vs_recorded_this_match = False
         self._pending_vs_mine_ranks: list[SlotRank] = []
         self._pending_vs_opponent_ranks: list[SlotRank] = []
+        self._pending_mine_team_color: Optional[str] = None
+        self._pending_opponent_team_color: Optional[str] = None
         self._match_end_streak = 0
         self._match_end_recorded_this_event = False
         self._match_end_seen = False
@@ -305,6 +312,7 @@ class MatchStateMachine:
         self._vs_streak += 1
         if self._vs_streak >= self._vs_screen_confirm_frames and not self._vs_recorded_this_match:
             self._pending_vs_mine_ranks, self._pending_vs_opponent_ranks = read_vs_screen_ranks(frame)
+            self._pending_mine_team_color, self._pending_opponent_team_color = read_team_colors(frame)
             self._vs_recorded_this_match = True
             self._in_match = True
             self._session_match_no += 1
@@ -317,6 +325,12 @@ class MatchStateMachine:
                 self._session_match_no,
                 self._pending_vs_mine_ranks,
                 self._pending_vs_opponent_ranks,
+            )
+            logger.info(
+                "%d試合目 チームカラー: mine=%s opponent=%s",
+                self._session_match_no,
+                self._pending_mine_team_color,
+                self._pending_opponent_team_color,
             )
 
     def _check_for_match_end(self, frame: np.ndarray) -> None:
@@ -544,6 +558,8 @@ class MatchStateMachine:
             goals=self._pending_goals,
             vs_mine_ranks=self._pending_vs_mine_ranks,
             vs_opponent_ranks=self._pending_vs_opponent_ranks,
+            mine_team_color=self._pending_mine_team_color,
+            opponent_team_color=self._pending_opponent_team_color,
         )
         self._pending_result = None
         self._pending_rank_before = None
@@ -553,6 +569,8 @@ class MatchStateMachine:
         self._goal_recorded_this_event = False
         self._pending_vs_mine_ranks = []
         self._pending_vs_opponent_ranks = []
+        self._pending_mine_team_color = None
+        self._pending_opponent_team_color = None
         self._vs_streak = 0
         self._vs_recorded_this_match = False
         self._in_match = False
