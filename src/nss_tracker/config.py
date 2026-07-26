@@ -32,6 +32,18 @@ Python側にフォールバック用のデフォルト値を一切持たない�
 `OBS_WEBSOCKET_PASSWORD`はobs-websocketの接続パスワード。OBS側で認証を無効化して
 いる場合は文字列`"none"`を指定する(空文字列のパスワードとして扱われる)。
 それ以外の値(空文字列含む)は実際のパスワードとしてそのまま使う。
+
+`ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・
+`RANK_DELTA_DISTRIBUTION_SCOPE`の4項目のみ、Webダッシュボードの管理画面
+(`/admin`、`web/server.py`参照)からGUIで更新できる(Issue #129)。この4項目は
+検知ループを再起動しなくても次に参照されたタイミングから即座に反映される
+(get_allowed_players/get_goal_record_mode/get_rank_graph_match_limit/
+get_rank_delta_distribution_scopeがいずれも呼び出しのたびにos.environを
+読み直す実装のため)。`update_editable_settings`はos.environと`.env`ファイルの
+両方を更新する(`.env`側も更新するのは、次回起動時にも同じ値を引き継ぐため)。
+この4項目を選んだ理由は、配信中に調整したくなり得る値(出演者・記録方針・
+グラフの表示範囲)に絞ったため。キャプチャ設定やOBS接続情報等は配信開始前に
+一度決めれば十分なため対象外とした。
 """
 
 import logging
@@ -39,7 +51,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv, set_key
 
 load_dotenv()
 
@@ -127,14 +139,8 @@ def get_web_port() -> int:
     return int(_require_env("WEB_PORT"))
 
 
-def get_rank_graph_match_limit() -> Optional[int]:
-    """ランク推移グラフの対象範囲(直近何試合分か)を取得する。
-
-    値が`"all"`の場合はNone(全期間を表示する)を返す。それ以外は正の整数として
-    解釈を試み、数値化できない値・0以下の値・空文字列はConfigErrorを送出する
-    (Issue #126、モジュールdocstring参照)。
-    """
-    raw = _require_env("RANK_GRAPH_MATCH_LIMIT").strip()
+def _validate_rank_graph_match_limit(raw: str) -> Optional[int]:
+    raw = raw.strip()
     if raw == "all":
         return None
     try:
@@ -148,6 +154,25 @@ def get_rank_graph_match_limit() -> Optional[int]:
     return value
 
 
+def get_rank_graph_match_limit() -> Optional[int]:
+    """ランク推移グラフの対象範囲(直近何試合分か)を取得する。
+
+    値が`"all"`の場合はNone(全期間を表示する)を返す。それ以外は正の整数として
+    解釈を試み、数値化できない値・0以下の値・空文字列はConfigErrorを送出する
+    (Issue #126、モジュールdocstring参照)。
+    """
+    return _validate_rank_graph_match_limit(_require_env("RANK_GRAPH_MATCH_LIMIT"))
+
+
+def _validate_rank_delta_distribution_scope(value: str) -> str:
+    if value not in _VALID_RANK_DELTA_DISTRIBUTION_SCOPES:
+        raise ConfigError(
+            f"RANK_DELTA_DISTRIBUTION_SCOPEの値が不正です: {value}"
+            f"({'/'.join(_VALID_RANK_DELTA_DISTRIBUTION_SCOPES)}のいずれかを指定してください)"
+        )
+    return value
+
+
 def get_rank_delta_distribution_scope() -> str:
     """勝敗別ランク増減分布(箱ひげ図)の集計対象を取得する。
 
@@ -155,13 +180,7 @@ def get_rank_delta_distribution_scope() -> str:
     未設定・不正な値の場合はConfigErrorを送出する(GOAL_RECORD_MODEと同じ扱い、
     空文字列は許容しない)。
     """
-    value = _require_env("RANK_DELTA_DISTRIBUTION_SCOPE")
-    if value not in _VALID_RANK_DELTA_DISTRIBUTION_SCOPES:
-        raise ConfigError(
-            f"RANK_DELTA_DISTRIBUTION_SCOPEの値が不正です: {value}"
-            f"({'/'.join(_VALID_RANK_DELTA_DISTRIBUTION_SCOPES)}のいずれかを指定してください)"
-        )
-    return value
+    return _validate_rank_delta_distribution_scope(_require_env("RANK_DELTA_DISTRIBUTION_SCOPE"))
 
 
 def get_obs_websocket_host() -> str:
@@ -197,6 +216,14 @@ def get_obs_scene_between_matches() -> str:
     return _require_env("OBS_SCENE_BETWEEN_MATCHES")
 
 
+def _validate_goal_record_mode(value: str) -> str:
+    if value not in _VALID_GOAL_RECORD_MODES:
+        raise ConfigError(
+            f"GOAL_RECORD_MODEの値が不正です: {value}({'/'.join(_VALID_GOAL_RECORD_MODES)}のいずれかを指定してください)"
+        )
+    return value
+
+
 def get_goal_record_mode() -> str:
     """ゴール/アシストをDBに記録する際の許可リストの扱いモードを取得する。
 
@@ -205,9 +232,36 @@ def get_goal_record_mode() -> str:
     記録するが、許可リスト外の名前はNULLにする)のいずれか。未設定・不正な
     値の場合はConfigErrorを送出する(database.db.save_goal参照)。
     """
-    value = _require_env("GOAL_RECORD_MODE")
-    if value not in _VALID_GOAL_RECORD_MODES:
-        raise ConfigError(
-            f"GOAL_RECORD_MODEの値が不正です: {value}({'/'.join(_VALID_GOAL_RECORD_MODES)}のいずれかを指定してください)"
-        )
-    return value
+    return _validate_goal_record_mode(_require_env("GOAL_RECORD_MODE"))
+
+
+_EDITABLE_ENV_KEYS = (
+    "ALLOWED_PLAYERS",
+    "GOAL_RECORD_MODE",
+    "RANK_GRAPH_MATCH_LIMIT",
+    "RANK_DELTA_DISTRIBUTION_SCOPE",
+)
+
+
+def get_editable_settings() -> dict[str, str]:
+    """管理画面(/admin)で表示・編集する対象4項目の現在値を返す。"""
+    return {key: os.environ.get(key, "") for key in _EDITABLE_ENV_KEYS}
+
+
+def update_editable_settings(values: dict[str, str]) -> None:
+    """管理画面(/admin)からの更新をos.environ・.envの両方に反映する。
+
+    キーは_EDITABLE_ENV_KEYSの4つ全てが必須。ALLOWED_PLAYERS以外は各get_xxx()と
+    同じバリデーション関数を通し、いずれか1つでも不正ならConfigErrorを送出して
+    何も更新しない(部分適用を避けるため、書き込み前に全項目を検証する)。
+    ALLOWED_PLAYERSはカンマ区切りの自由記述でフォーマット上の制約が無いため
+    検証しない(空文字列も「誰も記録しない」という有効な値、モジュールdocstring参照)。
+    """
+    _validate_goal_record_mode(values["GOAL_RECORD_MODE"])
+    _validate_rank_graph_match_limit(values["RANK_GRAPH_MATCH_LIMIT"])
+    _validate_rank_delta_distribution_scope(values["RANK_DELTA_DISTRIBUTION_SCOPE"])
+
+    dotenv_path = find_dotenv()
+    for key in _EDITABLE_ENV_KEYS:
+        os.environ[key] = values[key]
+        set_key(dotenv_path, key, values[key])

@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import httpx
@@ -1117,6 +1118,135 @@ def test_index_page_does_not_include_refresh_script(tmp_path: Path):
     response = client.get("/")
 
     assert "overlay-refresh.js" not in response.text
+
+
+def _write_admin_env_file(path: Path) -> None:
+    path.write_text(
+        "ALLOWED_PLAYERS=OldName\n"
+        "GOAL_RECORD_MODE=all\n"
+        "RANK_GRAPH_MATCH_LIMIT=all\n"
+        "RANK_DELTA_DISTRIBUTION_SCOPE=all\n",
+        encoding="utf-8",
+    )
+
+
+def test_admin_get_shows_current_settings(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "30")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert 'value="Alice,Bob"' in response.text
+    assert 'value="30"' in response.text
+
+
+def test_admin_post_updates_settings_and_persists_to_env_file(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    _write_admin_env_file(env_path)
+    monkeypatch.setattr("nss_tracker.config.find_dotenv", lambda: str(env_path))
+    monkeypatch.setenv("ALLOWED_PLAYERS", "OldName")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.post(
+        "/admin",
+        data={
+            "allowed_players": "NewName",
+            "goal_record_mode": "allowlist",
+            "rank_graph_match_limit": "10",
+            "rank_delta_distribution_scope": "session",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.url.path == "/admin"
+    assert response.url.params["status"] == "updated"
+    assert os.environ["ALLOWED_PLAYERS"] == "NewName"
+    assert os.environ["RANK_GRAPH_MATCH_LIMIT"] == "10"
+
+
+def test_admin_post_with_invalid_value_shows_error_and_does_not_update(tmp_path: Path, monkeypatch):
+    env_path = tmp_path / ".env"
+    _write_admin_env_file(env_path)
+    monkeypatch.setattr("nss_tracker.config.find_dotenv", lambda: str(env_path))
+    monkeypatch.setenv("ALLOWED_PLAYERS", "OldName")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.post(
+        "/admin",
+        data={
+            "allowed_players": "NewName",
+            "goal_record_mode": "not-a-real-mode",
+            "rank_graph_match_limit": "10",
+            "rank_delta_distribution_scope": "session",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.url.params["error"]
+    assert "GOAL_RECORD_MODE" in response.url.params["error"]
+    assert os.environ["ALLOWED_PLAYERS"] == "OldName"
+
+
+def test_admin_post_logs_info_message_on_success(tmp_path: Path, monkeypatch, caplog):
+    """Issue #129: 更新内容はINFOレベルで記録する(DEBUGモードでも表示されるため)。"""
+    env_path = tmp_path / ".env"
+    _write_admin_env_file(env_path)
+    monkeypatch.setattr("nss_tracker.config.find_dotenv", lambda: str(env_path))
+    monkeypatch.setenv("ALLOWED_PLAYERS", "OldName")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    with caplog.at_level("INFO", logger="nss_tracker.web"):
+        client.post(
+            "/admin",
+            data={
+                "allowed_players": "NewName",
+                "goal_record_mode": "allowlist",
+                "rank_graph_match_limit": "10",
+                "rank_delta_distribution_scope": "session",
+            },
+        )
+
+    messages = [record.message for record in caplog.records if record.name == "nss_tracker.web"]
+    assert any("NewName" in message and "OldName" in message for message in messages)
+
+
+def test_admin_post_logs_warning_message_on_invalid_value(tmp_path: Path, monkeypatch, caplog):
+    """Issue #129: 拒否された更新もWARNINGレベルで記録する。"""
+    env_path = tmp_path / ".env"
+    _write_admin_env_file(env_path)
+    monkeypatch.setattr("nss_tracker.config.find_dotenv", lambda: str(env_path))
+    monkeypatch.setenv("ALLOWED_PLAYERS", "OldName")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    with caplog.at_level("WARNING", logger="nss_tracker.web"):
+        client.post(
+            "/admin",
+            data={
+                "allowed_players": "NewName",
+                "goal_record_mode": "not-a-real-mode",
+                "rank_graph_match_limit": "10",
+                "rank_delta_distribution_scope": "session",
+            },
+        )
+
+    messages = [record.message for record in caplog.records if record.name == "nss_tracker.web"]
+    assert any("GOAL_RECORD_MODE" in message for message in messages)
 
 
 def test_start_web_server_thread_serves_requests_and_stops_cleanly(tmp_path: Path):

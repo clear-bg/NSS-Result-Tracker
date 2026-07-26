@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>設定</title>
+<link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+<h1>配信中の設定</h1>
+{% if status == "updated" %}
+<p class="admin-message admin-message-success">更新しました。</p>
+{% endif %}
+{% if error %}
+<p class="admin-message admin-message-error">{{ error }}</p>
+{% endif %}
+<form method="post" action="/admin">
+  <div class="admin-field">
+    <label for="allowed_players">許可リスト(得点・アシストを記録する対象のプレイヤー名、カンマ区切り)</label>
+    <input type="text" id="allowed_players" name="allowed_players" value="{{ settings.ALLOWED_PLAYERS }}">
+  </div>
+  <div class="admin-field">
+    <label for="goal_record_mode">ゴール/アシストの記録方針</label>
+    <select id="goal_record_mode" name="goal_record_mode">
+      <option value="all" {% if settings.GOAL_RECORD_MODE == "all" %}selected{% endif %}>all(許可リストに関係なく全員記録)</option>
+      <option value="allowlist" {% if settings.GOAL_RECORD_MODE == "allowlist" %}selected{% endif %}>allowlist(どちらかが許可リストにいれば両方そのまま記録)</option>
+      <option value="allowlist_redact" {% if settings.GOAL_RECORD_MODE == "allowlist_redact" %}selected{% endif %}>allowlist_redact(どちらかが許可リストにいれば記録、許可リスト外の名前はNULL)</option>
+    </select>
+  </div>
+  <div class="admin-field">
+    <label for="rank_graph_match_limit">ランク推移グラフの対象範囲(<code>all</code> または正の整数)</label>
+    <input type="text" id="rank_graph_match_limit" name="rank_graph_match_limit" value="{{ settings.RANK_GRAPH_MATCH_LIMIT }}">
+  </div>
+  <div class="admin-field">
+    <label for="rank_delta_distribution_scope">ランク増減分布(箱ひげ図)の集計対象</label>
+    <select id="rank_delta_distribution_scope" name="rank_delta_distribution_scope">
+      <option value="session" {% if settings.RANK_DELTA_DISTRIBUTION_SCOPE == "session" %}selected{% endif %}>session(現在の配信セッションのみ)</option>
+      <option value="all" {% if settings.RANK_DELTA_DISTRIBUTION_SCOPE == "all" %}selected{% endif %}>all(累計・全期間)</option>
+    </select>
+  </div>
+  <button type="submit">更新</button>
+</form>
+</body>
+</html>

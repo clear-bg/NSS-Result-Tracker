@@ -8,6 +8,7 @@ detection/の各判定ロジック自体の精度はtest_banner.py・test_rank_o
 
 import sqlite3
 import sys
+import webbrowser
 from datetime import datetime
 
 import pytest
@@ -81,12 +82,46 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
         return handle
 
     monkeypatch.setattr(main, "start_web_server_thread", spy_start)
+    opened_urls = []
+    monkeypatch.setattr(main.webbrowser, "open", lambda url: opened_urls.append(url))
 
     main.main()
 
     assert captured["host"] == "127.0.0.1"
     assert captured["port"] == 8768
     assert not captured["handle"].thread.is_alive()
+    assert db_path.exists()
+    # Issue #129: 設定画面(/admin)を起動時に自動的に開くことを確認する
+    assert opened_urls == ["http://127.0.0.1:8768/admin"]
+
+
+def test_main_continues_when_browser_cannot_be_opened(monkeypatch, tmp_path):
+    """Issue #129: ブラウザが無い環境等で設定画面の自動起動に失敗しても、アプリ全体は止めない。"""
+    monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller: None)
+
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    monkeypatch.setenv("WEB_HOST", "127.0.0.1")
+    monkeypatch.setenv("WEB_PORT", "8769")
+    monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "INFO")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("OBS_WEBSOCKET_HOST", "127.0.0.1")
+    monkeypatch.setenv("OBS_WEBSOCKET_PORT", "48766")
+    monkeypatch.setenv("OBS_WEBSOCKET_PASSWORD", "none")
+    monkeypatch.setenv("OBS_SCENE_IN_MATCH", "InMatch")
+    monkeypatch.setenv("OBS_SCENE_BETWEEN_MATCHES", "BetweenMatches")
+    monkeypatch.setattr(sys, "argv", ["main.py", "--video", "dummy.mp4"])
+
+    def raise_error(url):
+        raise webbrowser.Error("no browser")
+
+    monkeypatch.setattr(main.webbrowser, "open", raise_error)
+
+    main.main()  # 例外を送出せず正常終了することを確認する
+
     assert db_path.exists()
 
 
