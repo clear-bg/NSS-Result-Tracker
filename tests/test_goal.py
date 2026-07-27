@@ -5,7 +5,7 @@ import cv2
 import pytest
 
 from conftest import requires_fixtures
-from nss_tracker.detection.goal import is_goal_event, read_assist_name, read_scorer_name
+from nss_tracker.detection.goal import is_goal_event, is_own_goal_event, read_assist_name, read_scorer_name
 
 # 得点者・アシスト名の正解データはプレイヤー実名を含むため、fixtures/screenshots
 # 本体と同様に.gitignore対象のローカルファイルから読み込む(リポジトリには含めない)
@@ -55,6 +55,35 @@ def test_read_scorer_name_returns_name_and_confidence_score(fixtures_dir):
     name, score = assist
     assert isinstance(name, str) and name
     assert 0.0 <= score <= 1.0
+
+
+@pytest.mark.slow
+@requires_fixtures
+def test_read_scorer_and_assist_name_return_none_for_own_goal(fixtures_dir):
+    """オウンゴールでは得点者名が表示されないため、read_scorer_name()・
+    read_assist_name()はどちらもNoneを返すべき(Issue #141)。
+
+    名前パネルを4行の個別ROIに分割する前は、「オウンゴール」というラベル
+    文字列自体が既知のラベルバリエーションに含まれておらず、名前として
+    誤採用されてしまっていた(read_scorer_nameが"オウンゴール"を返す不具合)。
+    """
+    frame = cv2.imread(str(fixtures_dir / "75_goal_blue_owngoal_hdr_off.png"))
+    assert frame is not None
+
+    assert read_scorer_name(frame) is None
+    assert read_assist_name(frame) is None
+
+
+@pytest.mark.slow
+@requires_fixtures
+def test_is_own_goal_event(fixtures_dir):
+    frame = cv2.imread(str(fixtures_dir / "75_goal_blue_owngoal_hdr_off.png"))
+    assert frame is not None
+    assert is_own_goal_event(frame)
+
+    frame = cv2.imread(str(fixtures_dir / "74_goal_with_assist_red_hdr_off.png"))
+    assert frame is not None
+    assert not is_own_goal_event(frame)
 
 
 @pytest.mark.slow
