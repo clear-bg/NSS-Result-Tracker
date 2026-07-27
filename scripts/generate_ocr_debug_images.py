@@ -218,13 +218,13 @@ def generate_goal() -> None:
     output_dir = OUTPUT_ROOT / "goal"
     print("goal:")
 
-    source = "21_goal_with_assist_blue.png"
-    image = _load(source)
     categories = [
         _Category("goal_banner (BANNER_ROI)", "color", (0, 200, 255), [GOAL_BANNER_ROI]),
         _Category("name_panel (NAME_PANEL_ROI)", "OCR", (255, 200, 0), [NAME_PANEL_ROI]),
     ]
-    _write(output_dir, source, _draw_categories(image, categories))
+    for source in ["21_goal_with_assist_blue.png", "31_goal_with_assist_red.png"]:
+        image = _load(source)
+        _write(output_dir, source, _draw_categories(image, categories))
 
     readme = output_dir / "README.md"
     readme.write_text(
@@ -239,6 +239,10 @@ def generate_goal() -> None:
   同じこの領域をOCRし、結果の中から「アシスト」というラベル文字列の位置で
   得点者名とアシスト名を区別する(得点者用・アシスト用に別々のROIがあるわけ
   ではない)
+
+いずれのROIもチームカラーに依存しないため、青チーム
+(`21_goal_with_assist_blue_annotated.png`)・赤チーム
+(`31_goal_with_assist_red_annotated.png`)の両方を参考として置いている。
 """,
         encoding="utf-8",
     )
