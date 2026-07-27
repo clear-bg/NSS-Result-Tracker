@@ -25,8 +25,9 @@ PaddleOCRを使う(rank_ocr.pyの数字読み取りは既存どおりEasyOCRの�
 「アシスト」ではなく「ゴール」が表示される。read_scorer_name()は
 GOAL_LABEL_ROI・ASSIST_LABEL_ROIの両方を確認し、実際にどちらに「ゴール」が
 読めたかで得点者名の位置を判定するため、位置がずれても正しく対応できる。
-ただしこの単独ゴール(アシスト無し・オウンゴールでもない)のケース自体は、
-現時点でHDR無効化後の参照fixtureが無く未検証(Issue #153で収集予定)。
+この単独ゴール(アシスト無し・オウンゴールでもない)のケースは、Issue #153で
+収集した参照fixture(fixtures/screenshots/83_goal_without_assist_blue_hdr_off.png)
+で実データ検証済み。
 
 オウンゴールは上記4行のグリッドとは別に「オウンゴール」という単独ラベルのみが
 表示され、得点者名は表示されない(実データで確認済み、
@@ -163,7 +164,7 @@ def read_scorer_name(frame: np.ndarray) -> Optional[tuple[str, float]]:
         return _read_name(frame, SCORER_NAME_ROI)
     if _label_matches(frame, ASSIST_LABEL_ROI, _GOAL_LABEL_VARIANTS):
         # 単独ゴール(アシスト無し)で「ゴール」行がアシスト側の位置にずれる
-        # ケース(モジュールdocstring参照、未検証)
+        # ケース(モジュールdocstring参照)
         return _read_name(frame, ASSIST_NAME_ROI)
     return None
 

@@ -42,9 +42,10 @@ ROIはチームカラーに依存しないため、赤チームでアシスト�
 goal_label/scorer_name/assist_label/assist_nameはいずれも空で、
 own_goal_labelのみに「オウンゴール」が表示される)。
 
-アシスト無しの単独ゴール(オウンゴールではない通常のゴール)でgoal_labelが
-空になりassist_label側に「ゴール」が来るケースは、現時点でHDR無効化後の
-参照fixtureが無く未検証(Issue #153で収集予定)。
+アシスト無しの単独ゴール(オウンゴールではない通常のゴール)の例として、
+青チームの`83_goal_without_assist_blue_hdr_off_annotated.png`も置いている
+(Issue #153で収集。goal_labelは空で、assist_label側に「ゴール」が、
+assist_name側に得点者名が表示される)。
 
 `roi_mask.png`はROI枠のみを描画し、それ以外は透過にした画像(fixture本体の
 画像データは含まない)。手元の任意の画像に重ねて、現在のROIがどの位置に

@@ -23,6 +23,11 @@ EXPECTED_EVENT = {
     "80_match_end_hdr_off_2.png": False,
     "81_result_lose_without_rank_blue_hdr_off.png": False,
     "82_matching_with_rank_4v3_hdr_off.png": False,
+    "83_goal_without_assist_blue_hdr_off.png": True,
+    "84_result_win_with_rank_blue_hdr_off.png": False,
+    "85_result_win_with_rank_enlarged_blue_hdr_off.png": False,
+    "86_matching_with_rank_4v4_hdr_off.png": False,
+    "87_matching_hdr_off_3.png": False,
 }
 
 
@@ -59,6 +64,27 @@ def test_read_scorer_name_returns_name_and_confidence_score(fixtures_dir):
 
 @pytest.mark.slow
 @requires_fixtures
+def test_read_scorer_name_for_solo_goal_without_assist(fixtures_dir):
+    """アシスト無しの単独ゴール(オウンゴールではない)では、「ゴール」ラベル+
+    得点者名がアシスト側の位置にずれて表示されるが、read_scorer_name()は
+    それでも正しく得点者名を読み取れるはず(Issue #141のモジュールdocstring
+    参照。Issue #153で収集した参照fixtureにより実データ検証できた)。
+    read_assist_name()はアシストが無いためNoneを返す。
+    """
+    frame = cv2.imread(str(fixtures_dir / "83_goal_without_assist_blue_hdr_off.png"))
+    assert frame is not None
+
+    scorer = read_scorer_name(frame)
+    assert scorer is not None
+    name, score = scorer
+    assert isinstance(name, str) and name
+    assert 0.0 <= score <= 1.0
+
+    assert read_assist_name(frame) is None
+
+
+@pytest.mark.slow
+@requires_fixtures
 def test_read_scorer_and_assist_name_return_none_for_own_goal(fixtures_dir):
     """オウンゴールでは得点者名が表示されないため、read_scorer_name()・
     read_assist_name()はどちらもNoneを返すべき(Issue #141)。
@@ -82,6 +108,10 @@ def test_is_own_goal_event(fixtures_dir):
     assert is_own_goal_event(frame)
 
     frame = cv2.imread(str(fixtures_dir / "74_goal_with_assist_red_hdr_off.png"))
+    assert frame is not None
+    assert not is_own_goal_event(frame)
+
+    frame = cv2.imread(str(fixtures_dir / "83_goal_without_assist_blue_hdr_off.png"))
     assert frame is not None
     assert not is_own_goal_event(frame)
 
