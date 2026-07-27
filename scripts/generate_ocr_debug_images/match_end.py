@@ -3,12 +3,22 @@
 
 下のROI変数を書き換えてこのスクリプトを直接実行すれば
 (`uv run python scripts/generate_ocr_debug_images/match_end.py`)、変更後の枠で
-`*_annotated.png`(全画面表示、fixture本体と同じ解像度)と`README.md`
+`*_annotated.png`(全画面表示、fixture本体と同じ解像度)・`roi_mask.png`
+(ROI枠のみで他は透過、任意の画像に重ねて確認する用)・`README.md`
 (枠色・種別・実測ピクセル座標のテーブル込み)を再生成できる。画像ファイル自体を
 手で編集する想定はない。デフォルト値は`detection/match_end.py`の現在値と同じ。
 """
 
-from common import Category, OUTPUT_ROOT, draw_categories, load_fixture, roi_table_markdown, write_annotated
+from common import (
+    Category,
+    OUTPUT_ROOT,
+    draw_categories,
+    draw_categories_mask,
+    load_fixture,
+    roi_table_markdown,
+    write_annotated,
+    write_mask,
+)
 
 from nss_tracker.detection.match_end import MATCH_END_LEFT_ROI as _MATCH_END_LEFT_ROI
 from nss_tracker.detection.match_end import MATCH_END_RIGHT_ROI as _MATCH_END_RIGHT_ROI
@@ -35,6 +45,7 @@ def main() -> None:
         Category("text_confirm (MATCH_END_TEXT_ROI)", "OCR", (255, 200, 0), [MATCH_END_TEXT_ROI]),
     ]
     write_annotated(output_dir, SOURCE_FILENAME, draw_categories(image, categories))
+    write_mask(output_dir, "roi_mask", draw_categories_mask(image.shape[:2], categories))
 
     readme = output_dir / "README.md"
     readme.write_text(
@@ -61,6 +72,10 @@ HDR無効化後fixture`76_match_end_hdr_off.png`は目視では同じ「試合�
 左上角が帯の丸み端にかかるため、色判定(hue_std)が閾値をわずかに超えて
 候補判定自体を通過できない既知の問題がある(`tests/test_match_end.py`で
 xfail、Issue #142でROI再較正予定)。
+
+`roi_mask.png`はROI枠のみを描画し、それ以外は透過にした画像(fixture本体の
+画像データは含まない)。手元の任意の画像に重ねて、現在のROIがどの位置に
+来るかを画像編集ソフト等で確認する用途に使う(Issue #140)。
 """,
         encoding="utf-8",
     )

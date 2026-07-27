@@ -3,12 +3,22 @@
 
 下のROI変数を書き換えてこのスクリプトを直接実行すれば
 (`uv run python scripts/generate_ocr_debug_images/rank_ocr.py`)、変更後の枠で
-`*_annotated.png`(全画面表示、fixture本体と同じ解像度)と`README.md`
+`*_annotated.png`(全画面表示、fixture本体と同じ解像度)・`roi_mask_*.png`
+(ROI枠のみで他は透過、任意の画像に重ねて確認する用)・`README.md`
 (枠色・種別・実測ピクセル座標のテーブル込み)を再生成できる。画像ファイル自体を
 手で編集する想定はない。デフォルト値は`detection/rank_ocr.py`の現在値と同じ。
 """
 
-from common import Category, OUTPUT_ROOT, draw_categories, load_fixture, roi_table_markdown, write_annotated
+from common import (
+    Category,
+    OUTPUT_ROOT,
+    draw_categories,
+    draw_categories_mask,
+    load_fixture,
+    roi_table_markdown,
+    write_annotated,
+    write_mask,
+)
 
 from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT as _GAUGE_ROI_COMPACT
 from nss_tracker.detection.rank_ocr import GAUGE_ROI_ENLARGED as _GAUGE_ROI_ENLARGED
@@ -39,11 +49,13 @@ def main() -> None:
         Category("gauge_compact (GAUGE_ROI_COMPACT)", "color/brightness", (0, 200, 255), [GAUGE_ROI_COMPACT]),
     ]
     write_annotated(output_dir, COMPACT_SOURCE_FILENAME, draw_categories(image, compact_categories))
+    write_mask(output_dir, "roi_mask_compact", draw_categories_mask(image.shape[:2], compact_categories))
 
     enlarged_categories = [
         Category("rank_badge (RANK_ROI)", "OCR", (255, 200, 0), [RANK_ROI]),
         Category("gauge_enlarged (GAUGE_ROI_ENLARGED)", "color/brightness", (0, 120, 255), [GAUGE_ROI_ENLARGED]),
     ]
+    write_mask(output_dir, "roi_mask_enlarged", draw_categories_mask(image.shape[:2], enlarged_categories))
 
     readme = output_dir / "README.md"
     readme.write_text(
@@ -82,6 +94,10 @@ def main() -> None:
 呼び出し元(`state/match_state.py`)では、どちらのROIを使うべきかは読み取り
 タイミングによって一意に決まる(結果バナー確定直後=常にコンパクト、
 アニメーション安定後=常に拡大)。
+
+`roi_mask_compact.png`/`roi_mask_enlarged.png`はROI枠のみを描画し、それ以外は
+透過にした画像(fixture本体の画像データは含まない)。手元の任意の画像に重ねて、
+現在のROIがどの位置に来るかを画像編集ソフト等で確認する用途に使う(Issue #140)。
 """,
         encoding="utf-8",
     )

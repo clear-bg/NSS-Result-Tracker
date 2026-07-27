@@ -25,3 +25,7 @@ HDR無効化後fixture`76_match_end_hdr_off.png`は目視では同じ「試合�
 左上角が帯の丸み端にかかるため、色判定(hue_std)が閾値をわずかに超えて
 候補判定自体を通過できない既知の問題がある(`tests/test_match_end.py`で
 xfail、Issue #142でROI再較正予定)。
+
+`roi_mask.png`はROI枠のみを描画し、それ以外は透過にした画像(fixture本体の
+画像データは含まない)。手元の任意の画像に重ねて、現在のROIがどの位置に
+来るかを画像編集ソフト等で確認する用途に使う(Issue #140)。
