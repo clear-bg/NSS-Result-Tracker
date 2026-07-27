@@ -33,36 +33,20 @@ def test_slot_rank_repr(slot_rank, expected):
 
 # 正解値は各fixtureの静止画を目視確認して得たもの(read_vs_screen_ranks自体の出力を
 # 転記したものではない)。スロット0が画面手前(自チーム側は自分自身)、スロット3が
-# 最も奥。70/71は文字階級(S/A)バッジのスロットを含む。Issue #40対応時
-# (2026-07-20)、該当スロットのアイコン・数値ピルをそれぞれ実座標で切り出し10倍
-# 拡大したうえで目視確認し、tier('S'/'A')と数値の正解値を確定した
-# (70: mine[3]=S3, opponent[2]=S1 / 71: mine[2]=S0, opponent[2]=A28)。
-# 14のopponent[3]も同様に確認したところ実際にはS9バッジで(旧実装は∞かどうかの
-# 二値判定しかできず読み取れずNoneとしていた)、今回のS/A識別追加で正しく読める
-# ようになった。11の残り1スロットのNoneは文字階級ではなくランク非表示の
-# プレイヤーのため、引き続きSlotRank(None, None)のままとする
-# (呼び出し側からは区別しない)。
-# 2026-07-19時点、切り出し座標を目視確認のうえ精密化した結果、以下の6枚+動画3本
-# (tests側では別関数)の全72スロットの数値自体は完全一致(100%)を達成している
+# 最も奥。
+#
+# Issue #148(HDR無効化前fixture削除に伴う張り替え): 82番はIssue #147で新規収集した
+# HDR無効化後のVS画面(4vs3の変則試合)。MINE_ICON_ROIS/MINE_NUM_ROIS/
+# OPPONENT_ICON_ROIS/OPPONENT_NUM_ROISの実座標でそれぞれのスロットを切り出し、
+# 8倍拡大したうえで目視確認して以下の正解値を確定した
+# (mine=∞39/S8/∞9/∞34, opponent=S1/∞41/∞33/[3人しかいないため4人目は非表示])。
+# S帯バッジ(mine[1]・opponent[0])と、相手が3人しかいない試合でのopponent[3]の
+# SlotRank(None, None)(文字階級ではなく単に不在)を両方カバーできている
 EXPECTED_SCREENSHOTS = {
-    "11_matching_with_rank_blue.png": (
-        [_r(_INF, 38), _r(_INF, 1), _r(_INF, 24), _r(_INF, 9)],
-        [_r(_INF, 10), _r(_INF, 12), _r(_INF, 33), _r(_INF, 18)],
+    "82_matching_with_rank_4v3_hdr_off.png": (
+        [_r(_INF, 39), _r("S", 8), _r(_INF, 9), _r(_INF, 34)],
+        [_r("S", 1), _r(_INF, 41), _r(_INF, 33), _none()],
     ),
-    "14_matching_with_rank_red.png": (
-        [_r(_INF, 37), _r(_INF, 19), _r(_INF, 4), _r(_INF, 2)],
-        [_r(_INF, 23), _r(_INF, 23), _r(_INF, 14), _r("S", 9)],
-    ),
-    "70_rank_tier_s.png": (
-        [_r(_INF, 40), _r(_INF, 9), _r(_INF, 16), _r("S", 3)],
-        [_r(_INF, 14), _r(_INF, 20), _r("S", 1), _r(_INF, 32)],
-    ),
-    "71_rank_tier_a.png": (
-        [_r(_INF, 39), _r(_INF, 8), _r("S", 0), _r(_INF, 5)],
-        [_r(_INF, 32), _r(_INF, 33), _r("A", 28), _r(_INF, 0)],
-    ),
-    "12_matching_without_rank_blue.png": ([_none()] * 4, [_none()] * 4),
-    "15_matching_without_rank_red.png": ([_none()] * 4, [_none()] * 4),
 }
 
 
@@ -115,24 +99,14 @@ def test_read_vs_screen_ranks_accuracy(fixtures_dir):
     assert accuracy >= 0.85, f"VS画面ランクOCRの正答率が低すぎる: {correct[0]}/{total[0]}"
 
 
-# 実際の配信クリップ(の1フレーム)を目視確認して得た正解値。17は11と同一試合の
-# 収録(静止画/動画で切り出し方が異なっても同じ結果になることの確認を兼ねる)。
-# いずれも文字階級バッジは映っていないため全スロット∞帯
+# 実際の配信クリップ(の1フレーム)を目視確認して得た正解値。32は82(静止画)と
+# 同一試合・同一瞬間の収録(静止画/動画で切り出し方が異なっても同じ結果になる
+# ことの確認を兼ねる。frame 660はスクリーンショット82と同一のフレーム)
 EXPECTED_VIDEO_FRAMES = {
-    "17_vs_screen_with_rank_1.mp4": (
-        190,
-        [_r(_INF, 38), _r(_INF, 1), _r(_INF, 24), _r(_INF, 9)],
-        [_r(_INF, 10), _r(_INF, 12), _r(_INF, 33), _r(_INF, 18)],
-    ),
-    "18_vs_screen_with_rank_2.mp4": (
-        220,
-        [_r(_INF, 39), _r(_INF, 40), _r(_INF, 40), _r(_INF, 18)],
-        [_r(_INF, 47), _r(_INF, 31), _r(_INF, 24), _r(_INF, 36)],
-    ),
-    "19_vs_screen_with_rank_3.mp4": (
-        395,
-        [_r(_INF, 38), _r(_INF, 1), _r(_INF, 14), _r(_INF, 31)],
-        [_r(_INF, 18), _r(_INF, 9), _r(_INF, 7), _r(_INF, 47)],
+    "32_vs_screen_with_rank_4v3_hdr_off.mp4": (
+        660,
+        [_r(_INF, 39), _r("S", 8), _r(_INF, 9), _r(_INF, 34)],
+        [_r("S", 1), _r(_INF, 41), _r(_INF, 33), _none()],
     ),
 }
 

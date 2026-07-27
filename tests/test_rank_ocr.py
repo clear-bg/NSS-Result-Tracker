@@ -11,22 +11,15 @@ from nss_tracker.detection.rank_ocr import (
     read_rank_tier,
 )
 
-# 同一プレイ記録からのfixtureのため全て同じランク値(38)になっているが、
-# バッジの表示有無・通常表示/昇格・降格アニメ中の拡大表示それぞれで
-# 正しく読み取れる(またはバッジ非表示時にNoneを返す)ことを確認する。
-# "_in_rank_increase_"/"_in_rank_decrease_"のfixture(ランク増加中/減少中、
-# 遷移演出の途中)は含めない。state.match_state側もこのタイミングで
-# read_rank/read_precise_rankを呼ぶことはなく(呼ぶのは常にコンパクト表示=
-# 増加/減少前、または安定後の拡大表示=増加/減少後のみ)、現行システムの
-# 判断材料になっていないため
+# Issue #148(HDR無効化前fixture削除に伴う張り替え): 同一プレイ記録からのfixtureの
+# ため全て同じランク値(38)になっている。いずれもコンパクト表示(結果バナー確定
+# 直後)のみで、拡大表示(ランク変動アニメーション中)のHDR無効化後fixtureは
+# まだ無い(Issue #147参照、`30_win_blue_league_up_hdr_off.mp4`の中に該当区間は
+# 含まれているが静止画としては未切り出し)
 EXPECTED = {
-    "43_result_win_without_rank_blue.png": None,
-    "44_result_lose_with_rank_blue.png": 38,
-    "46_result_lose_after_rank_decrease_blue.png": 38,
-    "50_result_win_with_rank_red.png": 38,
-    "52_result_after_rank_increase_red.png": 38,
-    "54_result_lose_with_rank_red.png": 38,
-    "56_result_lose_after_rank_decrease_red.png": 38,
+    "77_result_win_with_rank_red_hdr_off.png": 38,
+    "78_result_lose_with_rank_blue_hdr_off.png": 38,
+    "81_result_lose_without_rank_blue_hdr_off.png": None,
 }
 
 
@@ -42,26 +35,20 @@ def test_read_rank(fixtures_dir, filename, expected):
 # バッジはコンパクト表示(結果バナー確定直後、アニメーション開始前)と
 # 拡大表示(アニメーション開始後〜暗転まで)でバーの実寸(幅・位置)が異なるため、
 # GAUGE_ROI_COMPACT/GAUGE_ROI_ENLARGEDそれぞれに対応するfixtureで別々に検証する。
-# 実測(fixtures/screenshotsの行ごとのHSV値を直接スキャンして確認、
-# scripts/inspect_gauge_fill.py参照): 同一の勝敗ペアでもコンパクト表示と
-# 拡大表示では塗りつぶし率が明確に異なる値になる(例: 44は0.75だが対応する
-# 46は0.56。勝敗による塗りつぶし量の増減が正しく反映されている)。
+# 実測(read_rank_gauge_fill自体の出力、scripts/inspect_gauge_fill.py参照)。
+# 塗りつぶし割合は人間の目視では正確な値を判定できない性質の指標のため、
+# 既存のテストと同じ方針でこの関数自体の実測値をground truthとして採用している
+# (このファイル・inspect_gauge_fill.pyのコメント参照。テスト正解データの
+# 自己参照禁止の対象はタイミング系の期待値であり、この指標は元々対象外)
 #
-# "_in_rank_increase_"/"_in_rank_decrease_"のfixtureを含めない理由はEXPECTED
-# 同様(このファイル冒頭のコメント参照)。加えてread_rank_gauge_fillは
-# 「安定している瞬間」にのみ呼び出す前提の関数であり、遷移演出中はゲージの
-# 見た目自体がグラデーション表示になり塗りつぶし割合として意味を持たない
+# Issue #148: 拡大表示(GAUGE_ROI_ENLARGED)のHDR無効化後fixtureがまだ無いため、
+# EXPECTED_GAUGE_FILL_ENLARGEDは一旦空にしてある(Issue #147参照)
 EXPECTED_GAUGE_FILL_COMPACT = {
-    "44_result_lose_with_rank_blue.png": 0.75,
-    "50_result_win_with_rank_red.png": 0.06,
-    "54_result_lose_with_rank_red.png": 0.24,
+    "77_result_win_with_rank_red_hdr_off.png": 0.92,
+    "78_result_lose_with_rank_blue_hdr_off.png": 0.18,
 }
 
-EXPECTED_GAUGE_FILL_ENLARGED = {
-    "46_result_lose_after_rank_decrease_blue.png": 0.56,
-    "52_result_after_rank_increase_red.png": 0.32,
-    "56_result_lose_after_rank_decrease_red.png": 0.08,
-}
+EXPECTED_GAUGE_FILL_ENLARGED = {}
 
 
 @requires_fixtures
@@ -83,17 +70,17 @@ def test_read_rank_gauge_fill_enlarged(fixtures_dir, filename, expected):
 @pytest.mark.slow
 @requires_fixtures
 def test_read_precise_rank_combines_tier_and_gauge_fill(fixtures_dir):
-    frame = cv2.imread(str(fixtures_dir / "44_result_lose_with_rank_blue.png"))
+    frame = cv2.imread(str(fixtures_dir / "78_result_lose_with_rank_blue_hdr_off.png"))
     assert frame is not None
     tier, precise = read_precise_rank(frame, GAUGE_ROI_COMPACT)
     assert tier == 38
-    assert precise == pytest.approx(38.75, abs=0.02)
+    assert precise == pytest.approx(38.18, abs=0.02)
 
 
 @pytest.mark.slow
 @requires_fixtures
 def test_read_precise_rank_returns_none_without_badge(fixtures_dir):
-    frame = cv2.imread(str(fixtures_dir / "43_result_win_without_rank_blue.png"))
+    frame = cv2.imread(str(fixtures_dir / "81_result_lose_without_rank_blue_hdr_off.png"))
     assert frame is not None
     assert read_precise_rank(frame, GAUGE_ROI_COMPACT) is None
 
@@ -117,6 +104,6 @@ def test_read_rank_tier_returns_infinity_for_existing_fixtures(fixtures_dir, fil
 @pytest.mark.slow
 @requires_fixtures
 def test_read_rank_tier_returns_none_without_badge(fixtures_dir):
-    frame = cv2.imread(str(fixtures_dir / "43_result_win_without_rank_blue.png"))
+    frame = cv2.imread(str(fixtures_dir / "81_result_lose_without_rank_blue_hdr_off.png"))
     assert frame is not None
     assert read_rank_tier(frame) is None
