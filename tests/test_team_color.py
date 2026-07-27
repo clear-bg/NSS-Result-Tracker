@@ -37,10 +37,9 @@ def _distance(a: str, b: str) -> float:
 @pytest.mark.parametrize(
     "filename",
     [
-        "11_matching_with_rank_blue.png",
-        "12_matching_without_rank_blue.png",
-        "14_matching_with_rank_red.png",
-        "15_matching_without_rank_red.png",
+        "72_matching_hdr_off_1.png",
+        "73_matching_hdr_off_2.png",
+        "82_matching_with_rank_4v3_hdr_off.png",
     ],
 )
 def test_read_team_colors_returns_valid_hex_strings(fixtures_dir, filename):
@@ -56,10 +55,9 @@ def test_read_team_colors_returns_valid_hex_strings(fixtures_dir, filename):
 @pytest.mark.parametrize(
     "filename",
     [
-        "11_matching_with_rank_blue.png",
-        "12_matching_without_rank_blue.png",
-        "14_matching_with_rank_red.png",
-        "15_matching_without_rank_red.png",
+        "72_matching_hdr_off_1.png",
+        "73_matching_hdr_off_2.png",
+        "82_matching_with_rank_4v3_hdr_off.png",
     ],
 )
 def test_read_team_colors_mine_and_opponent_are_visually_distinct(fixtures_dir, filename):

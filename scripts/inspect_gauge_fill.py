@@ -22,24 +22,17 @@ from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "screenshots"
 
+# Issue #148: HDR無効化前fixture削除に伴い張り替え。拡大表示・遷移演出中の
+# HDR無効化後fixtureはまだ無い(Issue #147参照)ため空のまま
 COMPACT_TARGETS = [
-    "44_result_lose_with_rank_blue.png",
-    "50_result_win_with_rank_red.png",
-    "54_result_lose_with_rank_red.png",
+    "77_result_win_with_rank_red_hdr_off.png",
+    "78_result_lose_with_rank_blue_hdr_off.png",
 ]
 
-ENLARGED_TARGETS = [
-    "46_result_lose_after_rank_decrease_blue.png",
-    "52_result_after_rank_increase_red.png",
-    "56_result_lose_after_rank_decrease_red.png",
-]
+ENLARGED_TARGETS: list[str] = []
 
 # 遷移演出中(参考値のみ、ground truthには使わない)。拡大表示と同じ座標系のはず
-TRANSITIONAL_TARGETS = [
-    "45_result_lose_in_rank_decrease_blue.png",
-    "51_result_in_rank_increase_red.png",
-    "55_result_lose_in_rank_decrease_red.png",
-]
+TRANSITIONAL_TARGETS: list[str] = []
 
 
 def _print_group(label: str, names: list[str], roi: tuple[int, int, int, int]) -> None:

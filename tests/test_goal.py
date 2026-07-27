@@ -12,35 +12,17 @@ from nss_tracker.detection.goal import is_goal_event, read_assist_name, read_sco
 NAME_EXPECTATIONS_FILENAME = "goal_name_expectations.json"
 
 EXPECTED_EVENT = {
-    "00_lobby.png": False,
-    "01_before_start.png": False,
-    "02_matching_in_progress.png": False,
-    "10_waiting_for_other_players_blue.png": False,
-    "11_matching_with_rank_blue.png": False,
-    "12_matching_without_rank_blue.png": False,
-    "13_waiting_for_other_players_red.png": False,
-    "14_matching_with_rank_red.png": False,
-    "20_in_game_blue.png": False,
-    "21_goal_with_assist_blue.png": True,
-    "22_goal_without_assist_blue.png": True,
-    "23_assist_blue.png": True,
-    "24_GA_without_me_blue.png": True,
-    "25_resume_game_blue.png": False,
-    "30_in_game_red.png": False,
-    "31_goal_with_assist_red.png": True,
-    "32_goal_without_assist_red.png": True,
-    "33_assist_red.png": True,
-    "34_GA_without_me_red.png": True,
-    "35_resume_game_red.png": False,
-    "43_result_win_without_rank_blue.png": False,
-    "44_result_lose_with_rank_blue.png": False,
-    "46_result_lose_after_rank_decrease_blue.png": False,
-    "50_result_win_with_rank_red.png": False,
-    "52_result_after_rank_increase_red.png": False,
-    "54_result_lose_with_rank_red.png": False,
-    "56_result_lose_after_rank_decrease_red.png": False,
-    "60_start_overtime.png": False,
-    "61_overtime_in_game.png": False,
+    "72_matching_hdr_off_1.png": False,
+    "73_matching_hdr_off_2.png": False,
+    "74_goal_with_assist_red_hdr_off.png": True,
+    "75_goal_blue_owngoal_hdr_off.png": True,
+    "76_match_end_hdr_off.png": False,
+    "77_result_win_with_rank_red_hdr_off.png": False,
+    "78_result_lose_with_rank_blue_hdr_off.png": False,
+    "79_result_rank_up_hdr_off.png": False,
+    "80_match_end_hdr_off_2.png": False,
+    "81_result_lose_without_rank_blue_hdr_off.png": False,
+    "82_matching_with_rank_4v3_hdr_off.png": False,
 }
 
 
@@ -59,7 +41,7 @@ def test_read_scorer_name_returns_name_and_confidence_score(fixtures_dir):
     なっていることを確認する(Issue #71: OCRの誤読診断のためスコアも返すよう
     戻り値を拡張した)。名前の値そのものは実名のため検証しない(構造のみ確認)。
     """
-    frame = cv2.imread(str(fixtures_dir / "21_goal_with_assist_blue.png"))
+    frame = cv2.imread(str(fixtures_dir / "74_goal_with_assist_red_hdr_off.png"))
     assert frame is not None
 
     scorer = read_scorer_name(frame)

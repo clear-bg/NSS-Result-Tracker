@@ -12,7 +12,7 @@ import pytest
 from conftest import requires_video_fixtures
 from nss_tracker.capture.ffmpeg_capture import FfmpegFrameReader
 
-VIDEO_NAME = "01_win_blue_2-1.mp4"
+VIDEO_NAME = "27_goal_blue_owngoal_hdr_off.mp4"
 WIDTH, HEIGHT = 1920, 1080
 
 
