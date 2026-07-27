@@ -39,3 +39,7 @@
 4vs3の変則試合で、mine[1]・opponent[0]がS帯バッジ、opponent[3]は相手が
 3人しかいないため不在(SlotRank(None, None))という、∞帯以外のケースを
 複数まとめて確認できる例(`tests/test_vs_rank.py`のEXPECTED_SCREENSHOTS参照)。
+
+`roi_mask.png`はROI枠のみを描画し、それ以外は透過にした画像(fixture本体の
+画像データは含まない)。手元の任意の画像に重ねて、現在のROIがどの位置に
+来るかを画像編集ソフト等で確認する用途に使う(Issue #140)。
