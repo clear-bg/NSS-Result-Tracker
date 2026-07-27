@@ -31,20 +31,24 @@ MATCH_END_RIGHT_ROI = _MATCH_END_RIGHT_ROI
 MATCH_END_TEXT_ROI = _MATCH_END_TEXT_ROI
 
 # annotated画像を生成する対象fixture(fixtures/screenshots/配下)
-SOURCE_FILENAME = "80_match_end_hdr_off_2.png"
+SOURCE_FILENAMES = [
+    "80_match_end_hdr_off_2.png",
+    "76_match_end_hdr_off.png",
+]
 
 
 def main() -> None:
     output_dir = OUTPUT_ROOT / "match_end"
     print("match_end:")
 
-    image = load_fixture(SOURCE_FILENAME)
     categories = [
         Category("candidate_left (MATCH_END_LEFT_ROI)", "color", (0, 200, 255), [MATCH_END_LEFT_ROI]),
         Category("candidate_right (MATCH_END_RIGHT_ROI)", "color", (0, 140, 255), [MATCH_END_RIGHT_ROI]),
         Category("text_confirm (MATCH_END_TEXT_ROI)", "OCR", (255, 200, 0), [MATCH_END_TEXT_ROI]),
     ]
-    write_annotated(output_dir, SOURCE_FILENAME, draw_categories(image, categories))
+    for source in SOURCE_FILENAMES:
+        image = load_fixture(source)
+        write_annotated(output_dir, source, draw_categories(image, categories))
     write_mask(output_dir, "roi_mask", draw_categories_mask(image.shape[:2], categories))
 
     readme = output_dir / "README.md"
@@ -66,12 +70,19 @@ def main() -> None:
 
 {roi_table_markdown(categories)}
 
-`80_match_end_hdr_off_2.png`は色判定・文字確認とも問題なく通る例。もう1つの
-HDR無効化後fixture`76_match_end_hdr_off.png`は目視では同じ「試合終了」帯だが、
-帯の実際の描画位置がわずかにズレておりcandidate_left(MATCH_END_LEFT_ROI)の
-左上角が帯の丸み端にかかるため、色判定(hue_std)が閾値をわずかに超えて
-候補判定自体を通過できない既知の問題がある(`tests/test_match_end.py`で
-xfail、Issue #142でROI再較正予定)。
+`80_match_end_hdr_off_2.png`・`76_match_end_hdr_off.png`とも色判定・文字確認
+問題なく通る(Issue #142でROIを再実測して差し替えた。以前はcandidate_left
+(MATCH_END_LEFT_ROI)の左上角が76番の帯の丸み端にかかりhue_stdが閾値を
+わずかに超えて候補判定を通過できない既知の問題があったが、境界を避けた
+完全に単色の位置に再実測して解消した)。
+
+「試合終了」の文字は消える直前に一瞬だけ拡大しながら消えるアニメーションが
+あるため(継続時間が非常に短く気づきにくい)、動画から抜き出すフレームに
+よってはtext_confirm(MATCH_END_TEXT_ROI)の範囲から文字がはみ出すことがある
+(`fixtures/videos/29_lose_blue_hdr_off.mp4`のframe 958で実際に発生)。ただし
+実運用のconfirm_match_end_text()は表示開始から短いデバウンス後の1回しか
+呼ばれないため、このアニメーション区間に実際に当たることはない
+(`tests/test_match_end.py`の`_confirmed_match_end()`参照)。
 
 `roi_mask.png`はROI枠のみを描画し、それ以外は透過にした画像(fixture本体の
 画像データは含まない)。手元の任意の画像に重ねて、現在のROIがどの位置に

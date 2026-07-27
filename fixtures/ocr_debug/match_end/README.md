@@ -15,16 +15,23 @@
 
 | ROI | 枠色 | 種別 | 座標 (x1, y1)–(x2, y2) | サイズ (w×h px) |
 | --- | --- | --- | --- | --- |
-| candidate_left (MATCH_END_LEFT_ROI) | #FFC800 | color | (630, 405)–(750, 465) | 120×60 |
-| candidate_right (MATCH_END_RIGHT_ROI) | #FF8C00 | color | (1200, 415)–(1270, 450) | 70×35 |
-| text_confirm (MATCH_END_TEXT_ROI) | #00C8FF | OCR | (600, 385)–(1330, 480) | 730×95 |
+| candidate_left (MATCH_END_LEFT_ROI) | #FFC800 | color | (638, 422)–(719, 509) | 81×87 |
+| candidate_right (MATCH_END_RIGHT_ROI) | #FF8C00 | color | (1187, 422)–(1265, 509) | 78×87 |
+| text_confirm (MATCH_END_TEXT_ROI) | #00C8FF | OCR | (746, 383)–(1180, 501) | 434×118 |
 
-`80_match_end_hdr_off_2.png`は色判定・文字確認とも問題なく通る例。もう1つの
-HDR無効化後fixture`76_match_end_hdr_off.png`は目視では同じ「試合終了」帯だが、
-帯の実際の描画位置がわずかにズレておりcandidate_left(MATCH_END_LEFT_ROI)の
-左上角が帯の丸み端にかかるため、色判定(hue_std)が閾値をわずかに超えて
-候補判定自体を通過できない既知の問題がある(`tests/test_match_end.py`で
-xfail、Issue #142でROI再較正予定)。
+`80_match_end_hdr_off_2.png`・`76_match_end_hdr_off.png`とも色判定・文字確認
+問題なく通る(Issue #142でROIを再実測して差し替えた。以前はcandidate_left
+(MATCH_END_LEFT_ROI)の左上角が76番の帯の丸み端にかかりhue_stdが閾値を
+わずかに超えて候補判定を通過できない既知の問題があったが、境界を避けた
+完全に単色の位置に再実測して解消した)。
+
+「試合終了」の文字は消える直前に一瞬だけ拡大しながら消えるアニメーションが
+あるため(継続時間が非常に短く気づきにくい)、動画から抜き出すフレームに
+よってはtext_confirm(MATCH_END_TEXT_ROI)の範囲から文字がはみ出すことがある
+(`fixtures/videos/29_lose_blue_hdr_off.mp4`のframe 958で実際に発生)。ただし
+実運用のconfirm_match_end_text()は表示開始から短いデバウンス後の1回しか
+呼ばれないため、このアニメーション区間に実際に当たることはない
+(`tests/test_match_end.py`の`_confirmed_match_end()`参照)。
 
 `roi_mask.png`はROI枠のみを描画し、それ以外は透過にした画像(fixture本体の
 画像データは含まない)。手元の任意の画像に重ねて、現在のROIがどの位置に
