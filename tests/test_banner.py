@@ -16,6 +16,11 @@ EXPECTED = {
     "80_match_end_hdr_off_2.png": None,
     "81_result_lose_without_rank_blue_hdr_off.png": "lose",
     "82_matching_with_rank_4v3_hdr_off.png": None,
+    "83_goal_without_assist_blue_hdr_off.png": None,
+    "84_result_win_with_rank_blue_hdr_off.png": "win",
+    "85_result_win_with_rank_enlarged_blue_hdr_off.png": "win",
+    "86_matching_with_rank_4v4_hdr_off.png": None,
+    "87_matching_hdr_off_3.png": None,
 }
 
 # Issue #148: 77は実測Hが87.1〜87.2で安定している(hue_stdは1.4程度と低く、
@@ -23,8 +28,13 @@ EXPECTED = {
 # WIN_HUE_RANGE=(77, 86)の上限からわずかに外れているためclassify_bannerが
 # Noneを返す。HDR無効化による色シフトが実際にbanner.pyの閾値にも及んでいる
 # ことを示す実データであり、Issue #118/#143で閾値の再較正を行うまでの既知の
-# 欠落としてxfailにする(ground truthは"win"のまま)
-_KNOWN_HUE_SHIFT_GAPS = {"77_result_win_with_rank_red_hdr_off.png"}
+# 欠落としてxfailにする(ground truthは"win"のまま)。84・85(実測H≈87.2〜87.3)も
+# 同じ原因で同様に欠落する
+_KNOWN_HUE_SHIFT_GAPS = {
+    "77_result_win_with_rank_red_hdr_off.png",
+    "84_result_win_with_rank_blue_hdr_off.png",
+    "85_result_win_with_rank_enlarged_blue_hdr_off.png",
+}
 
 
 @requires_fixtures

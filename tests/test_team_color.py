@@ -40,6 +40,8 @@ def _distance(a: str, b: str) -> float:
         "72_matching_hdr_off_1.png",
         "73_matching_hdr_off_2.png",
         "82_matching_with_rank_4v3_hdr_off.png",
+        "86_matching_with_rank_4v4_hdr_off.png",
+        "87_matching_hdr_off_3.png",
     ],
 )
 def test_read_team_colors_returns_valid_hex_strings(fixtures_dir, filename):
@@ -58,6 +60,8 @@ def test_read_team_colors_returns_valid_hex_strings(fixtures_dir, filename):
         "72_matching_hdr_off_1.png",
         "73_matching_hdr_off_2.png",
         "82_matching_with_rank_4v3_hdr_off.png",
+        "86_matching_with_rank_4v4_hdr_off.png",
+        "87_matching_hdr_off_3.png",
     ],
 )
 def test_read_team_colors_mine_and_opponent_are_visually_distinct(fixtures_dir, filename):
