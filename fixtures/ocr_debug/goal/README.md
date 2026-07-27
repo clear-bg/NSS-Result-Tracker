@@ -13,3 +13,6 @@
 いずれのROIもチームカラーに依存しないため、青チーム
 (`21_goal_with_assist_blue_annotated.png`)・赤チーム
 (`31_goal_with_assist_red_annotated.png`)の両方を参考として置いている。
+アシストが無い場合の例として`22_goal_without_assist_blue_annotated.png`も
+置いている(この場合name_panel内には得点者名のみが表示され、「アシスト」
+ラベル自体が現れないため、`read_assist_name()`はNoneを返す)。

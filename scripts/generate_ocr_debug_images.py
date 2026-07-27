@@ -222,7 +222,11 @@ def generate_goal() -> None:
         _Category("goal_banner (BANNER_ROI)", "color", (0, 200, 255), [GOAL_BANNER_ROI]),
         _Category("name_panel (NAME_PANEL_ROI)", "OCR", (255, 200, 0), [NAME_PANEL_ROI]),
     ]
-    for source in ["21_goal_with_assist_blue.png", "31_goal_with_assist_red.png"]:
+    for source in [
+        "21_goal_with_assist_blue.png",
+        "31_goal_with_assist_red.png",
+        "22_goal_without_assist_blue.png",
+    ]:
         image = _load(source)
         _write(output_dir, source, _draw_categories(image, categories))
 
@@ -243,6 +247,9 @@ def generate_goal() -> None:
 いずれのROIもチームカラーに依存しないため、青チーム
 (`21_goal_with_assist_blue_annotated.png`)・赤チーム
 (`31_goal_with_assist_red_annotated.png`)の両方を参考として置いている。
+アシストが無い場合の例として`22_goal_without_assist_blue_annotated.png`も
+置いている(この場合name_panel内には得点者名のみが表示され、「アシスト」
+ラベル自体が現れないため、`read_assist_name()`はNoneを返す)。
 """,
         encoding="utf-8",
     )
