@@ -3,7 +3,8 @@
 
 下のROI変数を書き換えてこのスクリプトを直接実行すれば
 (`uv run python scripts/generate_ocr_debug_images/vs_rank.py`)、変更後の枠で
-`*_annotated.png`(全画面表示、fixture本体と同じ解像度)と`README.md`
+`*_annotated.png`(全画面表示、fixture本体と同じ解像度)・`roi_mask.png`
+(ROI枠のみで他は透過、任意の画像に重ねて確認する用)・`README.md`
 (枠色・種別・実測ピクセル座標のテーブル込み)を再生成できる。画像ファイル自体を
 手で編集する想定はない。デフォルト値は`detection/vs_rank.py`の現在値と同じ。
 
@@ -11,7 +12,16 @@
 タプルで、スロット0が画面手前・スロット3が最も奥。
 """
 
-from common import Category, OUTPUT_ROOT, draw_categories, load_fixture, roi_table_markdown, write_annotated
+from common import (
+    Category,
+    OUTPUT_ROOT,
+    draw_categories,
+    draw_categories_mask,
+    load_fixture,
+    roi_table_markdown,
+    write_annotated,
+    write_mask,
+)
 
 from nss_tracker.detection.vs_rank import MINE_ICON_ROIS as _MINE_ICON_ROIS
 from nss_tracker.detection.vs_rank import MINE_NUM_ROIS as _MINE_NUM_ROIS
@@ -42,6 +52,7 @@ def main() -> None:
 
     image = load_fixture(SOURCE_FILENAME)
     write_annotated(output_dir, SOURCE_FILENAME, draw_categories(image, categories))
+    write_mask(output_dir, "roi_mask", draw_categories_mask(image.shape[:2], categories))
 
     readme = output_dir / "README.md"
     readme.write_text(
@@ -69,6 +80,10 @@ def main() -> None:
 4vs3の変則試合で、mine[1]・opponent[0]がS帯バッジ、opponent[3]は相手が
 3人しかいないため不在(SlotRank(None, None))という、∞帯以外のケースを
 複数まとめて確認できる例(`tests/test_vs_rank.py`のEXPECTED_SCREENSHOTS参照)。
+
+`roi_mask.png`はROI枠のみを描画し、それ以外は透過にした画像(fixture本体の
+画像データは含まない)。手元の任意の画像に重ねて、現在のROIがどの位置に
+来るかを画像編集ソフト等で確認する用途に使う(Issue #140)。
 """,
         encoding="utf-8",
     )

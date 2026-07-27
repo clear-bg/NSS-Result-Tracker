@@ -3,12 +3,22 @@
 
 下のROI変数を書き換えてこのスクリプトを直接実行すれば
 (`uv run python scripts/generate_ocr_debug_images/goal.py`)、変更後の枠で
-`*_annotated.png`(全画面表示、fixture本体と同じ解像度)と`README.md`
+`*_annotated.png`(全画面表示、fixture本体と同じ解像度)・`roi_mask.png`
+(ROI枠のみで他は透過、任意の画像に重ねて確認する用)・`README.md`
 (枠色・種別・実測ピクセル座標のテーブル込み)を再生成できる。画像ファイル自体を
 手で編集する想定はない。デフォルト値は`detection/goal.py`の現在値と同じ。
 """
 
-from common import Category, OUTPUT_ROOT, draw_categories, load_fixture, roi_table_markdown, write_annotated
+from common import (
+    Category,
+    OUTPUT_ROOT,
+    draw_categories,
+    draw_categories_mask,
+    load_fixture,
+    roi_table_markdown,
+    write_annotated,
+    write_mask,
+)
 
 from nss_tracker.detection.goal import ASSIST_LABEL_ROI as _ASSIST_LABEL_ROI
 from nss_tracker.detection.goal import ASSIST_NAME_ROI as _ASSIST_NAME_ROI
@@ -52,6 +62,8 @@ def main() -> None:
         image = load_fixture(source)
         write_annotated(output_dir, source, draw_categories(image, categories))
 
+    write_mask(output_dir, "roi_mask", draw_categories_mask(image.shape[:2], categories))
+
     readme = output_dir / "README.md"
     readme.write_text(
         f"""# goal.py のROI
@@ -93,6 +105,10 @@ own_goal_labelのみに「オウンゴール」が表示される)。
 アシスト無しの単独ゴール(オウンゴールではない通常のゴール)でgoal_labelが
 空になりassist_label側に「ゴール」が来るケースは、現時点でHDR無効化後の
 参照fixtureが無く未検証(Issue #153で収集予定)。
+
+`roi_mask.png`はROI枠のみを描画し、それ以外は透過にした画像(fixture本体の
+画像データは含まない)。手元の任意の画像に重ねて、現在のROIがどの位置に
+来るかを画像編集ソフト等で確認する用途に使う(Issue #140)。
 """,
         encoding="utf-8",
     )
