@@ -12,14 +12,14 @@ from nss_tracker.detection.rank_ocr import (
 )
 
 # Issue #148(HDR無効化前fixture削除に伴う張り替え): 同一プレイ記録からのfixtureの
-# ため全て同じランク値(38)になっている。いずれもコンパクト表示(結果バナー確定
-# 直後)のみで、拡大表示(ランク変動アニメーション中)のHDR無効化後fixtureは
-# まだ無い(Issue #147参照、`30_win_blue_league_up_hdr_off.mp4`の中に該当区間は
-# 含まれているが静止画としては未切り出し)
+# ため全て同じランク値(38)になっている。85は拡大表示(ランク変動アニメーション中)
+# だが、RANK_ROI自体は両サイズをカバーできる余裕を持たせてあるため同じ値を読める
 EXPECTED = {
     "77_result_win_with_rank_red_hdr_off.png": 38,
     "78_result_lose_with_rank_blue_hdr_off.png": 38,
     "81_result_lose_without_rank_blue_hdr_off.png": None,
+    "84_result_win_with_rank_blue_hdr_off.png": 38,
+    "85_result_win_with_rank_enlarged_blue_hdr_off.png": 38,
 }
 
 
@@ -41,14 +41,16 @@ def test_read_rank(fixtures_dir, filename, expected):
 # (このファイル・inspect_gauge_fill.pyのコメント参照。テスト正解データの
 # 自己参照禁止の対象はタイミング系の期待値であり、この指標は元々対象外)
 #
-# Issue #148: 拡大表示(GAUGE_ROI_ENLARGED)のHDR無効化後fixtureがまだ無いため、
-# EXPECTED_GAUGE_FILL_ENLARGEDは一旦空にしてある(Issue #147参照)
 EXPECTED_GAUGE_FILL_COMPACT = {
     "77_result_win_with_rank_red_hdr_off.png": 0.92,
     "78_result_lose_with_rank_blue_hdr_off.png": 0.18,
+    "84_result_win_with_rank_blue_hdr_off.png": 0.47,
 }
 
-EXPECTED_GAUGE_FILL_ENLARGED = {}
+# Issue #147で拡大表示(ランク変動アニメーション中)のHDR無効化後fixtureを収集した
+EXPECTED_GAUGE_FILL_ENLARGED = {
+    "85_result_win_with_rank_enlarged_blue_hdr_off.png": 0.91,
+}
 
 
 @requires_fixtures
@@ -83,6 +85,16 @@ def test_read_precise_rank_returns_none_without_badge(fixtures_dir):
     frame = cv2.imread(str(fixtures_dir / "81_result_lose_without_rank_blue_hdr_off.png"))
     assert frame is not None
     assert read_precise_rank(frame, GAUGE_ROI_COMPACT) is None
+
+
+@pytest.mark.slow
+@requires_fixtures
+def test_read_precise_rank_combines_tier_and_gauge_fill_enlarged(fixtures_dir):
+    frame = cv2.imread(str(fixtures_dir / "85_result_win_with_rank_enlarged_blue_hdr_off.png"))
+    assert frame is not None
+    tier, precise = read_precise_rank(frame, GAUGE_ROI_ENLARGED)
+    assert tier == 38
+    assert precise == pytest.approx(38.91, abs=0.02)
 
 
 # Issue #73: read_rank_tier()の∞判定は既存の∞帯fixture全てで実データ検証できるが、
