@@ -4,33 +4,11 @@ import pytest
 from conftest import list_screenshot_fixtures, requires_fixtures, requires_video_fixtures
 from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end_screen
 
-# Issue #148: 76は目視では紛れもなく「試合終了」の帯だが、MATCH_END_LEFT_ROIの
-# 左上角がちょうど帯の丸みを帯びた端にかかり(この帯の実際の描画位置・幅が既存の
-# ROI較正時の前提とわずかにズレている)、hue_std> MATCH_END_HUE_STD_MAXとなって
-# 色ベースの候補判定自体を通過できない(実測std≈13.0、閾値12.0)。ROIの再較正は
-# Issue #142のスコープのため、ここでは既知の欠落としてxfailにし、正しい値として
-# ground truthはTrueのまま残す(is_match_end_screenがバグっているのであって
-# fixtureが間違っているわけではないため)
 MATCH_END_SCREENSHOTS = {"76_match_end_hdr_off.png", "80_match_end_hdr_off_2.png"}
-_KNOWN_ROI_BOUNDARY_GAPS = {"76_match_end_hdr_off.png"}
 
 
 @requires_fixtures
-@pytest.mark.parametrize(
-    "filename",
-    [
-        pytest.param(
-            name,
-            marks=pytest.mark.xfail(
-                reason="MATCH_END_LEFT_ROIが帯の丸み端にかかりhue_stdが閾値を僅かに超える(Issue #142で対応予定)",
-                strict=False,
-            ),
-        )
-        if name in _KNOWN_ROI_BOUNDARY_GAPS
-        else name
-        for name in sorted(MATCH_END_SCREENSHOTS)
-    ],
-)
+@pytest.mark.parametrize("filename", sorted(MATCH_END_SCREENSHOTS))
 def test_is_match_end_screen_true_for_match_end_screenshot(fixtures_dir, filename):
     frame = cv2.imread(str(fixtures_dir / filename))
     assert frame is not None, f"failed to load {filename}"
