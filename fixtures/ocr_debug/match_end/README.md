@@ -15,9 +15,9 @@
 
 | ROI | 枠色 | 種別 | 座標 (x1, y1)–(x2, y2) | サイズ (w×h px) |
 | --- | --- | --- | --- | --- |
-| candidate_left (MATCH_END_LEFT_ROI) | `#FFC800` | color | (630, 405)–(750, 465) | 120×60 |
-| candidate_right (MATCH_END_RIGHT_ROI) | `#FF8C00` | color | (1200, 415)–(1270, 450) | 70×35 |
-| text_confirm (MATCH_END_TEXT_ROI) | `#00C8FF` | OCR | (600, 385)–(1330, 480) | 730×95 |
+| candidate_left (MATCH_END_LEFT_ROI) | #FFC800 | color | (630, 405)–(750, 465) | 120×60 |
+| candidate_right (MATCH_END_RIGHT_ROI) | #FF8C00 | color | (1200, 415)–(1270, 450) | 70×35 |
+| text_confirm (MATCH_END_TEXT_ROI) | #00C8FF | OCR | (600, 385)–(1330, 480) | 730×95 |
 
 `80_match_end_hdr_off_2.png`は色判定・文字確認とも問題なく通る例。もう1つの
 HDR無効化後fixture`76_match_end_hdr_off.png`は目視では同じ「試合終了」帯だが、

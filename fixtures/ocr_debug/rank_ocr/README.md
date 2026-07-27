@@ -17,8 +17,8 @@
 
 | ROI | 枠色 | 種別 | 座標 (x1, y1)–(x2, y2) | サイズ (w×h px) |
 | --- | --- | --- | --- | --- |
-| rank_badge (RANK_ROI) | `#00C8FF` | OCR | (90, 600)–(420, 930) | 330×330 |
-| gauge_compact (GAUGE_ROI_COMPACT) | `#FFC800` | color/brightness | (125, 970)–(345, 990) | 220×20 |
+| rank_badge (RANK_ROI) | #00C8FF | OCR | (90, 600)–(420, 930) | 330×330 |
+| gauge_compact (GAUGE_ROI_COMPACT) | #FFC800 | color/brightness | (125, 970)–(345, 990) | 220×20 |
 
 ## 拡大表示(ランク変動アニメーション安定後の例)
 
@@ -30,8 +30,8 @@
 
 | ROI | 枠色 | 種別 | 座標 (x1, y1)–(x2, y2) | サイズ (w×h px) |
 | --- | --- | --- | --- | --- |
-| rank_badge (RANK_ROI) | `#00C8FF` | OCR | (90, 600)–(420, 930) | 330×330 |
-| gauge_enlarged (GAUGE_ROI_ENLARGED) | `#FF7800` | color/brightness | (130, 966)–(420, 998) | 290×32 |
+| rank_badge (RANK_ROI) | #00C8FF | OCR | (90, 600)–(420, 930) | 330×330 |
+| gauge_enlarged (GAUGE_ROI_ENLARGED) | #FF7800 | color/brightness | (130, 966)–(420, 998) | 290×32 |
 
 拡大表示のHDR無効化後fixtureがまだ無いため(Issue #147)、この表示に対応する
 `*_annotated.png`は生成していない(座標のみ上表に記載)。

@@ -12,8 +12,8 @@
 
 | ROI | 枠色 | 種別 | 座標 (x1, y1)–(x2, y2) | サイズ (w×h px) |
 | --- | --- | --- | --- | --- |
-| goal_banner (BANNER_ROI) | `#FFC800` | color | (100, 280)–(400, 350) | 300×70 |
-| name_panel (NAME_PANEL_ROI) | `#00C8FF` | OCR | (700, 780)–(1250, 1030) | 550×250 |
+| goal_banner (BANNER_ROI) | #FFC800 | color | (100, 280)–(400, 350) | 300×70 |
+| name_panel (NAME_PANEL_ROI) | #00C8FF | OCR | (700, 780)–(1250, 1030) | 550×250 |
 
 いずれのROIもチームカラーに依存しないため、赤チームでアシスト有りの例
 (`74_goal_with_assist_red_hdr_off_annotated.png`)を基本例として置いている。
