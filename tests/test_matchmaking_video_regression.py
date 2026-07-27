@@ -47,17 +47,11 @@ def _confirmed_vs_screen(path, min_confirm_seconds: float = MIN_CONFIRM_SECONDS)
 # いずれも試合中の演出アイコン等による単発フレームの誤検知はあり得るが、
 # デバウンス後は一度も確定しないはず
 NO_VS_SCREEN_VIDEOS = [
-    "00_lose_red_2-3.mp4",
-    "01_win_blue_2-1.mp4",
-    "02_lose_red_1-2.mp4",
-    "03_lose_blue_2-3.mp4",
-    "10_RankDown_red.mp4",
-    "11_lose_blue_minimal_rank_decrease.mp4",
-    "14_matching_wait_1.mp4",
-    "15_matching_wait_2.mp4",
     "22_vs_screen_hdr_off_1.mp4",
     "23_vs_screen_hdr_off_2.mp4",
     "24_no_vs_screen_hdr_off_gameplay.mp4",
+    "28_win_red_1-0_hdr_off.mp4",
+    "29_lose_blue_hdr_off.mp4",
 ]
 
 

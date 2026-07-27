@@ -4,19 +4,18 @@ import pytest
 from conftest import requires_video_fixtures
 from nss_tracker.detection.motion import StabilityMonitor, find_confirmed_value
 
-VIDEO_NAME = "01_win_blue_2-1.mp4"
+VIDEO_NAME = "28_win_red_1-0_hdr_off.mp4"
 TARGET_SIZE = (1920, 1080)
 RANK_ROI = (90, 600, 420, 930)
 
 # フレーム間差分の実測値と実際の映像を目視確認して決めたフレーム区間
-# (StabilityMonitor自体の判定結果をそのまま転記したものではない)。
+# (StabilityMonitor自体の判定結果をそのまま転記したものではない、60fps)。
 # - GAMEPLAY_RANGE: 通常プレイ中で常に映像が動いている区間
 # - TRANSITION_RANGE: 暗転明け、結果バナーがフェードインしている途中の区間
-# - STABLE_RANGE: バナー表示後、ランク値(39)が確定して静止している区間
-#   (この後リーグ昇格演出が続くが、その手前の区間)
-GAMEPLAY_RANGE = range(650, 750)
-TRANSITION_RANGE = range(933, 949)
-STABLE_RANGE = range(980, 1140)
+# - STABLE_RANGE: バナー表示後、ランク値が確定して静止している区間
+GAMEPLAY_RANGE = range(0, 300)
+TRANSITION_RANGE = range(1070, 1086)
+STABLE_RANGE = range(1150, 1290)
 
 
 def _read_frames(path):
