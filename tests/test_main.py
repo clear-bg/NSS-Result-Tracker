@@ -19,7 +19,7 @@ from nss_tracker.timeutil import JST
 
 import main
 
-VIDEO_NAME = "02_lose_red_1-2.mp4"
+VIDEO_NAME = "29_lose_blue_hdr_off.mp4"
 
 
 def test_generate_log_file_path_uses_jst_timestamp():
