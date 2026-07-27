@@ -51,13 +51,21 @@ MATCH_END_LEFT_ROI/MATCH_END_RIGHT_ROIを再実測して差し替え、この問
 (76_match_end_hdr_off.png・80_match_end_hdr_off_2.pngいずれもhue_std≈0.1〜0.5と
 大幅に余裕がある値になったため、色閾値側の再較正は不要だった)。
 
-MATCH_END_TEXT_ROIは当初、静止画2枚(76・80)に合わせて横幅を大きく絞る案を
-検討したが、`fixtures/videos/29_lose_blue_hdr_off.mp4`(frame 958)では帯・文字の
-描画位置が他5件の参照素材(静止画2枚・動画3本)より横に約100pxズレており、
-絞った領域だと文字が欠けてOCRが失敗することが実測で判明した(録画セッション間の
-軽微な位置ズレとみられる)。そのため横幅は元の余裕を残したまま、縦方向のみ
-実測し直す形にとどめた(4本の動画・2枚の静止画すべてで文字が欠けずに収まる
-ことを確認済み)。
+MATCH_END_TEXT_ROIは静止画2枚(76・80)に合わせて横幅を絞った。
+
+`fixtures/videos/29_lose_blue_hdr_off.mp4`のframe 958だけ、この横幅だと文字が
+欠けてOCRが失敗する現象が実測で見つかったが、原因は録画セッション間の位置ズレ
+ではなく、「試合終了」の文字は消える直前に一瞬だけ拡大しながら消えるアニメーション
+があり(継続時間が非常に短いため気づきにくい)、frame 958がたまたまその一瞬を
+捉えていたことによるものと判明した(同じ動画・同じタイミングを別ソースで
+確認したところ、安定表示中は他の参照素材と同じ位置で一致することを確認済み)。
+実運用ではconfirm_match_end_text()はis_match_end_screenがMATCH_END_CONFIRM_FRAMES
+(短いデバウンス、`state/match_state.py`参照)回連続した時点で1回だけ呼ばれ、
+これはバナー表示開始から間もないタイミングであるため、消える直前のこの
+アニメーション区間に実際に当たることはない。そのためROI自体の変更はせず、
+テスト側を実際の状態機械と同じ「連続フレーム+デバウンス」方式に作り直すことで
+対応した(単一フレームの抜き取りに起因する偽陰性を避けるため、
+`tests/test_match_end.py`の`_confirmed_match_end()`参照)。
 """
 
 import cv2
@@ -67,10 +75,9 @@ from nss_tracker.detection.goal import _get_name_reader
 from nss_tracker.detection_config import get_detection_value
 
 # 「試合終了」の帯全体(文字を含む)を覆う領域。OCRでの文字読み取り専用に使う
-# (色判定のMATCH_END_LEFT_ROI/MATCH_END_RIGHT_ROIとは別)。Issue #142で縦方向を
-# 実測し直したが、横方向は録画セッション間の位置ズレを見込んで元の余裕を残して
-# いる(モジュールdocstring参照)
-MATCH_END_TEXT_ROI = get_detection_value("match_end", "MATCH_END_TEXT_ROI", (600, 383, 1330, 501))
+# (色判定のMATCH_END_LEFT_ROI/MATCH_END_RIGHT_ROIとは別)。Issue #142で実測し直した
+# (消える直前の拡大アニメーションについてはモジュールdocstring参照)
+MATCH_END_TEXT_ROI = get_detection_value("match_end", "MATCH_END_TEXT_ROI", (746, 383, 1180, 501))
 
 # 「試合終了」の帯のうち、文字にかぶらない左寄りの余白 (x1, y1, x2, y2)
 # 解像度1920x1080のフレームを前提とする
