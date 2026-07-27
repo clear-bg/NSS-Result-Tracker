@@ -10,6 +10,7 @@ venv/
 # メディア
 fixtures/screenshots/*.png
 fixtures/**/*.mp4
+fixtures/ocr_debug/**/*.png
 test_frame_ffmpeg.png
 capture_stream_test_last_frame.png
 
