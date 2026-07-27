@@ -1,0 +1,11 @@
+# goal.py のROI
+
+`detection/goal.py` が使う切り抜き領域。
+
+- **goal_banner (BANNER_ROI)** — 色判定。「ゴール！」の斜めバナーが表示されて
+  いるかどうかを、チームカラーを問わず色ベースで判定する(`is_goal_event()`)
+- **name_panel (NAME_PANEL_ROI)** — OCR。得点者名・アシスト名の両方を含む
+  1つの大きい領域で、`read_scorer_name()`/`read_assist_name()`はどちらも
+  同じこの領域をOCRし、結果の中から「アシスト」というラベル文字列の位置で
+  得点者名とアシスト名を区別する(得点者用・アシスト用に別々のROIがあるわけ
+  ではない)
