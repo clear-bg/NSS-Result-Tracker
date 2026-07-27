@@ -42,6 +42,30 @@ MATCH_END_RIGHT_ROIの位置は「延長戦」の帯の外(背景)に出る。�
 閾値は fixtures/screenshots/65_match_end.png と fixtures/videos/00,01,02,03
 (いずれも実際に「試合終了」が表示される区間)、fixtures/videos/20
 (引き分け・延長戦のケース)を実測して決定した。
+
+Issue #142対応: HDR無効化後のfixture(76_match_end_hdr_off.png)で、帯の実際の
+描画位置が上記の較正時の前提からわずかにズレており、MATCH_END_LEFT_ROIの
+左上角が帯の丸みを帯びた端にかかってhue_stdが閾値をわずかに超える(帯の色以外の
+ピクセルが混ざる)不具合があった。境界・文字を避けた完全に単色の位置に
+MATCH_END_LEFT_ROI/MATCH_END_RIGHT_ROIを再実測して差し替え、この問題を解消した
+(76_match_end_hdr_off.png・80_match_end_hdr_off_2.pngいずれもhue_std≈0.1〜0.5と
+大幅に余裕がある値になったため、色閾値側の再較正は不要だった)。
+
+MATCH_END_TEXT_ROIは静止画2枚(76・80)に合わせて横幅を絞った。
+
+`fixtures/videos/29_lose_blue_hdr_off.mp4`のframe 958だけ、この横幅だと文字が
+欠けてOCRが失敗する現象が実測で見つかったが、原因は録画セッション間の位置ズレ
+ではなく、「試合終了」の文字は消える直前に一瞬だけ拡大しながら消えるアニメーション
+があり(継続時間が非常に短いため気づきにくい)、frame 958がたまたまその一瞬を
+捉えていたことによるものと判明した(同じ動画・同じタイミングを別ソースで
+確認したところ、安定表示中は他の参照素材と同じ位置で一致することを確認済み)。
+実運用ではconfirm_match_end_text()はis_match_end_screenがMATCH_END_CONFIRM_FRAMES
+(短いデバウンス、`state/match_state.py`参照)回連続した時点で1回だけ呼ばれ、
+これはバナー表示開始から間もないタイミングであるため、消える直前のこの
+アニメーション区間に実際に当たることはない。そのためROI自体の変更はせず、
+テスト側を実際の状態機械と同じ「連続フレーム+デバウンス」方式に作り直すことで
+対応した(単一フレームの抜き取りに起因する偽陰性を避けるため、
+`tests/test_match_end.py`の`_confirmed_match_end()`参照)。
 """
 
 import cv2
@@ -51,17 +75,19 @@ from nss_tracker.detection.goal import _get_name_reader
 from nss_tracker.detection_config import get_detection_value
 
 # 「試合終了」の帯全体(文字を含む)を覆う領域。OCRでの文字読み取り専用に使う
-# (色判定のMATCH_END_LEFT_ROI/MATCH_END_RIGHT_ROIとは別)
-MATCH_END_TEXT_ROI = get_detection_value("match_end", "MATCH_END_TEXT_ROI", (600, 385, 1330, 480))
+# (色判定のMATCH_END_LEFT_ROI/MATCH_END_RIGHT_ROIとは別)。Issue #142で実測し直した
+# (消える直前の拡大アニメーションについてはモジュールdocstring参照)
+MATCH_END_TEXT_ROI = get_detection_value("match_end", "MATCH_END_TEXT_ROI", (746, 383, 1180, 501))
 
 # 「試合終了」の帯のうち、文字にかぶらない左寄りの余白 (x1, y1, x2, y2)
 # 解像度1920x1080のフレームを前提とする
-# (config/detection.tomlの[match_end]で上書き可能。以下同様)
-MATCH_END_LEFT_ROI = get_detection_value("match_end", "MATCH_END_LEFT_ROI", (630, 405, 750, 465))
+# (config/detection.tomlの[match_end]で上書き可能。以下同様)。Issue #142で
+# 帯の丸み端にかかっていた問題を解消するため実測し直した(モジュールdocstring参照)
+MATCH_END_LEFT_ROI = get_detection_value("match_end", "MATCH_END_LEFT_ROI", (638, 422, 719, 509))
 
 # 「試合終了」の帯のうち、右端寄りの余白。「延長戦」(文字数が少なく帯が狭い)
-# との区別に使う(モジュールdocstring参照)
-MATCH_END_RIGHT_ROI = get_detection_value("match_end", "MATCH_END_RIGHT_ROI", (1200, 415, 1270, 450))
+# との区別に使う(モジュールdocstring参照)。Issue #142で実測し直した
+MATCH_END_RIGHT_ROI = get_detection_value("match_end", "MATCH_END_RIGHT_ROI", (1187, 422, 1265, 509))
 
 # 実測(fixtures/screenshots/65_match_end.png, fixtures/videos/00,01,03,20):
 # 帯の色はH80-85程度、余白部分はS125-143・V195-209程度で明確に高彩度・高輝度
