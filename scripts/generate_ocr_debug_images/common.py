@@ -7,6 +7,12 @@ scripts/generate_ocr_debug_images/goal.py`)、変更後の枠で
 fixtures/ocr_debug/<モジュール名>/ 配下の`*_annotated.png`・`README.md`を
 再生成できる。
 
+各スクリプトはこれに加えて、ROI枠だけを描画しそれ以外は完全に透過な
+`roi_mask.png`(BGRA)も生成する(`draw_categories_mask`/`write_mask`参照、
+Issue #140)。fixture本体の画像データを含まないため、手元の任意の画像
+(実プレイのスクリーンショット等)に重ねて、現在のROIがその画像のどの位置に
+来るかを画像編集ソフト等で目視確認する用途に使う。
+
 生成物の位置づけ・画像に凡例パネルを追加しない理由等はこのファイル自体の
 docstringではなく各スクリプトのdocstringを参照。
 """
@@ -61,6 +67,34 @@ def draw_categories(image: np.ndarray, categories: list[Category]) -> np.ndarray
     return annotated
 
 
+def draw_categories_mask(shape: tuple[int, int], categories: list[Category]) -> np.ndarray:
+    """ROI枠(+複数インスタンスなら枠内に小さい連番)だけを描き、それ以外は
+    完全に透過な(アルファ0の)BGRA画像を返す。
+
+    shapeは(height, width)。fixture本体の画像データは一切含まないため、
+    手元の任意の画像に重ねてROIの位置を確認する用途に使う(Issue #140)。
+    """
+    height, width = shape
+    mask = np.zeros((height, width, 4), dtype=np.uint8)
+    for category in categories:
+        multi = len(category.rois) > 1
+        color_bgra = (*category.color, 255)
+        for index, (x1, y1, x2, y2) in enumerate(category.rois):
+            cv2.rectangle(mask, (x1, y1), (x2, y2), color_bgra, _BOX_THICKNESS)
+            if multi:
+                cv2.putText(
+                    mask,
+                    str(index),
+                    (x1 + 2, y1 + 14),
+                    _LEGEND_FONT,
+                    _INDEX_FONT_SCALE,
+                    color_bgra,
+                    1,
+                    cv2.LINE_AA,
+                )
+    return mask
+
+
 def _bgr_to_hex(color: tuple[int, int, int]) -> str:
     b, g, r = color
     return f"#{r:02X}{g:02X}{b:02X}"
@@ -100,4 +134,11 @@ def write_annotated(output_dir: Path, source_filename: str, image: np.ndarray) -
     stem = Path(source_filename).stem
     out_path = output_dir / f"{stem}_annotated.png"
     cv2.imwrite(str(out_path), image)
+    print(f"  wrote {out_path.relative_to(OUTPUT_ROOT.parent.parent)}")
+
+
+def write_mask(output_dir: Path, name: str, mask: np.ndarray) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / f"{name}.png"
+    cv2.imwrite(str(out_path), mask)
     print(f"  wrote {out_path.relative_to(OUTPUT_ROOT.parent.parent)}")
