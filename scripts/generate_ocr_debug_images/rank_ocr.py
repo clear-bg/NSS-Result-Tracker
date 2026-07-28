@@ -22,23 +22,35 @@ from common import (
 
 from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT as _GAUGE_ROI_COMPACT
 from nss_tracker.detection.rank_ocr import GAUGE_ROI_ENLARGED as _GAUGE_ROI_ENLARGED
+from nss_tracker.detection.rank_ocr import RANK_NUMBER_ROI_COMPACT as _RANK_NUMBER_ROI_COMPACT
+from nss_tracker.detection.rank_ocr import RANK_NUMBER_ROI_ENLARGED as _RANK_NUMBER_ROI_ENLARGED
 from nss_tracker.detection.rank_ocr import RANK_ROI as _RANK_ROI
 
 # ROI変数 — ここを書き換えてこのスクリプトを実行すると、変更後の枠で
 # annotated画像・READMEを再生成できる(デフォルトはdetection/rank_ocr.pyの現在値と同じ)
 RANK_ROI = _RANK_ROI
+RANK_NUMBER_ROI_COMPACT = _RANK_NUMBER_ROI_COMPACT
+RANK_NUMBER_ROI_ENLARGED = _RANK_NUMBER_ROI_ENLARGED
 GAUGE_ROI_COMPACT = _GAUGE_ROI_COMPACT
 GAUGE_ROI_ENLARGED = _GAUGE_ROI_ENLARGED
 
 # annotated画像を生成する対象fixture(fixtures/screenshots/配下)。
 # 84/85は同一試合のコンパクト表示(結果バナー確定直後)/拡大表示(ランク変動
 # アニメーション中)のペア(Issue #158で収集)。78は別試合のコンパクト表示の
-# 参考例として引き続き残す
+# 参考例として残す。
+#
+# 77は当初コンパクト表示として扱われていたが、調査の結果バッジが一回り大きく
+# 描画される拡大表示だったことが判明したため(Issue #143、RANK_ROIがコンパクト・
+# 拡大どちらのサイズも1つの領域でカバーする設計だったため誤分類に長らく
+# 気付かなかった)、拡大表示側の参考例として移した
 COMPACT_SOURCE_FILENAMES = [
     "84_result_win_with_rank_blue_hdr_off.png",
     "78_result_lose_with_rank_blue_hdr_off.png",
 ]
-ENLARGED_SOURCE_FILENAME = "85_result_win_with_rank_enlarged_blue_hdr_off.png"
+ENLARGED_SOURCE_FILENAMES = [
+    "85_result_win_with_rank_enlarged_blue_hdr_off.png",
+    "77_result_win_with_rank_red_hdr_off.png",
+]
 
 
 def main() -> None:
@@ -47,6 +59,7 @@ def main() -> None:
 
     compact_categories = [
         Category("rank_badge (RANK_ROI)", "OCR", (255, 200, 0), [RANK_ROI]),
+        Category("rank_number_compact (RANK_NUMBER_ROI_COMPACT)", "OCR", (255, 0, 200), [RANK_NUMBER_ROI_COMPACT]),
         Category("gauge_compact (GAUGE_ROI_COMPACT)", "color/brightness", (0, 200, 255), [GAUGE_ROI_COMPACT]),
     ]
     for source in COMPACT_SOURCE_FILENAMES:
@@ -56,10 +69,12 @@ def main() -> None:
 
     enlarged_categories = [
         Category("rank_badge (RANK_ROI)", "OCR", (255, 200, 0), [RANK_ROI]),
+        Category("rank_number_enlarged (RANK_NUMBER_ROI_ENLARGED)", "OCR", (255, 0, 200), [RANK_NUMBER_ROI_ENLARGED]),
         Category("gauge_enlarged (GAUGE_ROI_ENLARGED)", "color/brightness", (0, 120, 255), [GAUGE_ROI_ENLARGED]),
     ]
-    enlarged_image = load_fixture(ENLARGED_SOURCE_FILENAME)
-    write_annotated(output_dir, ENLARGED_SOURCE_FILENAME, draw_categories(enlarged_image, enlarged_categories))
+    for source in ENLARGED_SOURCE_FILENAMES:
+        enlarged_image = load_fixture(source)
+        write_annotated(output_dir, source, draw_categories(enlarged_image, enlarged_categories))
     write_mask(output_dir, "roi_mask_enlarged", draw_categories_mask(enlarged_image.shape[:2], enlarged_categories))
 
     readme = output_dir / "README.md"
@@ -74,25 +89,40 @@ def main() -> None:
 ## `84_result_win_with_rank_blue_hdr_off_annotated.png`(コンパクト表示の例)
 
 - **rank_badge (RANK_ROI)** — OCR。バッジ全体(アイコン+数値)を包む余裕のある
-  領域。`read_rank()`は数字のみ(allowlist)でOCRして帯内の数値を、
-  `read_rank_tier()`は同じ領域をallowlist無しでOCRしてアイコン部分
-  (`'∞'`/`'S'`/`'A'`)を判定する(同じ切り抜きを2種類のOCR設定で読んでいる)
+  領域。`read_rank_tier()`がこの領域をallowlist無しでOCRしてアイコン部分
+  (`'∞'`/`'S'`/`'A'`)を判定するほか、`state/match_state.py`の
+  `StabilityMonitor`(ランク変動アニメーションが安定したかのピクセル差分監視)
+  にも使われる
+- **rank_number_compact (RANK_NUMBER_ROI_COMPACT)** — OCR。数値ピル部分だけに
+  絞った領域。`read_rank()`が数字のみ(allowlist)でOCRして帯内の数値を読む
+  (Issue #143でRANK_ROIから分離した)
 - **gauge_compact (GAUGE_ROI_COMPACT)** — 色/明度判定。バッジ下部の横長ゲージの
   塗りつぶし割合を、列ごとの明度(HSVのV)平均が閾値を超えるかで判定する
   (`read_rank_gauge_fill()`)。結果バナー確定直後(rank_before)にのみ使う
 
 {roi_table_markdown(compact_categories)}
 
-`78_result_lose_with_rank_blue_hdr_off_annotated.png`は別試合(負け)での
-コンパクト表示の参考例。
+`78_result_lose_with_rank_blue_hdr_off_annotated.png`は別試合でのコンパクト表示の
+参考例。
 
 ## `85_result_win_with_rank_enlarged_blue_hdr_off_annotated.png`(拡大表示の例)
 
 `84`と同一試合で、ランク変動アニメーション中(バッジが一回り大きく描画される)
 を切り出したもの(Issue #158で収集)。
 
+`77_result_win_with_rank_red_hdr_off_annotated.png`も拡大表示の参考例として
+置いている。**当初はコンパクト表示として扱われていたが、実際にはバッジが
+一回り大きく描画される拡大表示だったことが判明した**(Issue #143。RANK_ROI
+自体はコンパクト・拡大どちらのサイズも1つの領域でカバーする設計のため誤検知
+はしないが、この誤分類には長らく気付かなかった。数値ピルだけに絞った
+RANK_NUMBER_ROI_COMPACT/ENLARGEDを追加して初めて、コンパクト用の枠が77の
+数値ピルと噛み合わないことから表面化した)。
+
 - **rank_badge (RANK_ROI)** — 上と同じROI・同じ判定(バッジが一回り大きく
   描画されるが、RANK_ROI自体は両サイズをカバーできる余裕を持たせてある)
+- **rank_number_enlarged (RANK_NUMBER_ROI_ENLARGED)** — OCR。上の
+  rank_number_compactと同じ考え方だが、拡大表示ではバッジの実寸(位置・幅)が
+  異なるため別領域を使う(Issue #143)
 - **gauge_enlarged (GAUGE_ROI_ENLARGED)** — 色/明度判定。上のGAUGE_ROI_COMPACTと
   同じ考え方だが、拡大表示ではバーの実寸(幅・位置)が異なるため別領域を使う。
   ランク変動アニメーションが安定した後(rank_after)にのみ使う
