@@ -52,8 +52,8 @@ VS画面(マッチング完了直後)という1つの画面状態に対して、
 | opponent_num (OPPONENT_NUM_ROIS) [2] | #00DC00 | OCR | (1151, 714)–(1179, 728) | 28×14 |
 | opponent_num (OPPONENT_NUM_ROIS) [3] | #00DC00 | OCR | (991, 652)–(1015, 664) | 24×12 |
 | vs_logo (VS_ROI, matchmaking.py) | #00FFFF | color | (880, 495)–(1050, 600) | 170×105 |
-| team_color_mine (TEAM_COLOR_MINE_ROI, team_color.py) | #0000FF | color | (150, 878)–(400, 887) | 250×9 |
-| team_color_opponent (TEAM_COLOR_OPPONENT_ROI, team_color.py) | #FF0000 | color | (1515, 878)–(1765, 887) | 250×9 |
+| team_color_mine (TEAM_COLOR_MINE_ROI, team_color.py) | #0000FF | color | (441, 868)–(461, 886) | 20×18 |
+| team_color_opponent (TEAM_COLOR_OPPONENT_ROI, team_color.py) | #FF0000 | color | (1804, 868)–(1824, 886) | 20×18 |
 
 `82_matching_with_rank_4v3_hdr_off_annotated.png`(Issue #147で収集)は
 4vs3の変則試合で、mine[1]・opponent[0]がS帯バッジ、opponent[3]は相手が

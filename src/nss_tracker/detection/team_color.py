@@ -9,18 +9,26 @@ VS画面では自チーム・相手チームそれぞれの名前タグ背景が
 
 サンプリング領域はvs_rank.pyと同じスロット0(画面手前、常に表示される選手)の
 名前タグバーのうち、文字やランクバッジが重ならない右寄りの帯を使う。
-fixtures/screenshots(11/12番=青系、14/15番=ピンク系、いずれもVS画面)で実測し、
-同じ色系統ならRGB各chの差が数値にして10未満に収まることを確認済み(自チーム側は
-どの回も同じ色になるはずなので、これは色そのものの再現性を示す)。
+
+Issue #144対応: 当初のROI(x幅250px×高さ9px、名前タグバーの下端寄りを横断する
+細長い帯)は、実際には(1)名前文字のアンチエイリアス縁が上端付近にわずかに
+かぶる、(2)バー自体が単色ではなく左右方向にグラデーションで塗られており
+場所によって色が変わる、という2つの問題があることが実データで判明した(86番
+`86_matching_with_rank_4v4_hdr_off.png`のピクセル値を直接確認して発覚)。
+名前の長さに関わらず名前タグの丸い右端(グラデーションが収束し、文字も
+被らない)まで届く位置に、幅20px×高さ18pxの小さな矩形を置くよう変更した。
+86番・82番(`82_matching_with_rank_4v3_hdr_off.png`、別試合)の両方で標準偏差が
+2未満(旧ROIは18〜72)の完全に均一な色になることを確認済み。
 """
 
 import numpy as np
 
 from nss_tracker.detection_config import get_detection_value
 
-# (x1, y1, x2, y2)。y方向はタグバーの下端寄り(文字の下端より下)の薄い帯
-MINE_ROI = get_detection_value("team_color", "MINE_ROI", (150, 878, 400, 887))
-OPPONENT_ROI = get_detection_value("team_color", "OPPONENT_ROI", (1515, 878, 1765, 887))
+# (x1, y1, x2, y2)。名前タグバーの丸い右端付近、文字・グラデーションの影響を
+# 受けない位置(モジュールdocstring参照)
+MINE_ROI = get_detection_value("team_color", "MINE_ROI", (441, 868, 461, 886))
+OPPONENT_ROI = get_detection_value("team_color", "OPPONENT_ROI", (1804, 868, 1824, 886))
 
 
 def _average_hex(frame: np.ndarray, roi: tuple[int, int, int, int]) -> str:
