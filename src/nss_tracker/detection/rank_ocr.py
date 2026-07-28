@@ -31,12 +31,15 @@ state.match_state側の呼び出しタイミングは以下のように一意に
 - ランク変動アニメーションが安定した後に読む rank_after → 常に拡大表示
 
 バッジには「∞」アイコンも表示されており、数字のみ(allowlist)で読み取ると
-"0"や"00"として誤認識される。∞アイコンは常にランク数値の上に表示されるため、
-検出された数字のうち最も下側(bboxのy座標が最大)のものを実際のランク数値
-として採用する。
+"0"や"00"として誤認識される。Issue #143でread_rank()が数値ピル部分だけに
+絞ったRANK_NUMBER_ROI_COMPACT/ENLARGEDを使うよう変更したため、通常はこの
+誤認識自体が起こりにくくなったが、read_rank()内では従来どおり「検出された
+数字のうち最も下側(bboxのy座標が最大)のものを採用する」処理を安全策として
+残している(万一ノイズ等で複数の結果が返っても、アイコンは常に数値の上に
+表示されるという前提に基づき正しい方を選べるため)。
 
 Issue #73: S/A帯のバッジも∞と同じ「アイコン(∞記号/英字)+ 下に数値」という
-レイアウトで描画される想定のため、read_rank_tier()はread_rank()と同じRANK_ROIを
+レイアウトで描画される想定のため、read_rank_tier()はバッジ全体を包むRANK_ROIを
 allowlistなしでOCRし、最も上側(bboxのy座標が最小)のテキストをアイコンと
 みなして判定する(新規のROI測定は不要)。実際に既存の∞帯fixture6枚全てで
 「allowlistなしでも最上段は"0"/"00"に誤読される」ことを確認済みのため、
@@ -54,6 +57,25 @@ VS画面用アイコンROIを代用して試したが、バッジが小さすぎ
 閾値はscripts/inspect_gauge_fill.pyでfixtures/screenshotsの
 結果バナー画面(勝ち/負け双方、コンパクト表示・拡大表示それぞれの
 安定表示)を実測して決定した。
+
+Issue #143対応: read_rank()の数値OCRは、上記のとおりRANK_ROI(バッジ全体)で
+問題なく読めてはいたが、ゲージと同じ考え方で数値ピル部分だけに絞った専用ROI
+(RANK_NUMBER_ROI_COMPACT / RANK_NUMBER_ROI_ENLARGED)を追加し、read_rank()は
+こちらを使うよう変更した。RANK_ROI自体は以下の2つの用途で引き続き必要なため
+廃止していない:
+
+- read_rank_tier()(アイコン判定。バッジ全体を包む領域が必要なため対象外、
+  モジュールdocstring上記参照)
+- state.match_state側のStabilityMonitor(ランク変動アニメーションが安定した
+  かどうかをピクセル差分で監視する軽量な仕組み。結果バナー画面はキャラクターが
+  静止したポーズで固定されており、ゲージ以外の背景が動くことはほぼ無いため、
+  RANK_ROIの領域を絞っても監視精度への効果は薄いとユーザーと確認した上で、
+  この用途のROIは変更しない方針とした)
+
+RANK_NUMBER_ROIもゲージと同じ理由(コンパクト/拡大でバッジの実寸が異なる)で
+コンパクト/拡大それぞれ個別に用意する。read_rank()はデフォルト値を持たない
+(GAUGE_ROI_COMPACT/ENLARGEDと同じく、どちらか一方を既定にすると、もう一方の
+サイズで誤って使われたときに気付けないため)。
 """
 
 from functools import lru_cache
@@ -64,10 +86,18 @@ import numpy as np
 
 from nss_tracker.detection_config import get_detection_value
 
-# ランクバッジが写りうる範囲(通常表示・昇格/降格アニメ中の拡大表示の両方を含む)
-# 解像度1920x1080のフレームを前提とする
+# ランクバッジが写りうる範囲(通常表示・昇格/降格アニメ中の拡大表示の両方を含む)。
+# read_rank_tier()(アイコン判定)とstate.match_state側のStabilityMonitor
+# (安定監視)が使う。read_rank()(数値OCR)はRANK_NUMBER_ROI_COMPACT/ENLARGEDを
+# 使う(モジュールdocstring参照)。解像度1920x1080のフレームを前提とする
 # (config/detection.tomlの[rank_ocr]で上書き可能。以下同様)
 RANK_ROI = get_detection_value("rank_ocr", "RANK_ROI", (90, 600, 420, 930))
+
+# ランク数値バッジのうち、数値ピル部分だけに絞った領域。コンパクト表示・拡大表示で
+# バッジの実寸(位置・幅とも)が異なるため、ゲージ用ROIと同じ考え方で個別に用意する
+# (モジュールdocstring参照)
+RANK_NUMBER_ROI_COMPACT = get_detection_value("rank_ocr", "RANK_NUMBER_ROI_COMPACT", (208, 890, 264, 923))
+RANK_NUMBER_ROI_ENLARGED = get_detection_value("rank_ocr", "RANK_NUMBER_ROI_ENLARGED", (238, 866, 306, 909))
 
 # ランク数値バッジ下部のゲージ(横長の帯)の領域。コンパクト表示・拡大表示で
 # バーの実寸(幅・位置とも)が異なるため個別に用意する(モジュールdocstring参照)。
@@ -92,8 +122,14 @@ def _get_reader():
     return easyocr.Reader(["en"], gpu=False)
 
 
-def read_rank(frame: np.ndarray, roi: tuple[int, int, int, int] = RANK_ROI) -> Optional[int]:
-    """ランク数値バッジをOCRで読み取る。バッジが表示されていなければNoneを返す。"""
+def read_rank(frame: np.ndarray, roi: tuple[int, int, int, int]) -> Optional[int]:
+    """ランク数値をOCRで読み取る。バッジが表示されていなければNoneを返す。
+
+    roiにはRANK_NUMBER_ROI_COMPACT / RANK_NUMBER_ROI_ENLARGEDのうち、その瞬間の
+    バッジ表示サイズに合ったものを呼び出し側が指定すること(モジュールdocstring
+    参照)。デフォルト値は持たせない(read_rank_gauge_fill()と同じ理由、
+    どちらか一方を既定にすると誤用に気付けないため)。
+    """
     x1, y1, x2, y2 = roi
     crop = frame[y1:y2, x1:x2]
     results = _get_reader().readtext(crop, allowlist="0123456789")
@@ -159,12 +195,18 @@ def read_rank_gauge_fill(frame: np.ndarray, roi: tuple[int, int, int, int]) -> O
     return float(filled.mean())
 
 
-def read_precise_rank(frame: np.ndarray, gauge_roi: tuple[int, int, int, int]) -> Optional[tuple[int, float]]:
+def read_precise_rank(
+    frame: np.ndarray,
+    gauge_roi: tuple[int, int, int, int],
+    rank_number_roi: tuple[int, int, int, int],
+) -> Optional[tuple[int, float]]:
     """整数の帯番号と、それにゲージの溜まり具合を加えた小数のランク値を読み取る。
 
-    gauge_roiにはGAUGE_ROI_COMPACT / GAUGE_ROI_ENLARGEDのうち、呼び出し時点の
-    バッジ表示サイズに合ったものを渡すこと。state.match_state内の呼び出しは
-    タイミングによってどちらのサイズかが一意に決まる(モジュールdocstring参照)。
+    gauge_roiにはGAUGE_ROI_COMPACT / GAUGE_ROI_ENLARGEDのうち、rank_number_roiには
+    RANK_NUMBER_ROI_COMPACT / RANK_NUMBER_ROI_ENLARGEDのうち、呼び出し時点の
+    バッジ表示サイズに合ったものを渡すこと(必ず同じサイズのペアで渡す)。
+    state.match_state内の呼び出しはタイミングによってどちらのサイズかが
+    一意に決まる(モジュールdocstring参照)。
 
     戻り値は (帯番号, 小数のランク値) のタプル。帯番号が読めなければNoneを返す。
     ゲージの溜まり具合が1.0(満タン)になることがあり、その場合
@@ -174,7 +216,7 @@ def read_precise_rank(frame: np.ndarray, gauge_roi: tuple[int, int, int, int]) -
     ゲージが読めない場合は小数部を0として帯番号のみのランク値を返す
     (取れる情報だけ取っておき、後で表示時に丸める運用のため)。
     """
-    tier = read_rank(frame)
+    tier = read_rank(frame, rank_number_roi)
     if tier is None:
         return None
     fill = read_rank_gauge_fill(frame, gauge_roi)

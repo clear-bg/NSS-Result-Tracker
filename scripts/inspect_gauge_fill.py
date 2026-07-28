@@ -12,6 +12,11 @@ rank_ocr.read_rank_gauge_fill() の閾値・ROIを決めるための一次デー
 (ゲージの見た目がグラデーション表示になり値として意味を持たない状態)
 のため参考値として出力するのみで、tests/test_rank_ocr.pyのground truthには
 含めていない。
+
+Issue #143: 77は当初コンパクト表示として扱われていたが、実際にはバッジが
+一回り大きく描画される拡大表示だったことが判明した(RANK_ROIがコンパクト・
+拡大どちらの表示サイズも1つの領域でカバーする設計だったため、この誤分類に
+長らく気付かなかった)。ENLARGED_TARGETSに移した。
 """
 
 from pathlib import Path
@@ -22,14 +27,17 @@ from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "screenshots"
 
-# Issue #148: HDR無効化前fixture削除に伴い張り替え。拡大表示・遷移演出中の
-# HDR無効化後fixtureはまだ無い(Issue #147参照)ため空のまま
+# Issue #148・#158: HDR無効化前fixture削除に伴い張り替え、その後84を追加収集
 COMPACT_TARGETS = [
-    "77_result_win_with_rank_red_hdr_off.png",
     "78_result_lose_with_rank_blue_hdr_off.png",
+    "84_result_win_with_rank_blue_hdr_off.png",
 ]
 
-ENLARGED_TARGETS: list[str] = []
+# Issue #143: 77は誤ってCOMPACT_TARGETSに入っていたことが判明し、こちらへ移動した
+ENLARGED_TARGETS: list[str] = [
+    "77_result_win_with_rank_red_hdr_off.png",
+    "85_result_win_with_rank_enlarged_blue_hdr_off.png",
+]
 
 # 遷移演出中(参考値のみ、ground truthには使わない)。拡大表示と同じ座標系のはず
 TRANSITIONAL_TARGETS: list[str] = []
