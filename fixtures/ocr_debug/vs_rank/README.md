@@ -60,6 +60,10 @@ VS画面(マッチング完了直後)という1つの画面状態に対して、
 3人しかいないため不在(SlotRank(None, None))という、∞帯以外のケースを
 複数まとめて確認できる例(`tests/test_vs_rank.py`のEXPECTED_SCREENSHOTS参照)。
 
+`86_matching_with_rank_4v4_hdr_off_annotated.png`は両チームとも4人揃った
+通常編成(4vs4)の例。mine[2]・mine[3]がA帯バッジで、82には無かったA帯の
+参照としても使える。
+
 `roi_mask.png`はROI枠のみを描画し、それ以外は透過にした画像(fixture本体の
 画像データは含まない)。手元の任意の画像に重ねて、現在のROIがどの位置に
 来るかを画像編集ソフト等で確認する用途に使う(Issue #140)。
