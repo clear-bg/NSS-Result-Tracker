@@ -55,8 +55,8 @@ from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import RANK_ROI, _get_reader
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
 from nss_tracker.obs_control import ObsSceneController
-from nss_tracker.state.match_state import MatchResult, MatchStateMachine
-from nss_tracker.timeutil import JST
+from nss_tracker.state.match_state import MatchResult, MatchStateMachine, VsScreenEvent
+from nss_tracker.timeutil import JST, now_jst
 from nss_tracker.web.runner import start_web_server_thread
 from nss_tracker.web.server import create_app
 
@@ -199,6 +199,39 @@ def _record_match_result(conn: sqlite3.Connection, session_id: Optional[int], re
         )
     else:
         logger.info("VS画面を検知できなかったため、VSスロットランクは記録しません: match_id=%d", match_id)
+        # Issue #145: VS画面を見逃した試合が終わった際は、対戦相手ランク比較ウィジェットの
+        # 表示を前の試合の値のまま残さず、none/noneにリセットする(db._recordの
+        # モジュールdocstring参照)
+        db.save_vs_rank_snapshot(conn, session_id, [], [], None, None, result.detected_at)
+
+
+def _record_vs_screen_event(conn: sqlite3.Connection, session_id: Optional[int], event: VsScreenEvent) -> None:
+    """VS画面確定を検知した瞬間に、対戦相手ランク比較ウィジェット用のスナップショットを即書き込む(Issue #145)。
+
+    試合結果確定(_record_match_result)を待たないため、ウィジェットの表示が
+    1試合分遅れる問題を解消する。VS画面検知自体はできたがランク読み取り自体が
+    失敗した場合(mine_ranks/opponent_ranksが両方空)は何も書かない(このフレーム
+    時点では単なる読み取り失敗か本当にVS画面自体を見逃したか区別できないため、
+    最終的な扱いは試合終了時の_record_match_resultに委ねる)。
+    """
+    if not event.mine_ranks and not event.opponent_ranks:
+        return
+    db.save_vs_rank_snapshot(
+        conn,
+        session_id,
+        event.mine_ranks,
+        event.opponent_ranks,
+        event.mine_team_color,
+        event.opponent_team_color,
+        now_jst(),
+    )
+    logger.info(
+        "VS画面のランクを即時反映しました: mine=%s opponent=%s team_color=%s->%s",
+        event.mine_ranks,
+        event.opponent_ranks,
+        event.mine_team_color,
+        event.opponent_team_color,
+    )
 
 
 def _warmup_ocr_engines() -> None:
@@ -253,6 +286,10 @@ def run(
                 break
 
             result = machine.process_frame(frame)
+
+            vs_screen_event = machine.pop_vs_screen_event()
+            if vs_screen_event is not None:
+                _record_vs_screen_event(conn, session_id, vs_screen_event)
 
             if machine.current_state != prev_state:
                 logger.info("状態遷移: %s -> %s", prev_state, machine.current_state)

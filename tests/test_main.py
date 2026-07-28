@@ -15,7 +15,9 @@ import pytest
 
 from conftest import requires_video_fixtures
 from nss_tracker.database import db
-from nss_tracker.timeutil import JST
+from nss_tracker.detection.vs_rank import SlotRank
+from nss_tracker.state.match_state import MatchResult, VsScreenEvent
+from nss_tracker.timeutil import JST, now_jst
 
 import main
 
@@ -123,6 +125,82 @@ def test_main_continues_when_browser_cannot_be_opened(monkeypatch, tmp_path):
     main.main()  # 例外を送出せず正常終了することを確認する
 
     assert db_path.exists()
+
+
+def test_record_vs_screen_event_writes_snapshot_immediately(tmp_path):
+    """Issue #145: 試合結果確定(_record_match_result)を待たず、VS画面確定を検知した
+    瞬間にDBへ即時反映されることを確認する。
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(db._SCHEMA)
+    conn.commit()
+    session_id = db.create_session(conn)
+
+    event = VsScreenEvent(
+        mine_ranks=[SlotRank("∞", 38)],
+        opponent_ranks=[SlotRank("∞", 10)],
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+    )
+
+    main._record_vs_screen_event(conn, session_id, event)
+
+    header = db.fetch_latest_vs_rank_snapshot(conn)
+    assert header is not None
+    assert header["session_id"] == session_id
+    assert header["mine_team_color"] == "#64bde2"
+    slots = db.fetch_vs_rank_snapshot_slots(conn, header["id"])
+    assert [row["rank_tier"] for row in slots] == [38, 10]
+    conn.close()
+
+
+def test_record_vs_screen_event_skips_when_ranks_empty(tmp_path):
+    """VS画面自体は確定したがランク読み取りが失敗した場合(両方空リスト)は書き込まない。"""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(db._SCHEMA)
+    conn.commit()
+    session_id = db.create_session(conn)
+
+    event = VsScreenEvent(mine_ranks=[], opponent_ranks=[], mine_team_color=None, opponent_team_color=None)
+
+    main._record_vs_screen_event(conn, session_id, event)
+
+    assert db.fetch_latest_vs_rank_snapshot(conn) is None
+    conn.close()
+
+
+def test_record_match_result_resets_snapshot_when_vs_screen_missed(tmp_path):
+    """Issue #145: VS画面を見逃した試合が終わった際、対戦相手ランク比較ウィジェットの
+    表示が前の試合の値のまま残らないよう、none/noneにリセットするスナップショットを
+    書き込むことを確認する。
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(db._SCHEMA)
+    conn.commit()
+    session_id = db.create_session(conn)
+
+    main._record_vs_screen_event(
+        conn,
+        session_id,
+        VsScreenEvent(
+            mine_ranks=[SlotRank("∞", 38)],
+            opponent_ranks=[SlotRank("∞", 10)],
+            mine_team_color="#64bde2",
+            opponent_team_color="#f87abe",
+        ),
+    )
+
+    result = MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst())
+    main._record_match_result(conn, session_id, result)
+
+    header = db.fetch_latest_vs_rank_snapshot(conn)
+    assert header["mine_team_color"] is None
+    assert header["opponent_team_color"] is None
+    assert db.fetch_vs_rank_snapshot_slots(conn, header["id"]) == []
+    conn.close()
 
 
 @pytest.mark.slow
