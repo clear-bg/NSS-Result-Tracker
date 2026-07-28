@@ -463,6 +463,34 @@ def test_render_rank_graph_svg_draws_vertical_gridlines_at_x_ticks():
     assert svg.count('class="rank-graph-gridline"') >= 3 + 3
 
 
+def test_render_rank_graph_svg_adds_half_step_minor_gridlines_when_step_is_one():
+    """Issue #146: 目盛り間隔が1(通常運用)のとき、整数目盛りの間に0.5刻みの
+    補助グリッド線を追加する。ラベル・目盛り線自体は増やさない。
+    """
+    history = [{"rank_after": value, "league_changed": None} for value in [10, 12]]
+
+    svg = _render_rank_graph_svg(history)
+
+    axis_min, axis_max = _rank_graph_y_bounds(10, 12)
+    assert _rank_graph_y_tick_step(axis_max - axis_min) == 1
+    assert svg.count('class="rank-graph-gridline-minor"') == axis_max - axis_min
+    # 0.5刻みの補助線に対応するラベル(小数)は追加しない
+    assert ".5<" not in svg
+
+
+def test_render_rank_graph_svg_omits_minor_gridlines_when_step_widens():
+    """Issue #146: 外れ値で目盛り間隔が1以外に広がった場合、0.5刻みの補助線は追加しない
+    (ユーザーとの相談で決定、issue #146のコメント参照)。
+    """
+    history = [{"rank_after": value, "league_changed": None} for value in [40, 41, 40, 2, 41, 40, 411, 40]]
+
+    svg = _render_rank_graph_svg(history)
+
+    axis_min, axis_max = _rank_graph_y_bounds(2, 411)
+    assert _rank_graph_y_tick_step(axis_max - axis_min) != 1
+    assert 'class="rank-graph-gridline-minor"' not in svg
+
+
 def test_render_rank_graph_svg_last_point_stops_short_of_right_edge():
     """一番右の点は、実際の試合数を上回るまで拡張した横軸(x_axis_max)を使うことで
     枠の右端に接しないようにする(縦軸のbounds拡張と同じ考え方、ユーザーとの相談で決定)。
