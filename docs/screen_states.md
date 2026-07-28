@@ -119,7 +119,9 @@ Issue #147対応。`72`/`73`(VS画面)に続き、それ以外の色ベース判
   - オウンゴールのため得点者名の代わりに「オウンゴール」と表示される点に注意。バナー自体の色(`BLUE_HUE_RANGE`対象)は通常のゴールと同じ描画のはずだが、得点者名OCRのテストには使えない
 - [x] 試合終了バナー(HDR無効化後、勝ち側の試合) `76_match_end_hdr_off`
 - [x] 勝ち(ランク有り、赤チーム、HDR無効化後) `77_result_win_with_rank_red_hdr_off`
+  - ランクバッジは**拡大表示**(ランク変動アニメーション中、バッジが一回り大きく描画される状態)を捉えたもの。当初コンパクト表示として扱われていたが、Issue #143で実際には拡大表示だったことが判明し訂正した(`GAUGE_ROI_ENLARGED`/`RANK_NUMBER_ROI_ENLARGED`が対応する)
 - [x] 負け(ランク有り、青チーム、HDR無効化後) `78_result_lose_with_rank_blue_hdr_off`
+  - ランクバッジは**コンパクト表示**(結果バナー確定直後)
 - [x] リーグ昇格演出(HDR無効化後) `79_result_rank_up_hdr_off`
 - [x] 試合終了バナー(HDR無効化後、負け側の試合、ランク無し) `80_match_end_hdr_off_2`
 - [x] 負け(ランク無し、青チーム、HDR無効化後) `81_result_lose_without_rank_blue_hdr_off`

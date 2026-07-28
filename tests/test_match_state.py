@@ -153,7 +153,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
@@ -361,7 +361,7 @@ def test_rank_read_failure_is_logged(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: None)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
 
     machine = MatchStateMachine(
@@ -398,7 +398,7 @@ def test_track_rank_grace_recheck_catches_slow_drift(monkeypatch):
     """
     call_count = {"n": 0}
 
-    def fake_read_precise_rank(frame, gauge_roi):
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         call_count["n"] += 1
         # 1回目("結果バナー時点"の読み取り)・2回目(GRACE突入直後の読み取り)は
         # まだ遷移途中の値、3回目以降は真の最終値を返す
@@ -441,7 +441,7 @@ def test_track_rank_grace_recheck_catches_tier_change(monkeypatch):
     """
     call_count = {"n": 0}
 
-    def fake_read_precise_rank(frame, gauge_roi):
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return (40, 40.09)  # 結果バナー時点(before)
@@ -493,7 +493,7 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
         # GRACE突入後の最初の呼び出しでNoneを返してバナー消失(即確定)を発生させる
         return "lose" if banner_call_count["n"] <= 2 else None
 
-    def fake_read_precise_rank(frame, gauge_roi):
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         rois_used.append(gauge_roi)
         # 結果バナー確定直後(コンパクト表示)・GRACE突入直後(拡大表示)の読み取りは
         # いずれも失敗させ、候補が一度も埋まらない状況を再現する。
@@ -558,7 +558,7 @@ def test_match_end_confirmed_enables_fast_banner_confirm(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
 
     machine = MatchStateMachine(
@@ -591,7 +591,7 @@ def test_match_end_candidate_rejected_by_ocr_keeps_slow_banner_confirm(monkeypat
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
 
     machine = MatchStateMachine(
@@ -635,7 +635,7 @@ def test_lifecycle_logs_reuse_session_match_number(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.5))
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.5))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
 
     machine = MatchStateMachine(
@@ -690,7 +690,7 @@ def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
     )
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
@@ -738,7 +738,7 @@ def test_team_colors_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_team_colors", lambda frame: ("#64bde2", "#f87abe"))
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
@@ -775,7 +775,7 @@ def test_vs_screen_not_detected_results_in_none_team_colors(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
@@ -879,7 +879,7 @@ def test_vs_screen_not_detected_results_in_empty_vs_ranks(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
@@ -918,7 +918,7 @@ def test_in_match_true_after_vs_screen_confirmed_and_false_after_finalize(monkey
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
 
     machine = MatchStateMachine(
