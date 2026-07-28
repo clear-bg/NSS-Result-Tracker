@@ -23,13 +23,12 @@ EXPECTED = {
     "87_matching_hdr_off_3.png": None,
 }
 
-# Issue #148: 77は実測Hが87.1〜87.2で安定している(hue_stdは1.4程度と低く、
-# 単発フレームの偶然ではなく表示区間全体を通じて一貫している)にもかかわらず、
-# WIN_HUE_RANGE=(77, 86)の上限からわずかに外れているためclassify_bannerが
-# Noneを返す。HDR無効化による色シフトが実際にbanner.pyの閾値にも及んでいる
-# ことを示す実データであり、Issue #118/#143で閾値の再較正を行うまでの既知の
-# 欠落としてxfailにする(ground truthは"win"のまま)。84・85(実測H≈87.2〜87.3)も
-# 同じ原因で同様に欠落する
+
+# Issue #172: WIN_HUE_RANGE=(77, 86)の上限からわずかに外れる(77・84・85番は
+# H86.3〜86.9)、かつ77・85番はWIN_VAL_MIN=165もクリアできていない(V146.1〜
+# 148.5)。単純な閾値緩和は79_result_rank_up_hdr_off.png(ランク昇格オーバーレイ)
+# を誤検知させることが判明したため、判定条件自体の見直しが必要(詳細はIssue
+# #172参照)。ground truthは"win"のまま、既知の欠落としてxfailにする
 _KNOWN_HUE_SHIFT_GAPS = {
     "77_result_win_with_rank_red_hdr_off.png",
     "84_result_win_with_rank_blue_hdr_off.png",
@@ -45,7 +44,7 @@ _KNOWN_HUE_SHIFT_GAPS = {
             name,
             expected,
             marks=pytest.mark.xfail(
-                reason="WIN_HUE_RANGEがHDR無効化後の実測Hを僅かにカバーできていない(Issue #118/#143で対応予定)",
+                reason="WIN_HUE_RANGE/WIN_VAL_MINがHDR無効化後の実測を僅かにカバーできていない(Issue #172で対応予定)",
                 strict=False,
             ),
         )

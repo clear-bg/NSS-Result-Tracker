@@ -72,6 +72,32 @@ fixtures/videos/13_win_red_vs_screen_without_rank.mp4)と見た目上区別が
 ケース)の参照素材はまだ無く未検証。この場合もバッジが静止しているだけ
 であれば既存のTRACKING_RANK側のロジック(安定を待って確定)でそのまま
 扱えるはずだが、実データで確認できるまでは推測に留める。
+
+Issue #159対応(BANNER_ROIの複数矩形化): 従来の単一ROI(1300,5,1750,35、
+帯の右上寄りをまとめて薄く横断する1本の細長い矩形)は、配信ごとの帯の
+太さ・角度の差(モジュール冒頭参照)を吸収しきれず、(1)矩形の右下端が
+帯からはみ出して背景色を拾う(負けバナーの一部の配信で実測)、(2)細長い
+1本のみのサンプルのため、背景の建造物・天蓋等がこの帯にちょうど重なる
+角度だと平均色・Hue標準偏差ごと誤検知側の閾値に一致しやすい(Issue #45・
+#67・fixtures/videos/25_inplay_false_positive_win_blue_teal_canopy.mp4)、
+という2つの弱点があった。帯を横断する形で5つの矩形に分割し(各矩形は
+帯の傾きに沿って高さ・y座標を変え、どの区間でも帯の内側に収まるように
+実測して配置)、5つを`goal.py`の`is_goal_event()`と同じ「まとめて1つの
+サンプルとして平均を取る」方式で合算するよう変更した。
+
+実際にfixtures/videos全フレームを旧ROI・新ROIの両方でスキャンして比較した
+ところ(scripts/inspect_banner_colors.py参照)、既知の誤検知動画
+(21_goal_event_false_positive_win_blue_4-3.mp4、
+25_inplay_false_positive_win_blue_teal_canopy.mp4)で新ROIは旧ROIが検知して
+いた誤検知区間をほぼ全て(25番は完全に0件まで)除去した一方、本物の勝ち/
+負けバナー動画(28・29・30・31番)では旧ROIとほぼ同じ区間(数フレームの
+起動ラグのみ)を検知できており、真陽性を壊していないことを確認済み。
+なお新ROIでは勝ちバナーの実測Hueがわずかに下がる副次的な効果も見られたが
+(旧87.1〜87.3→新86.3〜86.9)、WIN_HUE_RANGEの再較正はIssue #118/#143の
+スコープのためここでは変更していない(Issue #143は別途、WIN_VAL_MINも
+絡む形で再調査する。79_result_rank_up_hdr_off.png(ランク昇格オーバーレイ)
+がWIN_VAL_MINを緩めると誤検知することが判明したため、単純な閾値緩和では
+済まないことが分かっている)。
 """
 
 from typing import Literal, Optional
@@ -83,11 +109,22 @@ from nss_tracker.detection_config import get_detection_value
 
 BannerResult = Optional[Literal["win", "lose", "draw"]]
 
-# バナー帯のうち、テキストや選手モデルにかぶらない右上寄りの領域 (x1, y1, x2, y2)
-# 帯の太さ・角度は配信によって差があるため、画面最上部寄りの薄い帯にして
-# 背景色の混入を避けている。解像度1920x1080のフレームを前提とする
+# バナー帯を横断する5つの矩形(x1, y1, x2, y2)。帯の傾きに沿って高さ・y座標を
+# 変え、配信ごとの帯の太さ・角度の差があってもどの区間でも帯の内側に収まる
+# ように実測して配置している(Issue #159、モジュールdocstring参照)。
+# 解像度1920x1080のフレームを前提とする
 # (config/detection.tomlの[banner]で上書き可能。以下同様)
-BANNER_ROI = get_detection_value("banner", "BANNER_ROI", (1300, 5, 1750, 35))
+BANNER_ROIS = get_detection_value(
+    "banner",
+    "BANNER_ROIS",
+    (
+        (696, 71, 879, 149),
+        (879, 44, 1057, 128),
+        (1057, 8, 1245, 86),
+        (1245, 5, 1543, 39),
+        (1543, 5, 1722, 24),
+    ),
+)
 
 # 実測(scripts/inspect_banner_colors.py, fixtures/screenshots + fixtures/videos/00-03):
 # 勝ち: H80.7-83.2 / 負け: H89.0-99.0(配信間の差が大きい)
@@ -130,11 +167,17 @@ def _is_draw_text(frame: np.ndarray, roi: tuple[int, int, int, int] = DRAW_TEXT_
     return bool(mask.mean() >= DRAW_TEXT_TEAL_FRACTION_MIN)
 
 
-def classify_banner(frame: np.ndarray, roi: tuple[int, int, int, int] = BANNER_ROI) -> BannerResult:
-    """勝敗結果バナーの色を判定する。バナーが写っていなければNoneを返す。"""
-    x1, y1, x2, y2 = roi
-    crop = frame[y1:y2, x1:x2]
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV).reshape(-1, 3)
+def classify_banner(
+    frame: np.ndarray, rois: tuple[tuple[int, int, int, int], ...] = BANNER_ROIS
+) -> BannerResult:
+    """勝敗結果バナーの色を判定する。バナーが写っていなければNoneを返す。
+
+    複数矩形(Issue #159)はgoal.pyのis_goal_event()と同様、まとめて1つの
+    サンプルとして平均・標準偏差を取る(矩形ごとの個別判定はしない)。
+    """
+    crops = [frame[y1:y2, x1:x2].reshape(-1, 3) for x1, y1, x2, y2 in rois]
+    combined = np.concatenate(crops, axis=0)
+    hsv = cv2.cvtColor(combined.reshape(1, -1, 3), cv2.COLOR_BGR2HSV).reshape(-1, 3)
     h, s, v = hsv.mean(axis=0)
     hue_std = hsv[:, 0].std()
 
