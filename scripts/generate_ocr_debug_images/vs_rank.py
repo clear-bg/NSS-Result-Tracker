@@ -48,7 +48,10 @@ TEAM_COLOR_MINE_ROI = _TEAM_COLOR_MINE_ROI
 TEAM_COLOR_OPPONENT_ROI = _TEAM_COLOR_OPPONENT_ROI
 
 # annotated画像を生成する対象fixture(fixtures/screenshots/配下)
-SOURCE_FILENAME = "82_matching_with_rank_4v3_hdr_off.png"
+SOURCE_FILENAMES = [
+    "82_matching_with_rank_4v3_hdr_off.png",
+    "86_matching_with_rank_4v4_hdr_off.png",
+]
 
 
 def main() -> None:
@@ -70,8 +73,9 @@ def main() -> None:
         ),
     ]
 
-    image = load_fixture(SOURCE_FILENAME)
-    write_annotated(output_dir, SOURCE_FILENAME, draw_categories(image, categories))
+    for source in SOURCE_FILENAMES:
+        image = load_fixture(source)
+        write_annotated(output_dir, source, draw_categories(image, categories))
     write_mask(output_dir, "roi_mask", draw_categories_mask(image.shape[:2], categories))
 
     readme = output_dir / "README.md"
@@ -117,6 +121,10 @@ VS画面(マッチング完了直後)という1つの画面状態に対して、
 4vs3の変則試合で、mine[1]・opponent[0]がS帯バッジ、opponent[3]は相手が
 3人しかいないため不在(SlotRank(None, None))という、∞帯以外のケースを
 複数まとめて確認できる例(`tests/test_vs_rank.py`のEXPECTED_SCREENSHOTS参照)。
+
+`86_matching_with_rank_4v4_hdr_off_annotated.png`は両チームとも4人揃った
+通常編成(4vs4)の例。mine[2]・mine[3]がA帯バッジで、82には無かったA帯の
+参照としても使える。
 
 `roi_mask.png`はROI枠のみを描画し、それ以外は透過にした画像(fixture本体の
 画像データは含まない)。手元の任意の画像に重ねて、現在のROIがどの位置に
