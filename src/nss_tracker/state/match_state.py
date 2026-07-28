@@ -338,11 +338,9 @@ class MatchStateMachine:
         return self._watch_for_banner_absence(frame)
 
     def _check_for_vs_screen(self, frame: np.ndarray) -> None:
-        # Issue #68: 実プレイでVS画面検知が繰り返し失敗しており(2026-07-19・
-        # 2026-07-20の実測とも0/5・0/4)、既存fixtureでの検証では原因を特定できて
-        # いない。実際のキャプチャパイプラインでの生のHSV値を次回セッションで
-        # 確認できるよう、毎フレームDEBUGログに残す(デフォルトのINFOレベルでは
-        # 出ないため、通常運用への影響は無い)
+        # デバッグ用: DEBUGレベル時のみVS_ROIの生HSV値を毎フレームログに残す
+        # (通常運用のINFOレベルでは出ないため影響なし)。Issue #68で実機の閾値
+        # 調整に使用、閾値自体はIssue #116の実測で確定済み(detection.matchmaking参照)
         if logger.isEnabledFor(DEBUG):
             h, s, v = read_vs_roi_hsv(frame)
             logger.debug("VS_ROI HSV: H=%.2f S=%.2f V=%.2f", h, s, v)
