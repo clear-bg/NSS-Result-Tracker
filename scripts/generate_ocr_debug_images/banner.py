@@ -20,12 +20,12 @@ from common import (
     write_mask,
 )
 
-from nss_tracker.detection.banner import BANNER_ROI as _BANNER_ROI
+from nss_tracker.detection.banner import BANNER_ROIS as _BANNER_ROIS
 from nss_tracker.detection.banner import DRAW_TEXT_ROI as _DRAW_TEXT_ROI
 
 # ROI変数 — ここを書き換えてこのスクリプトを実行すると、変更後の枠で
 # annotated画像・READMEを再生成できる(デフォルトはdetection/banner.pyの現在値と同じ)
-BANNER_ROI = _BANNER_ROI
+BANNER_ROIS = _BANNER_ROIS
 DRAW_TEXT_ROI = _DRAW_TEXT_ROI
 
 # annotated画像を生成する対象fixture(fixtures/screenshots/配下)。
@@ -43,7 +43,7 @@ def main() -> None:
     print("banner:")
 
     categories = [
-        Category("banner (BANNER_ROI)", "color", (0, 200, 255), [BANNER_ROI]),
+        Category("banner (BANNER_ROIS)", "color", (0, 200, 255), list(BANNER_ROIS)),
         Category("draw_text (DRAW_TEXT_ROI)", "color", (255, 0, 200), [DRAW_TEXT_ROI]),
     ]
     for source in SOURCE_FILENAMES:
@@ -56,12 +56,14 @@ def main() -> None:
         f"""# banner.py のROI
 
 `detection/banner.py` が使う切り抜き領域。勝敗結果バナーの色判定に使う
-(Issue #159で見直し予定)。
+(Issue #159で見直し済み)。
 
-- **banner (BANNER_ROI)** — 色判定。斜めの結果バナー帯のうち、テキストや
-  選手モデルにかぶらない右上寄りの薄い領域。`WIN_HUE_RANGE`/`LOSE_HUE_RANGE`と
-  平均Hueを比較し、`BANNER_HUE_STD_MAX`でHueの標準偏差(背景の建造物等による
-  誤検知除外)も確認する(`classify_banner()`)
+- **banner (BANNER_ROIS)** — 色判定。斜めの結果バナー帯を横断する5つの矩形
+  (帯の傾きに沿って高さ・y座標を変え、配信ごとの帯の太さ・角度の差があっても
+  内側に収まるように配置)を`goal.py`の`is_goal_event()`と同様まとめて1つの
+  サンプルとして平均を取る。`WIN_HUE_RANGE`/`LOSE_HUE_RANGE`と平均Hueを比較し、
+  `BANNER_HUE_STD_MAX`でHueの標準偏差(背景の建造物等による誤検知除外)も
+  確認する(`classify_banner()`)
 - **draw_text (DRAW_TEXT_ROI)** — 色判定。引き分け時のみ、帯の色だけでは
   負けと区別できないため、「引き分け」の文字の縁取り色(ミントグリーン)の
   画素割合を追加で確認する(`_is_draw_text()`)。時計表示(画面左上)を避けた
