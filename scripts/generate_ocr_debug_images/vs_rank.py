@@ -1,15 +1,21 @@
-"""`detection/vs_rank.py`のROI確認用画像・READMEを生成する診断スクリプト
-(fixtures/ocr_debug/vs_rank/、Issue #135、自動テストではない)。
+"""VS画面(マッチング完了直後)で検知しているROIをまとめて確認する診断
+スクリプト(fixtures/ocr_debug/vs_rank/、Issue #135・#140、自動テストではない)。
+
+同じVS画面という1つの画面状態に対して、`detection/vs_rank.py`(ランクバッジ
+OCR)・`detection/matchmaking.py`(VS画面自体の検知)・`detection/team_color.py`
+(チームカラーのサンプリング)と3つの別モジュールがそれぞれ別のROIで判定して
+いるため、画面単位でまとめて1つのフォルダに置いている(モジュール単位で
+フォルダを分けている他の画面とは異なる構成)。
 
 下のROI変数を書き換えてこのスクリプトを直接実行すれば
 (`uv run python scripts/generate_ocr_debug_images/vs_rank.py`)、変更後の枠で
 `*_annotated.png`(全画面表示、fixture本体と同じ解像度)・`roi_mask.png`
 (ROI枠のみで他は透過、任意の画像に重ねて確認する用)・`README.md`
 (枠色・種別・実測ピクセル座標のテーブル込み)を再生成できる。画像ファイル自体を
-手で編集する想定はない。デフォルト値は`detection/vs_rank.py`の現在値と同じ。
+手で編集する想定はない。デフォルト値は各モジュールの現在値と同じ。
 
-各ROI変数は4スロット分(自チーム/相手チームそれぞれ最大4人)をまとめた
-タプルで、スロット0が画面手前・スロット3が最も奥。
+vs_rank.py側の各ROI変数は4スロット分(自チーム/相手チームそれぞれ最大4人)を
+まとめたタプルで、スロット0が画面手前・スロット3が最も奥。
 """
 
 from common import (
@@ -23,17 +29,23 @@ from common import (
     write_mask,
 )
 
+from nss_tracker.detection.matchmaking import VS_ROI as _VS_ROI
+from nss_tracker.detection.team_color import MINE_ROI as _TEAM_COLOR_MINE_ROI
+from nss_tracker.detection.team_color import OPPONENT_ROI as _TEAM_COLOR_OPPONENT_ROI
 from nss_tracker.detection.vs_rank import MINE_ICON_ROIS as _MINE_ICON_ROIS
 from nss_tracker.detection.vs_rank import MINE_NUM_ROIS as _MINE_NUM_ROIS
 from nss_tracker.detection.vs_rank import OPPONENT_ICON_ROIS as _OPPONENT_ICON_ROIS
 from nss_tracker.detection.vs_rank import OPPONENT_NUM_ROIS as _OPPONENT_NUM_ROIS
 
 # ROI変数 — ここを書き換えてこのスクリプトを実行すると、変更後の枠で
-# annotated画像・READMEを再生成できる(デフォルトはdetection/vs_rank.pyの現在値と同じ)
+# annotated画像・READMEを再生成できる(デフォルトは各モジュールの現在値と同じ)
 MINE_ICON_ROIS = _MINE_ICON_ROIS
 MINE_NUM_ROIS = _MINE_NUM_ROIS
 OPPONENT_ICON_ROIS = _OPPONENT_ICON_ROIS
 OPPONENT_NUM_ROIS = _OPPONENT_NUM_ROIS
+VS_ROI = _VS_ROI
+TEAM_COLOR_MINE_ROI = _TEAM_COLOR_MINE_ROI
+TEAM_COLOR_OPPONENT_ROI = _TEAM_COLOR_OPPONENT_ROI
 
 # annotated画像を生成する対象fixture(fixtures/screenshots/配下)
 SOURCE_FILENAME = "82_matching_with_rank_4v3_hdr_off.png"
@@ -48,6 +60,14 @@ def main() -> None:
         Category("mine_num (MINE_NUM_XYWH)", "OCR", (0, 140, 255), list(MINE_NUM_ROIS)),
         Category("opponent_icon (OPPONENT_ICON_ROIS)", "OCR", (255, 0, 200), list(OPPONENT_ICON_ROIS)),
         Category("opponent_num (OPPONENT_NUM_ROIS)", "OCR", (0, 220, 0), list(OPPONENT_NUM_ROIS)),
+        Category("vs_logo (VS_ROI, matchmaking.py)", "color", (255, 255, 0), [VS_ROI]),
+        Category("team_color_mine (TEAM_COLOR_MINE_ROI, team_color.py)", "color", (255, 0, 0), [TEAM_COLOR_MINE_ROI]),
+        Category(
+            "team_color_opponent (TEAM_COLOR_OPPONENT_ROI, team_color.py)",
+            "color",
+            (0, 0, 255),
+            [TEAM_COLOR_OPPONENT_ROI],
+        ),
     ]
 
     image = load_fixture(SOURCE_FILENAME)
@@ -56,14 +76,16 @@ def main() -> None:
 
     readme = output_dir / "README.md"
     readme.write_text(
-        f"""# vs_rank.py のROI
+        f"""# VS画面のROI(vs_rank.py / matchmaking.py / team_color.py)
 
-`detection/vs_rank.py` が使う切り抜き領域。VS画面(マッチング完了直後)の
-自チーム/相手チームそれぞれ最大4スロット分のランクバッジを読み取る。
-スロット0が画面手前(自チーム側は自分自身)、スロット3が最も奥。
+VS画面(マッチング完了直後)という1つの画面状態に対して、3つの別モジュールが
+それぞれ別のROIで判定している。モジュール単位でフォルダを分けている他の
+画面とは異なり、画面単位でこのフォルダにまとめている。
 
-全て**OCR**による判定(色/明度判定は無い)。各カテゴリとも4スロット分あり、
-画像内の枠の中の小さい数字(0〜3)がスロット番号に対応する。
+## vs_rank.py(自チーム/相手チームそれぞれ最大4スロット分のランクバッジ、OCR)
+
+スロット0が画面手前(自チーム側は自分自身)、スロット3が最も奥。各カテゴリとも
+4スロット分あり、画像内の枠の中の小さい数字(0〜3)がスロット番号に対応する。
 
 - **mine_icon (MINE_ICON_XYWH)** — 自チームのバッジのアイコン部分。allowlist無しで
   OCRし、結果が空でなく全て数字なら`'∞'`、`'S'`/`'A'`の文字と一致すればその帯と
@@ -73,6 +95,21 @@ def main() -> None:
 - **opponent_icon (OPPONENT_ICON_ROIS)** — 相手チーム版のmine_icon。y座標・幅・
   高さはmine_icon側の対応スロットと同じで、x座標(OPPONENT_X1)のみ個別に実測した値
 - **opponent_num (OPPONENT_NUM_ROIS)** — 相手チーム版のmine_num
+
+## matchmaking.py(VS画面自体の検知、色判定)
+
+- **vs_logo (VS_ROI)** — 画面中央に一瞬表示される「VS」ロゴの文字部分だけを
+  狙った領域。`is_vs_screen()`が使う。**fixture画像(cv2.imread経由)では
+  真陽性の検証ができない**(実際の検知ループはffmpeg経由でフレームを読んでおり
+  色変換経路が異なるため、`detection/matchmaking.py`のモジュールdocstring
+  参照)。この画像で示しているのはあくまでROIの位置のみ
+
+## team_color.py(チームカラーのサンプリング、色判定)
+
+- **team_color_mine (TEAM_COLOR_MINE_ROI)** / **team_color_opponent
+  (TEAM_COLOR_OPPONENT_ROI)** — 自チーム/相手チームの名前タグ背景(スロット0、
+  文字やバッジが重ならない帯)から実際の描画色をそのまま平均RGBでサンプリング
+  する`read_team_colors()`が使う領域
 
 {roi_table_markdown(categories)}
 
