@@ -22,6 +22,7 @@ from nss_tracker.web.server import (
     _aggregate_goal_stats,
     _compute_box_stats,
     _convert_rank_tier_to_unified_scale,
+    _fetch_goal_assist_totals,
     _format_vs_rank_value,
     _percentile,
     _rank_delta_axis_max,
@@ -146,7 +147,8 @@ def test_winrate_splits_session_and_cumulative_counts(tmp_path: Path):
     }
 
 
-def test_overlay_winrate_page_shows_readable_summary(tmp_path: Path):
+def test_overlay_winrate_page_shows_readable_summary(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("GOAL_ASSIST_TOTALS_SCOPE", "session")
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     session_id = db.create_session(conn)
@@ -170,10 +172,66 @@ def test_overlay_winrate_page_shows_readable_summary(tmp_path: Path):
     assert "累計: 3試合" in response.text
 
 
-def test_overlay_winrate_page_links_transparent_background_stylesheet(tmp_path: Path):
+def test_overlay_winrate_page_shows_goal_assist_totals(tmp_path: Path, monkeypatch):
+    """Issue #132: 許可リストプレイヤー全員分の得点・アシスト合計を追加表示する。"""
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    monkeypatch.setenv("GOAL_ASSIST_TOTALS_SCOPE", "session")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    db.save_goal(conn, match_id, "Alice", "Bob", now_jst())
+    db.save_goal(conn, match_id, "Bob", None, now_jst())
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/winrate")
+
+    assert response.status_code == 200
+    assert "配信セッション: 得点2 / アシスト1" in response.text
+
+
+def test_overlay_winrate_page_goal_assist_totals_uses_cumulative_scope(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    monkeypatch.setenv("GOAL_ASSIST_TOTALS_SCOPE", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    old_session_id = db.create_session(conn)
+    old_match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=old_session_id,
+    )
+    db.save_goal(conn, old_match_id, "Alice", None, now_jst())
+
+    current_session_id = db.create_session(conn)
+    current_match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=current_session_id,
+    )
+    db.save_goal(conn, current_match_id, "Alice", None, now_jst())
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/winrate")
+
+    assert "累計: 得点2 / アシスト0" in response.text
+
+
+def test_overlay_winrate_page_links_transparent_background_stylesheet(tmp_path: Path, monkeypatch):
     """OBSのブラウザソースに重ねて配置する想定のため、文字の無い部分が
     背後の他の部品を隠さないよう背景を明示的に透過にしていることを確認する。
     """
+    monkeypatch.setenv("GOAL_ASSIST_TOTALS_SCOPE", "session")
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
@@ -187,7 +245,8 @@ def test_overlay_winrate_page_links_transparent_background_stylesheet(tmp_path: 
     assert "background: transparent" in css_response.text
 
 
-def test_overlay_winrate_page_shows_dash_when_no_matches(tmp_path: Path):
+def test_overlay_winrate_page_shows_dash_when_no_matches(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("GOAL_ASSIST_TOTALS_SCOPE", "session")
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
@@ -197,6 +256,7 @@ def test_overlay_winrate_page_shows_dash_when_no_matches(tmp_path: Path):
 
     assert response.status_code == 200
     assert "勝率 -" in response.text
+    assert "配信セッション: 得点0 / アシスト0" in response.text
 
 
 def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path, monkeypatch):
@@ -620,6 +680,78 @@ def test_overlay_goal_stats_page_shows_empty_message_when_no_data(tmp_path: Path
     response = client.get("/overlay/goal-stats")
 
     assert "データがありません" in response.text
+
+
+def test_fetch_goal_assist_totals_sums_across_allowed_players(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    db.save_goal(conn, match_id, "Alice", "Bob", now_jst())
+    db.save_goal(conn, match_id, "Bob", None, now_jst())
+    conn.close()
+
+    assert _fetch_goal_assist_totals(db_path, "session") == {"goals": 2, "assists": 1}
+
+
+def test_fetch_goal_assist_totals_excludes_disallowed_players(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    db.save_goal(conn, match_id, "Stranger", None, now_jst())
+    conn.close()
+
+    assert _fetch_goal_assist_totals(db_path, "session") == {"goals": 0, "assists": 0}
+
+
+def test_fetch_goal_assist_totals_returns_zero_when_no_sessions(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    assert _fetch_goal_assist_totals(db_path, "session") == {"goals": 0, "assists": 0}
+
+
+def test_goal_assist_totals_endpoint_uses_configured_scope(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    monkeypatch.setenv("GOAL_ASSIST_TOTALS_SCOPE", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    old_session_id = db.create_session(conn)
+    old_match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=old_session_id,
+    )
+    db.save_goal(conn, old_match_id, "Alice", None, now_jst())
+
+    current_session_id = db.create_session(conn)
+    current_match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=current_session_id,
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/goal-assist-totals")
+
+    assert response.status_code == 200
+    assert response.json() == {"goals": 1, "assists": 0}
 
 
 def test_match_log_returns_recent_results_oldest_first(tmp_path: Path):
@@ -1165,6 +1297,7 @@ def test_overlay_refresh_script_is_served_and_reads_the_page_it_is_embedded_in(t
 def test_overlay_pages_include_refresh_script_with_default_interval(tmp_path: Path, path: str, monkeypatch):
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("GOAL_ASSIST_TOTALS_SCOPE", "session")
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
