@@ -194,7 +194,7 @@ def test_overlay_winrate_page_shows_goal_assist_totals(tmp_path: Path, monkeypat
     response = client.get("/overlay/winrate")
 
     assert response.status_code == 200
-    assert "配信セッションの得点/アシスト合計: 得点 2 / アシスト 1" in response.text
+    assert "配信セッション: 得点2 / アシスト1" in response.text
 
 
 def test_overlay_winrate_page_goal_assist_totals_uses_cumulative_scope(tmp_path: Path, monkeypatch):
@@ -224,7 +224,7 @@ def test_overlay_winrate_page_goal_assist_totals_uses_cumulative_scope(tmp_path:
 
     response = client.get("/overlay/winrate")
 
-    assert "累計の得点/アシスト合計: 得点 2 / アシスト 0" in response.text
+    assert "累計: 得点2 / アシスト0" in response.text
 
 
 def test_overlay_winrate_page_links_transparent_background_stylesheet(tmp_path: Path, monkeypatch):
@@ -256,7 +256,7 @@ def test_overlay_winrate_page_shows_dash_when_no_matches(tmp_path: Path, monkeyp
 
     assert response.status_code == 200
     assert "勝率 -" in response.text
-    assert "得点/アシスト合計: 得点 0 / アシスト 0" in response.text
+    assert "配信セッション: 得点0 / アシスト0" in response.text
 
 
 def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path, monkeypatch):
