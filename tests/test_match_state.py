@@ -825,6 +825,45 @@ def test_vs_screen_confirmation_logs_ranks_at_info_level(monkeypatch, caplog):
     assert "1試合目 VS画面ランク: mine=[∞39, -] opponent=[S9, -]" in caplog.text
 
 
+def test_pop_vs_screen_event_fires_once_at_confirmation(monkeypatch):
+    """Issue #145: 試合結果確定(MatchResult)を待たず、VS画面確定を検知した直後の
+    1フレームだけpop_vs_screen_event()がVsScreenEventを返すことを確認する。
+    main.py側がこれをポーリングして即座にDBへ反映するための土台。
+    """
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: True)
+    monkeypatch.setattr(
+        match_state_module,
+        "read_vs_screen_ranks",
+        lambda frame: ([SlotRank("∞", 38)], [SlotRank("∞", 10)]),
+    )
+    monkeypatch.setattr(match_state_module, "read_team_colors", lambda frame: ("#64bde2", "#f87abe"))
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(vs_screen_confirm_frames=2)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    assert machine.pop_vs_screen_event() is None, "確定前はNoneのはず"
+
+    machine.process_frame(frame)  # 1フレーム目: streak=1、まだconfirm_frames(=2)未満
+    assert machine.pop_vs_screen_event() is None
+
+    machine.process_frame(frame)  # 2フレーム目でconfirm_frames(=2)に到達し確定
+    event = machine.pop_vs_screen_event()
+
+    assert event is not None
+    assert event.mine_ranks == [SlotRank("∞", 38)]
+    assert event.opponent_ranks == [SlotRank("∞", 10)]
+    assert event.mine_team_color == "#64bde2"
+    assert event.opponent_team_color == "#f87abe"
+    # popすると消費されるため、同じ確定を指すイベントを2度は取得できない
+    assert machine.pop_vs_screen_event() is None
+
+    machine.process_frame(frame)  # 同じVS画面がまだ表示され続けている3フレーム目
+    assert machine.pop_vs_screen_event() is None, "同じVS画面が続いている間は再度発火しない"
+
+
 def test_vs_screen_not_detected_results_in_empty_vs_ranks(monkeypatch):
     """VS画面を一度も検知しなかった試合では、vs_mine_ranks/vs_opponent_ranksが
     空リストのままになることを確認する(Issue #39: VS画面検知は任意のエンリッチ
