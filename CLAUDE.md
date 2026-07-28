@@ -119,7 +119,7 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 src/
 └── nss_tracker/
     ├── capture/            # ffmpegサブプロセス起動・生フレームの継続読み取り/バッファリング
-    ├── detection/          # 画像解析ロジック(banner.py: 勝敗バナー判定, rank_ocr.py: ランクOCR, motion.py: ピクセル差分監視, match_end.py: 「試合終了」バナー検知)
+    ├── detection/          # 画像解析ロジック(banner.py: 勝敗バナー判定, rank_ocr.py: ランクOCR, motion.py: ピクセル差分監視, match_end.py: 「試合終了」バナー検知, matchmaking.py: VS画面検知, vs_rank.py: VS画面ランクOCR, team_color.py: チームカラー検知)
     ├── detection_config.py # detection/配下のROI・色閾値をconfig/detection.tomlから読み込むローダー
     ├── state/              # 試合の状態遷移(バナー表示→ランクアニメ→確定→暗転→マッチング)の管理
     ├── database/           # SQLiteへの読み書き
@@ -127,12 +127,12 @@ src/
     └── web/                # 配信画面向けダッシュボード(server.py: FastAPIアプリ, runner.py: 別スレッドでのuvicorn起動, templates/: Jinja2テンプレート, static/: CSS等の静的ファイル)
 ```
 
-- `detection/`は当面`banner.py` / `rank_ocr.py` / `motion.py` / `league_change.py` / `goal.py` / `match_end.py`のフラット構成とする。追加OCRなど将来の機能追加が必要になった段階で、その都度サブディレクトリに整理し直してよい(先回りして細分化しない)
+- `detection/`は当面`banner.py` / `rank_ocr.py` / `motion.py` / `league_change.py` / `goal.py` / `match_end.py` / `matchmaking.py` / `vs_rank.py` / `team_color.py`のフラット構成とする。追加OCRなど将来の機能追加が必要になった段階で、その都度サブディレクトリに整理し直してよい(先回りして細分化しない)
 
 ### 検知パラメータ(ROI・色閾値)のconfig化
 
-- `detection/`配下の各モジュール(`banner.py`, `rank_ocr.py`, `league_change.py`, `goal.py`, `motion.py`, `match_end.py`)が持つROI・HSV色閾値・ピクセル差分閾値、および`state/match_state.py`の一部の検知閾値(fpsに依存しないもの)は、ルート直下`config/detection.toml`(git追跡対象、デフォルト値入り)から読み込む。読み込みは`src/nss_tracker/detection_config.py`の`get_detection_value(section, key, default)`が担当し、各モジュールのモジュールレベル定数の初期化時に1回呼ばれる
-- `config/detection.toml`はモジュールごとに`[banner]` / `[rank_ocr]` / `[league_change]` / `[goal]` / `[motion]` / `[match_state]`のテーブルを持つ。ファイル自体が無い、またはテーブル・キーが無い場合は各モジュール側のPythonデフォルト値(=元々ハードコードされていた値)にフォールバックする
+- `detection/`配下の各モジュール(上記9ファイル全て)が持つROI・HSV色閾値・ピクセル差分閾値、および`state/match_state.py`の一部の検知閾値(fpsに依存しないもの)は、ルート直下`config/detection.toml`(git追跡対象、デフォルト値入り)から読み込む。読み込みは`src/nss_tracker/detection_config.py`の`get_detection_value(section, key, default)`が担当し、各モジュールのモジュールレベル定数の初期化時に1回呼ばれる
+- `config/detection.toml`はモジュールごとに`[banner]` / `[rank_ocr]` / `[league_change]` / `[goal]` / `[motion]` / `[matchmaking]` / `[vs_rank]` / `[team_color]` / `[match_end]` / `[match_state]`のテーブルを持つ。ファイル自体が無い、またはテーブル・キーが無い場合は各モジュール側のPythonデフォルト値(=元々ハードコードされていた値)にフォールバックする
   - `state/match_state.py`の`DEFAULT_BANNER_CONFIRM_FRAMES`等のフレーム数系デフォルト値は対象外(`main.py`が実際のfpsに応じて動的に再計算して上書きするため、素の値を外に出すと二重管理になる。Issue #49参照)
 - fixture実測に基づく閾値決定の根拠コメントは、詳細を失わないよう各detectionモジュールのPython定数側に残す(config/detection.toml側は簡潔なコメントのみ)
 - 将来キャプチャ以外のカテゴリの設定が増えた場合も、`config/`配下に種別ごとのファイルを追加していく想定(例: 将来`config/xxx.toml`)。デバイス名・解像度(Issue #30)は値がシンプルなKEY=VALUEで足りるため、従来どおり`.env`(`config.py`)で扱う
