@@ -9,11 +9,14 @@ from nss_tracker.database.db import (
     fetch_all_matches,
     fetch_current_session_id,
     fetch_goals_for_session,
+    fetch_latest_vs_rank_snapshot,
     fetch_matches_for_session,
     fetch_recent_matches,
+    fetch_vs_rank_snapshot_slots,
     fetch_vs_slot_ranks,
     save_goal,
     save_match_result,
+    save_vs_rank_snapshot,
     save_vs_slot_ranks,
 )
 from nss_tracker.detection.vs_rank import SlotRank
@@ -28,6 +31,8 @@ def test_connect_creates_matches_table():
     assert "goals" in table_names
     assert "vs_slot_ranks" in table_names
     assert "sessions" in table_names
+    assert "vs_rank_snapshots" in table_names
+    assert "vs_rank_snapshot_slots" in table_names
 
 
 def test_create_session_inserts_row_with_null_ended_at():
@@ -1044,5 +1049,109 @@ def test_save_vs_slot_ranks_created_at_is_jst():
     )
 
     row = fetch_vs_slot_ranks(conn, match_id)[0]
+    assert row["created_at"].endswith("+09:00")
+    assert row["updated_at"].endswith("+09:00")
+
+
+def test_save_and_fetch_vs_rank_snapshot():
+    """Issue #145: 試合結果確定を待たずに書き込む「直近VS画面スナップショット」。"""
+    conn = connect(":memory:")
+    session_id = create_session(conn)
+
+    snapshot_id = save_vs_rank_snapshot(
+        conn,
+        session_id=session_id,
+        mine_ranks=[SlotRank("∞", 38), SlotRank("∞", 1), SlotRank("∞", 24), SlotRank("∞", 9)],
+        opponent_ranks=[SlotRank("∞", 10), SlotRank("∞", 12), SlotRank("∞", 33), SlotRank("∞", 18)],
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    header = fetch_latest_vs_rank_snapshot(conn)
+    assert header["id"] == snapshot_id
+    assert header["session_id"] == session_id
+    assert header["mine_team_color"] == "#64bde2"
+    assert header["opponent_team_color"] == "#f87abe"
+
+    rows = fetch_vs_rank_snapshot_slots(conn, snapshot_id)
+    assert len(rows) == 8
+    assert [row["side"] for row in rows] == ["mine"] * 4 + ["opponent"] * 4
+    assert [row["slot_index"] for row in rows] == [0, 1, 2, 3, 0, 1, 2, 3]
+    assert [row["rank_tier"] for row in rows] == [38, 1, 24, 9, 10, 12, 33, 18]
+    assert [row["rank_tier_label"] for row in rows] == ["∞"] * 8
+    assert all(row["snapshot_id"] == snapshot_id for row in rows)
+
+
+def test_fetch_latest_vs_rank_snapshot_returns_most_recently_saved_one():
+    conn = connect(":memory:")
+    save_vs_rank_snapshot(
+        conn,
+        session_id=None,
+        mine_ranks=[SlotRank("∞", 1)] * 4,
+        opponent_ranks=[SlotRank("∞", 1)] * 4,
+        mine_team_color="#111111",
+        opponent_team_color="#222222",
+        detected_at=datetime.now(timezone.utc),
+    )
+    newest_id = save_vs_rank_snapshot(
+        conn,
+        session_id=None,
+        mine_ranks=[SlotRank("∞", 40)] * 4,
+        opponent_ranks=[SlotRank("∞", 10)] * 4,
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    header = fetch_latest_vs_rank_snapshot(conn)
+
+    assert header["id"] == newest_id
+    assert header["mine_team_color"] == "#64bde2"
+
+
+def test_save_vs_rank_snapshot_with_empty_ranks_creates_header_only():
+    """VS画面を見逃した試合が終わった際、main.pyがリセット用に空スナップショットを書き込む想定。"""
+    conn = connect(":memory:")
+
+    snapshot_id = save_vs_rank_snapshot(
+        conn,
+        session_id=None,
+        mine_ranks=[],
+        opponent_ranks=[],
+        mine_team_color=None,
+        opponent_team_color=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    header = fetch_latest_vs_rank_snapshot(conn)
+    assert header["id"] == snapshot_id
+    assert header["mine_team_color"] is None
+    assert fetch_vs_rank_snapshot_slots(conn, snapshot_id) == []
+
+
+def test_fetch_latest_vs_rank_snapshot_returns_none_when_no_snapshots():
+    conn = connect(":memory:")
+    assert fetch_latest_vs_rank_snapshot(conn) is None
+
+
+def test_save_vs_rank_snapshot_created_at_is_jst():
+    conn = connect(":memory:")
+
+    snapshot_id = save_vs_rank_snapshot(
+        conn,
+        session_id=None,
+        mine_ranks=[SlotRank("∞", 1), SlotRank(None, None), SlotRank(None, None), SlotRank(None, None)],
+        opponent_ranks=[SlotRank(None, None)] * 4,
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    header = fetch_latest_vs_rank_snapshot(conn)
+    assert header["created_at"].endswith("+09:00")
+    assert header["updated_at"].endswith("+09:00")
+
+    row = fetch_vs_rank_snapshot_slots(conn, snapshot_id)[0]
     assert row["created_at"].endswith("+09:00")
     assert row["updated_at"].endswith("+09:00")

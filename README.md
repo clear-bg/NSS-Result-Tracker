@@ -106,6 +106,7 @@ CREATE TABLE vs_slot_ranks (
 - `result`には引き分け(`draw`)も含まれる(ランクを賭けない対戦限定、`src/nss_tracker/detection/banner.py`参照)
 - `goals`は`matches.id`を`match_id`として参照する。得点者・アシスト者のどちらもプレイヤー許可リスト(`.env`の`ALLOWED_PLAYERS`)に無い場合、そのゴールは保存されない。どちらか一方でも許可されていれば、もう一方が許可リスト外の名前でもそのまま保存する
 - `vs_slot_ranks`は、マッチング完了直後のVS画面で読み取った両チーム最大4人分の∞帯ランク数値を1行=1スロット(最大1試合あたり8行)で保存する。名前を持たない(数値のみの)テーブルのため、`goals`と異なり許可リストによるフィルタリングは行わない。VS画面を見逃した試合では行自体が保存されない
+- `vs_rank_snapshots`/`vs_rank_snapshot_slots`(Issue #145)は、対戦相手ランク比較ウィジェット向けに、試合結果確定を待たずVS画面確定を検知した瞬間に即書き込む「直近スナップショット」。`matches`/`vs_slot_ranks`(試合結果確定時にまとめて保存する履歴データ)とは別の、表示用の最新1件だけを見るためのテーブル
 - 実装は`src/nss_tracker/database/db.py`を参照
 
 ## セットアップ
