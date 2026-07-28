@@ -7,7 +7,10 @@
 <link rel="stylesheet" href="/static/vs_rank_comparison.css">
 </head>
 <body>
-<p class="vs-rank-comparison">合計ランク：<span class="vs-rank-pill" style="background-color: {{ mine_team_color }};">{{ mine_value }}</span> VS <span class="vs-rank-pill" style="background-color: {{ opponent_team_color }};">{{ opponent_value }}</span></p>
+<div class="vs-rank-comparison">
+<div class="vs-rank-caption">Rank</div>
+<div class="vs-rank-row"><span class="vs-rank-pill" style="background-color: {{ mine_team_color }};">{{ mine_value }}</span><span class="vs-rank-vs">VS</span><span class="vs-rank-pill" style="background-color: {{ opponent_team_color }};">{{ opponent_value }}</span></div>
+</div>
 <script src="/static/overlay-refresh.js" data-interval-ms="{{ refresh_interval_ms }}"></script>
 </body>
 </html>

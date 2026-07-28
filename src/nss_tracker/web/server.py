@@ -77,9 +77,10 @@ from nss_tracker.database.db import (
     fetch_all_matches,
     fetch_current_session_id,
     fetch_goals_for_session,
+    fetch_latest_vs_rank_snapshot,
     fetch_matches_for_session,
     fetch_recent_matches,
-    fetch_vs_slot_ranks,
+    fetch_vs_rank_snapshot_slots,
 )
 
 _WEB_DIR = Path(__file__).parent
@@ -469,21 +470,22 @@ _DEFAULT_TEAM_COLOR = "#666666"  # チームカラーが未検知の場合のフ
 
 
 def _fetch_vs_rank_comparison(db_path: Path) -> Optional[dict]:
-    """直近試合のvs_slot_ranksから、自チーム・相手チームそれぞれの統一スケール合計を算出する。
+    """直近VS画面スナップショットから、自チーム・相手チームそれぞれの統一スケール合計を算出する。
 
-    試合が1件も無い、または直近試合でVS画面のランクが記録されていない場合(VS画面を
-    検知できなかった場合等)はNoneを返す。配信セッション単位ではなく単純に直近1試合を
-    見る(VS画面はマッチングごとに1回だけ確定するデータのため)。チームカラー
-    (Issue #113、detection.team_color参照)も同じVS画面確定タイミングで検知した
-    値のため、あわせてここで返す。
+    Issue #145: 試合結果確定(matches/vs_slot_ranks)を待たず、VS画面確定を検知した
+    瞬間に書き込まれるvs_rank_snapshots/vs_rank_snapshot_slots(state.match_state.
+    MatchStateMachine.pop_vs_screen_event、main.py._record_vs_screen_event参照)を
+    見る。スナップショットが1件も無い、またはスロット行が無い場合(直近の試合で
+    VS画面を見逃した場合等、main.py._record_match_resultが空スナップショットを
+    書き込む)はNoneを返す。チームカラー(Issue #113)もスナップショットに含まれる
+    ため、あわせてここで返す。
     """
     conn = _connect(db_path)
     try:
-        recent_matches = fetch_recent_matches(conn, 1)
-        if not recent_matches:
+        snapshot = fetch_latest_vs_rank_snapshot(conn)
+        if snapshot is None:
             return None
-        match_row = recent_matches[0]
-        rows = fetch_vs_slot_ranks(conn, match_row["id"])
+        rows = fetch_vs_rank_snapshot_slots(conn, snapshot["id"])
     finally:
         conn.close()
     if not rows:
@@ -493,8 +495,8 @@ def _fetch_vs_rank_comparison(db_path: Path) -> Optional[dict]:
     return {
         "mine": _summarize_vs_slot_ranks(mine_rows),
         "opponent": _summarize_vs_slot_ranks(opponent_rows),
-        "mine_team_color": match_row["mine_team_color"] or _DEFAULT_TEAM_COLOR,
-        "opponent_team_color": match_row["opponent_team_color"] or _DEFAULT_TEAM_COLOR,
+        "mine_team_color": snapshot["mine_team_color"] or _DEFAULT_TEAM_COLOR,
+        "opponent_team_color": snapshot["opponent_team_color"] or _DEFAULT_TEAM_COLOR,
     }
 
 
@@ -503,8 +505,8 @@ def _format_vs_rank_value(summary: dict) -> str:
 
     このウィジェットは試合中(ゲーム画面が全画面の間)ゲーム映像に重ねて常時表示する
     想定のため、他のウィジェットと異なり文字数を極力減らす(ユーザーとの相談で決定、
-    Issue #100)。値が無い場合(不明人数のみ等)は、直近試合自体が無い場合の表示
-    (「合計ランク：none VS none」)と表記を揃えるため"none"を返す(Issue #113)。
+    Issue #100)。値が無い場合(不明人数のみ等)は、直近スナップショット自体が無い
+    場合の表示(none VS none)と表記を揃えるため"none"を返す(Issue #113)。
     """
     return str(summary["total"]) if summary["total"] is not None else "none"
 
@@ -851,8 +853,8 @@ def create_app(db_path: Path) -> FastAPI:
     @app.get("/overlay/vs-rank-comparison")
     def overlay_vs_rank_comparison(request: Request):
         comparison = _fetch_vs_rank_comparison(db_path)
-        # 試合が1件も無い・直近試合でVS画面を検知できなかった場合も「合計ランク：」の
-        # 表示形式自体は崩さず、値をnoneにするだけにする(ユーザーとの相談で決定)。
+        # スナップショットが1件も無い・直近の試合でVS画面を見逃した場合も表示形式
+        # 自体は崩さず、値をnoneにするだけにする(ユーザーとの相談で決定)。
         # チームカラーも同様に検知できていない場合は_DEFAULT_TEAM_COLORにする
         context = (
             {
