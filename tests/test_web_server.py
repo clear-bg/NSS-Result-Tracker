@@ -744,30 +744,21 @@ def test_format_vs_rank_value_returns_total_as_string():
 
 
 def test_format_vs_rank_value_returns_none_when_total_missing():
-    """Issue #113: 直近試合自体が無い場合の表示(合計ランク：none VS none)と表記を揃える。"""
+    """Issue #113: 直近試合自体が無い場合の表示(none VS none)と表記を揃える。"""
     assert _format_vs_rank_value({"total": None, "known_count": 0, "unknown_count": 4}) == "none"
 
 
-def test_vs_rank_comparison_endpoint_uses_latest_match(tmp_path: Path):
+def test_vs_rank_comparison_endpoint_uses_latest_snapshot(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
-    match_id = db.save_match_result(
+    db.save_vs_rank_snapshot(
         conn,
-        MatchResult(
-            result="win",
-            rank_before=1,
-            rank_after=1,
-            league_changed=None,
-            detected_at=now_jst(),
-            mine_team_color="#64bde2",
-            opponent_team_color="#f87abe",
-        ),
-    )
-    db.save_vs_slot_ranks(
-        conn,
-        match_id,
+        session_id=None,
         mine_ranks=[SlotRank("∞", 40), SlotRank("S", 9), SlotRank(None, None), SlotRank(None, None)],
         opponent_ranks=[SlotRank("A", 29), SlotRank("A", 0), SlotRank(None, None), SlotRank(None, None)],
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+        detected_at=now_jst(),
     )
     conn.close()
 
@@ -784,7 +775,39 @@ def test_vs_rank_comparison_endpoint_uses_latest_match(tmp_path: Path):
     }
 
 
-def test_vs_rank_comparison_endpoint_none_when_no_matches(tmp_path: Path):
+def test_vs_rank_comparison_endpoint_uses_newer_snapshot_over_older_one(tmp_path: Path):
+    """Issue #145: 試合結果確定を待たず、VS画面確定を検知した瞬間のスナップショットを即座に反映する。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    db.save_vs_rank_snapshot(
+        conn,
+        session_id=None,
+        mine_ranks=[SlotRank("∞", 1)] * 4,
+        opponent_ranks=[SlotRank("∞", 1)] * 4,
+        mine_team_color="#111111",
+        opponent_team_color="#222222",
+        detected_at=now_jst(),
+    )
+    db.save_vs_rank_snapshot(
+        conn,
+        session_id=None,
+        mine_ranks=[SlotRank("∞", 40)] * 4,
+        opponent_ranks=[SlotRank("∞", 10)] * 4,
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+        detected_at=now_jst(),
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/vs-rank-comparison")
+
+    assert response.json()["mine"]["total"] == 160
+    assert response.json()["mine_team_color"] == "#64bde2"
+
+
+def test_vs_rank_comparison_endpoint_none_when_no_snapshots(tmp_path: Path):
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
@@ -795,12 +818,18 @@ def test_vs_rank_comparison_endpoint_none_when_no_matches(tmp_path: Path):
     assert response.json() == {"mine": None, "opponent": None}
 
 
-def test_vs_rank_comparison_endpoint_none_when_latest_match_has_no_vs_data(tmp_path: Path):
+def test_vs_rank_comparison_endpoint_none_when_latest_snapshot_has_no_vs_data(tmp_path: Path):
+    """Issue #145: VS画面を見逃した試合が終わった際、main.pyが空スナップショットを書き込んでリセットする想定。"""
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
-    db.save_match_result(
+    db.save_vs_rank_snapshot(
         conn,
-        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        session_id=None,
+        mine_ranks=[],
+        opponent_ranks=[],
+        mine_team_color=None,
+        opponent_team_color=None,
+        detected_at=now_jst(),
     )
     conn.close()
 
@@ -814,23 +843,14 @@ def test_vs_rank_comparison_endpoint_none_when_latest_match_has_no_vs_data(tmp_p
 def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
-    match_id = db.save_match_result(
+    db.save_vs_rank_snapshot(
         conn,
-        MatchResult(
-            result="win",
-            rank_before=1,
-            rank_after=1,
-            league_changed=None,
-            detected_at=now_jst(),
-            mine_team_color="#64bde2",
-            opponent_team_color="#f87abe",
-        ),
-    )
-    db.save_vs_slot_ranks(
-        conn,
-        match_id,
+        session_id=None,
         mine_ranks=[SlotRank("∞", 40)] * 4,
         opponent_ranks=[SlotRank("∞", 10)] * 4,
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+        detected_at=now_jst(),
     )
     conn.close()
 
@@ -843,12 +863,12 @@ def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
     assert '<link rel="stylesheet" href="/static/vs_rank_comparison.css">' in response.text
     assert '<span class="vs-rank-pill" style="background-color: #64bde2;">160</span>' in response.text
     assert '<span class="vs-rank-pill" style="background-color: #f87abe;">40</span>' in response.text
-    assert "合計ランク：" in response.text
-    assert "160</span> VS <span" in response.text
+    assert '<div class="vs-rank-caption">Rank</div>' in response.text
+    assert "160</span><span class=\"vs-rank-vs\">VS</span><span" in response.text
 
 
 def test_overlay_vs_rank_comparison_page_shows_none_placeholders_when_no_data(tmp_path: Path):
-    """データが無い場合も「合計ランク：」の表示形式は崩さず、値をnoneにするだけにする。"""
+    """データが無い場合も表示形式は崩さず、値をnoneにするだけにする。"""
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
@@ -857,30 +877,21 @@ def test_overlay_vs_rank_comparison_page_shows_none_placeholders_when_no_data(tm
     response = client.get("/overlay/vs-rank-comparison")
 
     assert '<span class="vs-rank-pill" style="background-color: #666666;">none</span>' in response.text
-    assert "合計ランク：" in response.text
+    assert '<div class="vs-rank-caption">Rank</div>' in response.text
 
 
 def test_overlay_vs_rank_comparison_page_shows_none_for_side_with_only_unknown_members(tmp_path: Path):
-    """Issue #113: 試合自体は検知できているが片側が全員不明人数の場合も、noneで表記を揃える。"""
+    """Issue #113: VS画面自体は検知できているが片側が全員不明人数の場合も、noneで表記を揃える。"""
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
-    match_id = db.save_match_result(
+    db.save_vs_rank_snapshot(
         conn,
-        MatchResult(
-            result="win",
-            rank_before=1,
-            rank_after=1,
-            league_changed=None,
-            detected_at=now_jst(),
-            mine_team_color="#64bde2",
-            opponent_team_color="#f87abe",
-        ),
-    )
-    db.save_vs_slot_ranks(
-        conn,
-        match_id,
+        session_id=None,
         mine_ranks=[SlotRank("∞", 40)] * 4,
         opponent_ranks=[SlotRank(None, None)] * 4,
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+        detected_at=now_jst(),
     )
     conn.close()
 
@@ -896,15 +907,14 @@ def test_overlay_vs_rank_comparison_page_uses_default_color_when_team_color_not_
     """Issue #113: VS画面自体は検知できたがチームカラーが未検知(古いDB等)の場合もフォールバック色で表示する。"""
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
-    match_id = db.save_match_result(
+    db.save_vs_rank_snapshot(
         conn,
-        MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
-    )
-    db.save_vs_slot_ranks(
-        conn,
-        match_id,
+        session_id=None,
         mine_ranks=[SlotRank("∞", 40)] * 4,
         opponent_ranks=[SlotRank("∞", 10)] * 4,
+        mine_team_color=None,
+        opponent_team_color=None,
+        detected_at=now_jst(),
     )
     conn.close()
 
