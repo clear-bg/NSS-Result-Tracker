@@ -118,13 +118,22 @@ _finalize()(ランク確定・league_changed判定を含む試合結果の確定
 唯一の切り替えタイミングとした。VS画面を見逃した試合ではin_matchがTrueにならず
 試合中シーンへ切り替わらないが、Issue #39の「VS画面検知は任意のエンリッチ」という
 既存方針と同じ考え方で許容する(見逃しても以降のフローに影響しない)。
+
+Issue #145: 対戦相手ランク比較ウィジェット(web/server.py)は、試合結果確定
+(MatchResult、試合終了後にまとめて払い出される)を待たず、VS画面を確定した
+瞬間にDBへ反映して即座に表示を更新したい。process_frame()の戻り値
+(MatchResultは試合終了時の1回だけ)とは別に、`pop_vs_screen_event()`で
+「VS画面を確定した直後の1フレームだけ」読み取り結果を取得できるようにする
+(in_matchのような常時参照可能なプロパティではなく、process_frame()と同じ
+「取得したら消費される」設計。main.py側がprocess_frame()呼び出しのたびに
+ポーリングし、Noneでなければその場でDBへ即時反映する)。
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from logging import DEBUG, getLogger
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import numpy as np
 
@@ -194,6 +203,18 @@ class GoalEvent:
     detected_at: datetime
 
 
+class VsScreenEvent(NamedTuple):
+    """VS画面を確定した直後の1フレームだけ`pop_vs_screen_event()`が返す読み取り結果(Issue #145)。
+
+    フィールドの意味はMatchResultの同名フィールドと同じ。
+    """
+
+    mine_ranks: list[SlotRank]
+    opponent_ranks: list[SlotRank]
+    mine_team_color: Optional[str]
+    opponent_team_color: Optional[str]
+
+
 @dataclass
 class MatchResult:
     result: BannerResult
@@ -261,6 +282,9 @@ class MatchStateMachine:
         self._pending_vs_opponent_ranks: list[SlotRank] = []
         self._pending_mine_team_color: Optional[str] = None
         self._pending_opponent_team_color: Optional[str] = None
+        # Issue #145: VS画面確定を検知した直後の1フレームだけpop_vs_screen_event()が
+        # 返す値。取得されると(popされると)Noneに戻る「取得したら消費される」設計
+        self._vs_screen_event: Optional[VsScreenEvent] = None
         self._match_end_streak = 0
         self._match_end_recorded_this_event = False
         self._match_end_seen = False
@@ -284,6 +308,17 @@ class MatchStateMachine:
         Issue #83: OBSシーン自動切り替えのトリガーに使う(モジュールdocstring参照)。
         """
         return self._in_match
+
+    def pop_vs_screen_event(self) -> Optional[VsScreenEvent]:
+        """VS画面を確定した直後の1フレームだけVsScreenEventを返す(Issue #145)。
+
+        process_frame()と同じ「取得したら消費される」設計。呼び出すと内部の
+        保持値はNoneに戻るため、main.py側はprocess_frame()を呼ぶたびに毎回
+        これも呼び、Noneでなければその場でDBへ即時反映すること。
+        """
+        event = self._vs_screen_event
+        self._vs_screen_event = None
+        return event
 
     def process_frame(self, frame: np.ndarray) -> Optional[MatchResult]:
         if self._state is _State.WATCHING:
@@ -316,6 +351,14 @@ class MatchStateMachine:
             self._vs_recorded_this_match = True
             self._in_match = True
             self._session_match_no += 1
+            # Issue #145: 試合結果確定(MatchResult)を待たず、main.py側が
+            # このフレームですぐDBへ反映できるようにする(pop_vs_screen_event参照)
+            self._vs_screen_event = VsScreenEvent(
+                mine_ranks=self._pending_vs_mine_ranks,
+                opponent_ranks=self._pending_vs_opponent_ranks,
+                mine_team_color=self._pending_mine_team_color,
+                opponent_team_color=self._pending_opponent_team_color,
+            )
             logger.info("%d試合目開始", self._session_match_no)
             # Issue #121: ゴール検知(_check_for_goal)と同じく、DBへの記録タイミング
             # (main.py側のsave_vs_slot_ranks時)を待たず、VS画面確定を検知した瞬間に
