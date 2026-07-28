@@ -46,6 +46,19 @@ rank_tier_labelは'∞'/'S'/'A'のいずれか(Issue #40)。B/C/D/Eバッジ・�
 用意し忘れており、VS画面検知が実機で機能する(Issue #116)まで発覚しなかった
 (Issue #119、_migrate_vs_slot_ranks_add_rank_tier_label参照)。
 
+vs_rank_snapshots/vs_rank_snapshot_slotsテーブルは、対戦相手ランク比較ウィジェット
+(web/server.py、Issue #100/#113/#145)が試合結果確定を待たずに即座に表示を更新
+できるようにするための「直近VS画面スナップショット」を保存する。vs_slot_ranks
+(試合結果確定時にmatches.idと紐づけてまとめて保存、履歴データ用)とは別に、
+VS画面確定を検知した瞬間(state.match_state.MatchStateMachine.pop_vs_screen_event
+参照)にmain.pyが即書き込む。ウィジェット側は常に最新の1件(id最大)だけを見る
+(matches/vs_slot_ranksと異なり過去の試合ごとの履歴として使う想定は無いため、
+古い行を削除せず単純に追記し続けてよい)。VS画面を見逃した試合が終了した際は、
+mine_team_color/opponent_team_colorをNULLにしたスナップショットを明示的に追加
+書き込みすることで、ウィジェットの表示を新しい試合のnone/noneにリセットする
+(main.py._record_match_result参照。VS画面を確定できた場合は同じデータを2回
+書くだけになるため何もしない)。
+
 sessionsテーブルは「配信セッション」(Issue #93)を表す。1セッション=main.pyの
 プロセス起動1回に対応する(手動起動のみを想定する現状の運用と一致させるため、
 CLAUDE.md「常駐アプリとしての起動方法」参照)。main.py起動直後にcreate_session()
@@ -113,6 +126,27 @@ CREATE TABLE IF NOT EXISTS vs_slot_ranks (
     slot_index INTEGER NOT NULL,    -- 0(カメラに最も近い位置)〜3(最も奥)
     rank_tier INTEGER,              -- 帯内の数値。未識別・B~E・非表示はNULL
     rank_tier_label TEXT,           -- '∞'/'S'/'A'。未識別・B~E・非表示はNULL
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS vs_rank_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER REFERENCES sessions(id),
+    detected_at TEXT NOT NULL,      -- VS画面確定時刻(ISO8601, JST)
+    mine_team_color TEXT,           -- vs_mine_ranksが空(VS画面を見逃した/検知できなかった)場合はNULL
+    opponent_team_color TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS vs_rank_snapshot_slots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_id INTEGER NOT NULL REFERENCES vs_rank_snapshots(id),
+    side TEXT NOT NULL,             -- 'mine' / 'opponent'
+    slot_index INTEGER NOT NULL,    -- 0(カメラに最も近い位置)〜3(最も奥)
+    rank_tier INTEGER,
+    rank_tier_label TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -419,4 +453,53 @@ def fetch_vs_slot_ranks(conn: sqlite3.Connection, match_id: int) -> list[sqlite3
     return conn.execute(
         "SELECT * FROM vs_slot_ranks WHERE match_id = ? ORDER BY side, slot_index",
         (match_id,),
+    ).fetchall()
+
+
+def save_vs_rank_snapshot(
+    conn: sqlite3.Connection,
+    session_id: Optional[int],
+    mine_ranks: list[SlotRank],
+    opponent_ranks: list[SlotRank],
+    mine_team_color: Optional[str],
+    opponent_team_color: Optional[str],
+    detected_at: datetime,
+) -> int:
+    """対戦相手ランク比較ウィジェット向けの「直近VS画面スナップショット」を1件保存する(Issue #145)。
+
+    試合結果確定(save_match_result/save_vs_slot_ranks)を待たず、VS画面確定を
+    検知した瞬間に呼ぶ想定(モジュールdocstring参照)。mine_ranks/opponent_ranks
+    が両方空リストの場合(VS画面を見逃した試合が終了した際のリセット用)は
+    スロット行を1件も作らず、ヘッダー行のみ保存する。挿入したヘッダー行のidを返す。
+    """
+    now = now_jst().isoformat()
+    cursor = conn.execute(
+        "INSERT INTO vs_rank_snapshots "
+        "(session_id, detected_at, mine_team_color, opponent_team_color, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (session_id, detected_at.isoformat(), mine_team_color, opponent_team_color, now, now),
+    )
+    snapshot_id = cursor.lastrowid
+    for side, ranks in (("mine", mine_ranks), ("opponent", opponent_ranks)):
+        for slot_index, slot_rank in enumerate(ranks):
+            conn.execute(
+                "INSERT INTO vs_rank_snapshot_slots "
+                "(snapshot_id, side, slot_index, rank_tier, rank_tier_label, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (snapshot_id, side, slot_index, slot_rank.value, slot_rank.tier, now, now),
+            )
+    conn.commit()
+    return snapshot_id
+
+
+def fetch_latest_vs_rank_snapshot(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
+    """直近VS画面スナップショットのヘッダー行を返す。1件も無い場合はNone。"""
+    return conn.execute("SELECT * FROM vs_rank_snapshots ORDER BY id DESC LIMIT 1").fetchone()
+
+
+def fetch_vs_rank_snapshot_slots(conn: sqlite3.Connection, snapshot_id: int) -> list[sqlite3.Row]:
+    """指定したスナップショットのスロット行をside, slot_index順ですべて取得する。"""
+    return conn.execute(
+        "SELECT * FROM vs_rank_snapshot_slots WHERE snapshot_id = ? ORDER BY side, slot_index",
+        (snapshot_id,),
     ).fetchall()
