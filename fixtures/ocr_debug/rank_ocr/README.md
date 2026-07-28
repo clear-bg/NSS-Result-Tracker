@@ -5,7 +5,7 @@
 明確に異なるため、ゲージ用ROIは表示サイズごとに別々に用意されている
 (CLAUDE.md参照)。
 
-## `78_result_lose_with_rank_blue_hdr_off_annotated.png`(コンパクト表示の例)
+## `84_result_win_with_rank_blue_hdr_off_annotated.png`(コンパクト表示の例)
 
 - **rank_badge (RANK_ROI)** — OCR。バッジ全体(アイコン+数値)を包む余裕のある
   領域。`read_rank()`は数字のみ(allowlist)でOCRして帯内の数値を、
@@ -20,7 +20,13 @@
 | rank_badge (RANK_ROI) | #00C8FF | OCR | (90, 600)–(420, 930) | 330×330 |
 | gauge_compact (GAUGE_ROI_COMPACT) | #FFC800 | color/brightness | (125, 970)–(345, 990) | 220×20 |
 
-## 拡大表示(ランク変動アニメーション安定後の例)
+`78_result_lose_with_rank_blue_hdr_off_annotated.png`は別試合(負け)での
+コンパクト表示の参考例。
+
+## `85_result_win_with_rank_enlarged_blue_hdr_off_annotated.png`(拡大表示の例)
+
+`84`と同一試合で、ランク変動アニメーション中(バッジが一回り大きく描画される)
+を切り出したもの(Issue #158で収集)。
 
 - **rank_badge (RANK_ROI)** — 上と同じROI・同じ判定(バッジが一回り大きく
   描画されるが、RANK_ROI自体は両サイズをカバーできる余裕を持たせてある)
@@ -32,9 +38,6 @@
 | --- | --- | --- | --- | --- |
 | rank_badge (RANK_ROI) | #00C8FF | OCR | (90, 600)–(420, 930) | 330×330 |
 | gauge_enlarged (GAUGE_ROI_ENLARGED) | #FF7800 | color/brightness | (130, 966)–(420, 998) | 290×32 |
-
-拡大表示のHDR無効化後fixtureがまだ無いため(Issue #147)、この表示に対応する
-`*_annotated.png`は生成していない(座標のみ上表に記載)。
 
 呼び出し元(`state/match_state.py`)では、どちらのROIを使うべきかは読み取り
 タイミングによって一意に決まる(結果バナー確定直後=常にコンパクト、

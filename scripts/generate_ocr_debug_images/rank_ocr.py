@@ -31,31 +31,36 @@ GAUGE_ROI_COMPACT = _GAUGE_ROI_COMPACT
 GAUGE_ROI_ENLARGED = _GAUGE_ROI_ENLARGED
 
 # annotated画像を生成する対象fixture(fixtures/screenshots/配下)。
-# コンパクト表示(結果バナー確定直後、rank_before用)のみ。拡大表示
-# (ランク変動アニメーション安定後、rank_after用)のHDR無効化後fixtureはまだ無い
-# (Issue #147参照、`30_win_blue_league_up_hdr_off.mp4`内に該当区間は含まれて
-# いるが静止画としては未切り出し)。GAUGE_ROI_ENLARGED自体の座標はREADMEに
-# 載せるが、枠を重ねた画像は生成しない
-COMPACT_SOURCE_FILENAME = "78_result_lose_with_rank_blue_hdr_off.png"
+# 84/85は同一試合のコンパクト表示(結果バナー確定直後)/拡大表示(ランク変動
+# アニメーション中)のペア(Issue #158で収集)。78は別試合のコンパクト表示の
+# 参考例として引き続き残す
+COMPACT_SOURCE_FILENAMES = [
+    "84_result_win_with_rank_blue_hdr_off.png",
+    "78_result_lose_with_rank_blue_hdr_off.png",
+]
+ENLARGED_SOURCE_FILENAME = "85_result_win_with_rank_enlarged_blue_hdr_off.png"
 
 
 def main() -> None:
     output_dir = OUTPUT_ROOT / "rank_ocr"
     print("rank_ocr:")
 
-    image = load_fixture(COMPACT_SOURCE_FILENAME)
     compact_categories = [
         Category("rank_badge (RANK_ROI)", "OCR", (255, 200, 0), [RANK_ROI]),
         Category("gauge_compact (GAUGE_ROI_COMPACT)", "color/brightness", (0, 200, 255), [GAUGE_ROI_COMPACT]),
     ]
-    write_annotated(output_dir, COMPACT_SOURCE_FILENAME, draw_categories(image, compact_categories))
+    for source in COMPACT_SOURCE_FILENAMES:
+        image = load_fixture(source)
+        write_annotated(output_dir, source, draw_categories(image, compact_categories))
     write_mask(output_dir, "roi_mask_compact", draw_categories_mask(image.shape[:2], compact_categories))
 
     enlarged_categories = [
         Category("rank_badge (RANK_ROI)", "OCR", (255, 200, 0), [RANK_ROI]),
         Category("gauge_enlarged (GAUGE_ROI_ENLARGED)", "color/brightness", (0, 120, 255), [GAUGE_ROI_ENLARGED]),
     ]
-    write_mask(output_dir, "roi_mask_enlarged", draw_categories_mask(image.shape[:2], enlarged_categories))
+    enlarged_image = load_fixture(ENLARGED_SOURCE_FILENAME)
+    write_annotated(output_dir, ENLARGED_SOURCE_FILENAME, draw_categories(enlarged_image, enlarged_categories))
+    write_mask(output_dir, "roi_mask_enlarged", draw_categories_mask(enlarged_image.shape[:2], enlarged_categories))
 
     readme = output_dir / "README.md"
     readme.write_text(
@@ -66,7 +71,7 @@ def main() -> None:
 明確に異なるため、ゲージ用ROIは表示サイズごとに別々に用意されている
 (CLAUDE.md参照)。
 
-## `78_result_lose_with_rank_blue_hdr_off_annotated.png`(コンパクト表示の例)
+## `84_result_win_with_rank_blue_hdr_off_annotated.png`(コンパクト表示の例)
 
 - **rank_badge (RANK_ROI)** — OCR。バッジ全体(アイコン+数値)を包む余裕のある
   領域。`read_rank()`は数字のみ(allowlist)でOCRして帯内の数値を、
@@ -78,7 +83,13 @@ def main() -> None:
 
 {roi_table_markdown(compact_categories)}
 
-## 拡大表示(ランク変動アニメーション安定後の例)
+`78_result_lose_with_rank_blue_hdr_off_annotated.png`は別試合(負け)での
+コンパクト表示の参考例。
+
+## `85_result_win_with_rank_enlarged_blue_hdr_off_annotated.png`(拡大表示の例)
+
+`84`と同一試合で、ランク変動アニメーション中(バッジが一回り大きく描画される)
+を切り出したもの(Issue #158で収集)。
 
 - **rank_badge (RANK_ROI)** — 上と同じROI・同じ判定(バッジが一回り大きく
   描画されるが、RANK_ROI自体は両サイズをカバーできる余裕を持たせてある)
@@ -87,9 +98,6 @@ def main() -> None:
   ランク変動アニメーションが安定した後(rank_after)にのみ使う
 
 {roi_table_markdown(enlarged_categories)}
-
-拡大表示のHDR無効化後fixtureがまだ無いため(Issue #147)、この表示に対応する
-`*_annotated.png`は生成していない(座標のみ上表に記載)。
 
 呼び出し元(`state/match_state.py`)では、どちらのROIを使うべきかは読み取り
 タイミングによって一意に決まる(結果バナー確定直後=常にコンパクト、
