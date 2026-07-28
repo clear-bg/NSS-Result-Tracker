@@ -43,7 +43,20 @@
     opacity: 0.8;
 }
 
+/* Issue #146: 縦軸(ランク値)・横軸(試合番号)とも、整数目盛りの位置に引く
+   グリッド線。0.5刻みの補助線(rank-graph-gridline-minor)を追加するにあたり、
+   区別しやすくするため元の白・opacity 0.15から目立たせた(ユーザーとプレビューで
+   確認して決定: シアン・太さ2・opacity 0.4)。 */
 .rank-graph-gridline {
+    stroke: #7dd3fc;
+    stroke-width: 2;
+    opacity: 0.4;
+}
+
+/* Issue #146: 縦軸ランク値の整数目盛りの間に追加する0.5刻みの補助線。
+   目盛り(rank-graph-gridline)を目立たせた分、区別できるよう従来と同じ見た目
+   (白・太さ1・opacity 0.15)のまま残す */
+.rank-graph-gridline-minor {
     stroke: #fff;
     stroke-width: 1;
     opacity: 0.15;

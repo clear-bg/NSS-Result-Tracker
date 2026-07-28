@@ -323,10 +323,10 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     def y_at(value: float) -> float:
         return plot_top + plot_height * (1 - (value - axis_min) / axis_range)
 
-    # 縦軸目盛り: 横向きの薄いグリッド線+左側にランク値のラベル+横軸と同様の短い
-    # 目盛り線。整数のみ・間隔は_rank_graph_y_tick_stepで動的に決める(Issue #123、
-    # 通常運用の狭い範囲では間隔1のまま)。軸の下限・上限自体を実データより広げてあるため
-    # (_rank_graph_y_bounds参照)、一番上・一番下の点は自然に軸の端から離れる
+    # 縦軸目盛り: 横向きのグリッド線+左側にランク値のラベル+横軸と同様の短い目盛り線。
+    # ラベル・目盛り自体は整数のみ・間隔は_rank_graph_y_tick_stepで動的に決める
+    # (Issue #123、通常運用の狭い範囲では間隔1のまま)。軸の下限・上限自体を実データより
+    # 広げてあるため(_rank_graph_y_bounds参照)、一番上・一番下の点は自然に軸の端から離れる
     y_tick_step = _rank_graph_y_tick_step(axis_range)
     y_axis_svg = []
     for tick_value in range(axis_min, axis_max + 1, y_tick_step):
@@ -341,6 +341,19 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
             f'<text x="{plot_left - 8}" y="{y:.1f}" text-anchor="end" dominant-baseline="middle" '
             f'class="rank-graph-tick-label">{tick_value}</text>'
         )
+
+    # Issue #146: 整数目盛りの間に0.5刻みの補助グリッド線を追加する(ラベル・目盛り線は
+    # 増やさない)。目盛り間隔が1のとき(通常運用)だけ追加し、外れ値で間隔が2以上に
+    # 広がった場合(_rank_graph_y_tick_step参照)は追加しない(ユーザーとの相談で決定。
+    # #136対応後はこの手の外れ値自体が起こりにくくなる見込みのため、実運用上は
+    # ほぼ常にこの分岐に入る)
+    if y_tick_step == 1:
+        for major_value in range(axis_min, axis_max):
+            y = y_at(major_value + 0.5)
+            y_axis_svg.append(
+                f'<line x1="{plot_left}" y1="{y:.1f}" x2="{plot_right}" y2="{y:.1f}" '
+                'class="rank-graph-gridline-minor" />'
+            )
 
     # 枠(プロット領域を囲む矩形)
     frame_svg = (
