@@ -186,6 +186,18 @@ DEFAULT_RANK_RECHECK_INTERVAL_FRAMES = 15
 # (config/detection.tomlの[match_state]で上書き可能)
 RANK_RECHECK_CHANGE_TOLERANCE = get_detection_value("match_state", "RANK_RECHECK_CHANGE_TOLERANCE", 0.05)
 
+# Issue #136: 試合前後で帯番号(整数)が2以上急変した場合の再スキャンまでの
+# 待機フレーム数(30fps想定)。同一フレームへの再OCRは同じ誤読を繰り返すだけ
+# のため、数フレーム後の別フレームで読み直す
+DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES = 5
+
+# Issue #136: 再スキャンしても帯番号が不自然なまま(1帯を超える変化、または
+# 昇格演出未確認の+1、または勝敗と矛盾する向きの変化)だった場合、ゲージ小数部
+# (HSVベースの独立信号)の連続性で判断し直す。「勝ったら降格しない/負けたら
+# 昇格しない」というゲーム仕様(ユーザー確認済み)を前提に、勝敗と矛盾する
+# 向きにこの割合を超えて動いて見える場合にのみ1帯またいだとみなす
+RANK_TIER_WRAP_MIN_MAGNITUDE = get_detection_value("match_state", "RANK_TIER_WRAP_MIN_MAGNITUDE", 0.5)
+
 
 class _State(Enum):
     WATCHING = auto()
@@ -201,6 +213,7 @@ class _RankPhase(Enum):
     WAITING_STABLE = auto()
     GRACE = auto()
     IN_LEAGUE_CHANGE = auto()
+    RESCAN_WAIT = auto()
 
 
 @dataclass
@@ -254,6 +267,7 @@ class MatchStateMachine:
         rank_recheck_interval_frames: int = DEFAULT_RANK_RECHECK_INTERVAL_FRAMES,
         vs_screen_confirm_frames: int = DEFAULT_VS_SCREEN_CONFIRM_FRAMES,
         match_end_confirm_frames: int = DEFAULT_MATCH_END_CONFIRM_FRAMES,
+        rank_tier_rescan_wait_frames: int = DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
     ) -> None:
         self._banner_confirm_frames = banner_confirm_frames
@@ -264,6 +278,7 @@ class MatchStateMachine:
         self._rank_recheck_interval_frames = rank_recheck_interval_frames
         self._vs_screen_confirm_frames = vs_screen_confirm_frames
         self._match_end_confirm_frames = match_end_confirm_frames
+        self._rank_tier_rescan_wait_frames = rank_tier_rescan_wait_frames
         self._rank_monitor = rank_stability_monitor or StabilityMonitor(roi=rank_roi)
 
         self._state = _State.WATCHING
@@ -280,6 +295,11 @@ class MatchStateMachine:
         self._pending_rank_before: Optional[float] = None
         self._grace_candidate_rank_tier: Optional[int] = None
         self._grace_candidate_rank: Optional[float] = None
+        # Issue #136: 昇格演出(is_league_change_screen)がこの試合中に一度でも
+        # 観測されたか。帯番号の急変を検証する際、昇格側はこの独立信号で
+        # 確認できていない限り認めない
+        self._promotion_confirmed_this_match = False
+        self._rescan_counter = 0
         self._goal_streak = 0
         self._goal_recorded_this_event = False
         self._pending_goals: list[GoalEvent] = []
@@ -489,6 +509,7 @@ class MatchStateMachine:
             self._grace_counter = 0
             self._grace_candidate_rank_tier = None
             self._grace_candidate_rank = None
+            self._promotion_confirmed_this_match = False
             self._rank_monitor.reset()
             self._rank_monitor.update(frame)
             self._state = _State.TRACKING_RANK
@@ -500,6 +521,7 @@ class MatchStateMachine:
         if is_league_change_screen(frame):
             self._rank_phase = _RankPhase.IN_LEAGUE_CHANGE
             self._grace_counter = 0
+            self._promotion_confirmed_this_match = True
             return None
 
         if self._rank_phase is _RankPhase.IN_LEAGUE_CHANGE:
@@ -508,6 +530,9 @@ class MatchStateMachine:
             self._rank_monitor.update(frame)
             self._rank_phase = _RankPhase.WAITING_STABLE
             return None
+
+        if self._rank_phase is _RankPhase.RESCAN_WAIT:
+            return self._continue_rescan_wait(frame)
 
         was_stable = self._rank_monitor.is_stable
         is_stable = self._rank_monitor.update(frame)
@@ -538,7 +563,7 @@ class MatchStateMachine:
 
         if classify_banner(frame) is None:
             self._fill_grace_candidate_if_missing(frame)
-            return self._finalize(self._grace_candidate_rank_tier, self._grace_candidate_rank)
+            return self._begin_finalize(self._grace_candidate_rank_tier, self._grace_candidate_rank)
 
         self._grace_counter += 1
 
@@ -561,7 +586,7 @@ class MatchStateMachine:
         if self._grace_counter < self._league_change_grace_frames:
             return None
         self._fill_grace_candidate_if_missing(frame)
-        return self._finalize(self._grace_candidate_rank_tier, self._grace_candidate_rank)
+        return self._begin_finalize(self._grace_candidate_rank_tier, self._grace_candidate_rank)
 
     def _fill_grace_candidate_if_missing(self, frame: np.ndarray) -> None:
         """確定直前の時点で候補値が一度も読めていない場合のみ、最後にもう一度読み取りを試みる。
@@ -580,6 +605,98 @@ class MatchStateMachine:
         precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
         if precise_result is not None:
             self._grace_candidate_rank_tier, self._grace_candidate_rank = precise_result
+
+    def _begin_finalize(self, tier: Optional[int], rank: Optional[float]) -> Optional[MatchResult]:
+        """帯番号確定前の最終チェック(Issue #136)。不自然な急変ならすぐには確定せず、
+        数フレーム後に再スキャンする。
+        """
+        if self._is_tier_change_plausible(tier):
+            return self._finalize(tier, rank)
+        logger.warning(
+            "%d試合目: 帯番号が不自然に変化しています(before=%s after=%s)。"
+            "%dフレーム後に再スキャンします",
+            self._session_match_no,
+            self._pending_rank_before_tier,
+            tier,
+            self._rank_tier_rescan_wait_frames,
+        )
+        self._rescan_counter = 0
+        self._rank_phase = _RankPhase.RESCAN_WAIT
+        return None
+
+    def _continue_rescan_wait(self, frame: np.ndarray) -> Optional[MatchResult]:
+        self._rescan_counter += 1
+        if self._rescan_counter < self._rank_tier_rescan_wait_frames:
+            return None
+        precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
+        if precise_result is not None:
+            tier, rank = precise_result
+        else:
+            tier, rank = self._grace_candidate_rank_tier, self._grace_candidate_rank
+        if self._is_tier_change_plausible(tier):
+            return self._finalize(tier, rank)
+        logger.warning(
+            "%d試合目: 再スキャンでも帯番号が不自然なままのため(after=%s)、"
+            "ゲージ小数部の連続性から補正します",
+            self._session_match_no,
+            tier,
+        )
+        corrected_tier, corrected_rank = self._infer_tier_from_gauge_continuity(tier, rank)
+        return self._finalize(corrected_tier, corrected_rank)
+
+    def _is_tier_change_plausible(self, tier_after: Optional[int]) -> bool:
+        """試合前後の帯番号の変化が、ゲームの仕様上ありうるものか検証する(Issue #136)。
+
+        1試合での帯変化は昇格/降格いずれも1帯までしか起こらない。さらに
+        「勝ったら降格しない/負けたら昇格しない」というゲーム仕様(ユーザー確認済み)
+        より、昇格(+1)は勝ちかつ昇格演出(is_league_change_screen)を確認できて
+        いる場合のみ、降格(-1)は負けの場合のみ許容する。引き分けはゲージ自体が
+        全く動かない仕様のため、変化無し(0)以外は常に不自然とみなす。
+        """
+        tier_before = self._pending_rank_before_tier
+        if tier_before is None or tier_after is None:
+            return True
+        delta = tier_after - tier_before
+        if delta == 0:
+            return True
+        if delta == 1:
+            return self._pending_result == "win" and self._promotion_confirmed_this_match
+        if delta == -1:
+            return self._pending_result == "lose"
+        return False
+
+    def _infer_tier_from_gauge_continuity(
+        self, tier_ocr: Optional[int], rank_value: Optional[float]
+    ) -> tuple[Optional[int], Optional[float]]:
+        """再スキャンしても帯番号が不自然なままの場合の最終フォールバック(Issue #136)。
+
+        数値OCR(帯番号)ではなく、ゲージの溜まり具合(HSVベースの独立信号、
+        read_precise_rankの戻り値からtier_ocrを差し引いて復元する)の連続性と
+        勝敗結果を使って帯番号を推測し直す。
+
+        昇格はis_league_change_screen()で独立確認済みの場合のみそれを正として
+        採用する。降格は独立確認手段が無いため、「負けているのにゲージ小数部が
+        RANK_TIER_WRAP_MIN_MAGNITUDEを超えて増えて見える(0を割り込んで前の帯に
+        巻き戻ったように見える)」場合にのみ1帯下げる。それ以外(勝ち・引き分け、
+        または負けでも矛盾がしきい値未満)は帯番号を変えず、小数部だけをそのまま
+        採用する(ゲージが全く動かない引き分けも含め、変な値に書き換えない
+        という方針)。
+        """
+        tier_before = self._pending_rank_before_tier
+        rank_before = self._pending_rank_before
+        if tier_before is None or rank_before is None or rank_value is None:
+            return tier_ocr, rank_value
+
+        frac_before = rank_before - tier_before
+        frac_after = rank_value - tier_ocr if tier_ocr is not None else rank_value - tier_before
+
+        if self._promotion_confirmed_this_match:
+            return tier_before + 1, tier_before + 1 + frac_after
+
+        if self._pending_result == "lose" and frac_after - frac_before > RANK_TIER_WRAP_MIN_MAGNITUDE:
+            return tier_before - 1, tier_before - 1 + frac_after
+
+        return tier_before, tier_before + frac_after
 
     def _finalize(self, rank_after_tier: Optional[int], rank_after: Optional[float]) -> MatchResult:
         if rank_after is None:
@@ -612,6 +729,7 @@ class MatchStateMachine:
         self._pending_result = None
         self._pending_rank_before = None
         self._pending_rank_before_tier = None
+        self._promotion_confirmed_this_match = False
         self._pending_goals = []
         self._goal_streak = 0
         self._goal_recorded_this_event = False
