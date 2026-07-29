@@ -82,9 +82,22 @@ Issue #71: 実プレイでの動作確認をしやすくするため、試合の
 1フレームごとの変化量が小さいまま数十フレームかけて値が動き続けても
 「安定」の判定が崩れず、GRACE突入直後に読んだ値が古いまま確定されてしまう
 (例: 00は真の最終値40.43より先に一時的な40.77を確定、03は降格後の
-39台への遷移を見逃す)。これに対処するため、GRACE中もrank_recheck_interval_frames
-おきにOCRを読み直し、値が変わっていれば候補を更新してgrace_counterを
-リセットする(値そのものが変化し続けている間は確定を先延ばしにする)。
+39台への遷移を見逃す)。これに対処するため、GRACE中も帯番号(数値OCR、重い
+処理)はrank_recheck_interval_framesおきに読み直して古くなっていないか確認する。
+
+Issue #178: ゲージの塗りつぶし(小数部)側は、上記の間引き読み直しだけでは
+不十分なケースが実データ(本番運用中に記録されたmatches.id=19/20の元動画)で
+見つかった。`--video`実行時の実時間再生(-re)とFfmpegFrameReaderの「処理が
+追いつかない間は古いフレームを破棄する」設計の組み合わせにより、実際に
+処理されるフレームの間隔が不規則になる。その間隔がたまたま「差分が小さく
+見える」タイミングに重なると、StabilityMonitorがまだアニメーション途中
+(ゲージがゆっくり動いている最中)を「安定」と誤判定し、収束前の値を
+スナップショット的に確定してしまう。ゲージの塗りつぶし(HSVベースの軽量な
+色判定)自体は数値OCRと違って毎フレーム読んでも負荷が軽いため、GRACE中は
+スナップショットではなく毎フレーム最新値で上書きし続け、確定時にはその
+時点の最新値を使う方式に変更した(_current_grace_rank参照)。帯番号側は
+従来通りの間引き読み直しのままでよい(数値OCRは重く、かつ帯自体は基本的に
+1試合で1回しか変わらないため)。
 
 ゴール(得点・アシスト)はWATCHING中(試合結果バナーを待っている=まさに
 プレイ中の期間)にのみ起こりうるため、_watch_for_banner()と並行して
@@ -151,6 +164,8 @@ from nss_tracker.detection.rank_ocr import (
     RANK_NUMBER_ROI_ENLARGED,
     RANK_ROI,
     read_precise_rank,
+    read_rank,
+    read_rank_gauge_fill,
 )
 from nss_tracker.detection.team_color import read_team_colors
 from nss_tracker.detection.vs_rank import SlotRank, read_vs_screen_ranks
@@ -294,7 +309,9 @@ class MatchStateMachine:
         self._pending_rank_before_tier: Optional[int] = None
         self._pending_rank_before: Optional[float] = None
         self._grace_candidate_rank_tier: Optional[int] = None
-        self._grace_candidate_rank: Optional[float] = None
+        # Issue #178: ゲージの塗りつぶし(小数部)の最新値。GRACE中は毎フレーム
+        # 上書きし続け、確定時にはスナップショットではなくこの最新値を使う
+        self._latest_gauge_fill: Optional[float] = None
         # Issue #136: 昇格演出(is_league_change_screen)がこの試合中に一度でも
         # 観測されたか。帯番号の急変を検証する際、昇格側はこの独立信号で
         # 確認できていない限り認めない
@@ -508,7 +525,7 @@ class MatchStateMachine:
             self._rank_phase = _RankPhase.WAITING_STABLE
             self._grace_counter = 0
             self._grace_candidate_rank_tier = None
-            self._grace_candidate_rank = None
+            self._latest_gauge_fill = None
             self._promotion_confirmed_this_match = False
             self._rank_monitor.reset()
             self._rank_monitor.update(frame)
@@ -543,14 +560,15 @@ class MatchStateMachine:
                 self._grace_counter = 0
                 # 安定した瞬間(まだ画面が遷移し始めていない良いフレーム)でOCRしておく。
                 # 猶予期間の最後まで待つとバナー自体が消えかけの不安定なフレームに
-                # なりOCRが失敗しうるため、値はここで確定させて使い回す。
+                # なりOCRが失敗しうるため、帯番号はここで確定させて使い回す。
                 # 微小なノイズで安定が何度か途切れて再試行することがあるが、
                 # 直近の試行がたまたま失敗しても直前までの正常な読み取り結果を
                 # 上書きしないよう、Noneの場合は前回値を保持する。
                 # TRACKING_RANK中(アニメーション開始後)は常に拡大表示
                 precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
                 if precise_result is not None:
-                    self._grace_candidate_rank_tier, self._grace_candidate_rank = precise_result
+                    self._grace_candidate_rank_tier, precise = precise_result
+                    self._latest_gauge_fill = precise - self._grace_candidate_rank_tier
             return None
 
         # _RankPhase.GRACE: 安定はしたが、直後に昇格/降格演出が始まらないか
@@ -561,32 +579,59 @@ class MatchStateMachine:
             self._grace_counter = 0
             return None
 
-        if classify_banner(frame) is None:
+        # Issue #178: ゲージの塗りつぶし(HSVベースの軽量な色判定)は毎フレーム
+        # 読み取り、常に最新値で上書きし続ける。安定判定(StabilityMonitor)の
+        # タイミングは、--video実行時の実時間再生+FfmpegFrameReaderのフレーム
+        # 間引きの影響でずれることがあり、確定した瞬間のスナップショットを
+        # 1回だけ使う方式だと、実際にはまだ動いている途中の値を掴んでしまう
+        # ことが実データ(本番DBで誤検知が見つかったmatches.id=19/20の元動画)で
+        # 確認された。帯番号は数値OCR(重い処理)のため頻度は変えない。
+        # _grace_counterは「最後にゲージ変化を検知してから何フレーム経ったか」も
+        # 兼ねる(変化を検知した瞬間に0へリセットする)ため、下記の「バナー消灯
+        # 即確定」判定にもそのまま使う
+        fill = read_rank_gauge_fill(frame, GAUGE_ROI_ENLARGED)
+        if fill is not None:
+            if self._latest_gauge_fill is not None and abs(fill - self._latest_gauge_fill) > RANK_RECHECK_CHANGE_TOLERANCE:
+                # まだゲージが動いている途中とみなし、猶予期間をやり直す
+                self._grace_counter = 0
+            self._latest_gauge_fill = fill
+
+        # Issue #178: 結果バナー(勝敗テキスト)はランクゲージのアニメーションより
+        # 先に消えることがあるため、バナーが消えた瞬間に無条件で確定するのではなく、
+        # 直近rank_recheck_interval_frames分はゲージの変化が無かったことを確認して
+        # から確定する(まだ変化が続いている間はこの分岐を素通りしてgrace_counterの
+        # 通常のタイムアウト待ちに合流する)
+        if classify_banner(frame) is None and self._grace_counter >= self._rank_recheck_interval_frames:
             self._fill_grace_candidate_if_missing(frame)
-            return self._begin_finalize(self._grace_candidate_rank_tier, self._grace_candidate_rank)
+            return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank())
 
         self._grace_counter += 1
 
-        # ピクセル差分では検知できない緩やかな変化を見逃さないよう、
-        # 一定間隔で読み直して候補値が古くなっていないか確認する。
-        # 変化していれば、まだ表示が動き続けている途中とみなし猶予期間をやり直す
+        # ピクセル差分では検知できない緩やかな帯番号の変化を見逃さないよう、
+        # 一定間隔で読み直して候補の帯番号が古くなっていないか確認する
+        # (数値OCRは重いためここだけ間引く。ゲージ小数部は上記で毎フレーム追跡済み)
         if self._grace_counter % self._rank_recheck_interval_frames == 0:
-            precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
-            if precise_result is not None:
-                tier, precise = precise_result
-                candidate = self._grace_candidate_rank
-                changed = tier != self._grace_candidate_rank_tier or (
-                    candidate is None or abs(precise - candidate) > RANK_RECHECK_CHANGE_TOLERANCE
-                )
-                if changed:
-                    self._grace_candidate_rank_tier, self._grace_candidate_rank = tier, precise
-                    self._grace_counter = 0
-                    return None
+            tier = read_rank(frame, RANK_NUMBER_ROI_ENLARGED)
+            if tier is not None and tier != self._grace_candidate_rank_tier:
+                self._grace_candidate_rank_tier = tier
+                self._grace_counter = 0
+                return None
 
         if self._grace_counter < self._league_change_grace_frames:
             return None
         self._fill_grace_candidate_if_missing(frame)
-        return self._begin_finalize(self._grace_candidate_rank_tier, self._grace_candidate_rank)
+        return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank())
+
+    def _current_grace_rank(self) -> Optional[float]:
+        """帯番号(OCR)+ゲージ小数部(継続追跡している最新値)を組み合わせた現在値。
+
+        小数部が一度も読めていない場合のみ0.0扱いにする(read_precise_rankの
+        フォールバックと同じ考え方)。
+        """
+        if self._grace_candidate_rank_tier is None:
+            return None
+        fill = self._latest_gauge_fill if self._latest_gauge_fill is not None else 0.0
+        return self._grace_candidate_rank_tier + fill
 
     def _fill_grace_candidate_if_missing(self, frame: np.ndarray) -> None:
         """確定直前の時点で候補値が一度も読めていない場合のみ、最後にもう一度読み取りを試みる。
@@ -604,7 +649,8 @@ class MatchStateMachine:
             return
         precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
         if precise_result is not None:
-            self._grace_candidate_rank_tier, self._grace_candidate_rank = precise_result
+            self._grace_candidate_rank_tier, precise = precise_result
+            self._latest_gauge_fill = precise - self._grace_candidate_rank_tier
 
     def _begin_finalize(self, tier: Optional[int], rank: Optional[float]) -> Optional[MatchResult]:
         """帯番号確定前の最終チェック(Issue #136)。不自然な急変ならすぐには確定せず、
@@ -632,7 +678,7 @@ class MatchStateMachine:
         if precise_result is not None:
             tier, rank = precise_result
         else:
-            tier, rank = self._grace_candidate_rank_tier, self._grace_candidate_rank
+            tier, rank = self._grace_candidate_rank_tier, self._current_grace_rank()
         if self._is_tier_change_plausible(tier):
             return self._finalize(tier, rank)
         logger.warning(
