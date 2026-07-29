@@ -477,6 +477,179 @@ def test_track_rank_grace_recheck_catches_tier_change(monkeypatch):
     )
 
 
+def test_tier_jump_recovers_via_rescan(monkeypatch):
+    """試合前後で帯番号が不自然に急変(38→15)しても、数フレーム後の再スキャンで
+    正しい値(38→39、昇格演出確認済み)にたどり着けることを確認する(Issue #136)。
+    値は目視ではなくこのテストのために意図的に用意した架空のシーケンスであり、
+    実装の出力を転記したものではない。
+    """
+    read_calls = {"n": 0}
+
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        read_calls["n"] += 1
+        if read_calls["n"] == 1:
+            return (38, 38.2)  # 結果バナー時点(before)
+        if read_calls["n"] == 2:
+            return (15, 15.5)  # GRACE突入直後の誤読み(不自然な急変)
+        return (39, 39.3)  # 再スキャン後の正しい値(昇格演出確認済み)
+
+    league_change_calls = {"n": 0}
+
+    def fake_is_league_change_screen(frame):
+        league_change_calls["n"] += 1
+        return league_change_calls["n"] == 1
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", fake_is_league_change_screen)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=3,
+        rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_after == pytest.approx(39.3)
+    assert result.league_changed == "up"
+
+
+def test_tier_jump_falls_back_to_gauge_continuity_when_rescan_still_implausible_win(monkeypatch):
+    """再スキャンしても帯番号が不自然なまま(勝ちなのに降格演出未確認)の場合、
+    帯番号は変えずゲージ小数部の連続性だけを採用することを確認する(Issue #136)。
+    """
+    read_calls = {"n": 0}
+
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        read_calls["n"] += 1
+        if read_calls["n"] == 1:
+            return (38, 38.2)  # before(小数部0.2)
+        if read_calls["n"] == 2:
+            return (99, 99.4)  # GRACE突入直後の誤読み(小数部0.4は継続として自然)
+        return (7, 7.4)  # 再スキャンでも誤読みのまま(小数部は同じく0.4)
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=3,
+        rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_after == pytest.approx(38.4)
+    assert result.league_changed is None
+
+
+def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monkeypatch):
+    """負け試合で再スキャンしても帯番号が不自然なままの場合、ゲージ小数部が
+    0を割り込んで大きく増えて見える(0.2→0.9)ことから降格と推測し、
+    帯番号を1つ下げて記録することを確認する(Issue #136)。
+    """
+    read_calls = {"n": 0}
+
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        read_calls["n"] += 1
+        if read_calls["n"] == 1:
+            return (38, 38.2)  # before(小数部0.2)
+        if read_calls["n"] == 2:
+            return (99, 99.9)  # GRACE突入直後の誤読み(小数部0.9)
+        return (5, 5.9)  # 再スキャンでも誤読みのまま(小数部は同じく0.9)
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=3,
+        rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_after == pytest.approx(37.9)
+    assert result.league_changed == "down"
+
+
+def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
+    """引き分け試合はゲージが全く動かない仕様のため、再スキャンしても帯番号が
+    不自然なままの場合は常に試合前の帯番号を据え置くことを確認する(Issue #136)。
+    """
+    read_calls = {"n": 0}
+
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        read_calls["n"] += 1
+        if read_calls["n"] == 1:
+            return (38, 38.2)  # before(小数部0.2)
+        if read_calls["n"] == 2:
+            return (99, 99.9)  # GRACE突入直後の誤読み
+        return (5, 5.9)  # 再スキャンでも誤読みのまま
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "draw")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=3,
+        rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.league_changed is None
+    assert result.rank_after == pytest.approx(38.9)
+
+
 def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
     """GRACE中に候補値が一度も読み取れないまま確定に至った場合の最後のリトライ
     (_fill_grace_candidate_if_missing)は、常に拡大表示用のROI(GAUGE_ROI_ENLARGED)を
