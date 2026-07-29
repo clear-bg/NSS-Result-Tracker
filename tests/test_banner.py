@@ -21,11 +21,16 @@ EXPECTED = {
     "85_result_win_with_rank_enlarged_blue_hdr_off.png": "win",
     "86_matching_with_rank_4v4_hdr_off.png": None,
     "87_matching_hdr_off_3.png": None,
+    "88_result_win_without_rank_blue_hdr_off.png": "win",
+    "89_result_draw_without_rank_hdr_off.png": "draw",
+    "90_start_overtime_hdr_off_1.png": None,
+    "91_start_overtime_hdr_off_2.png": None,
+    "92_start_overtime_hdr_off_3.png": None,
 }
 
 
-# Issue #172: WIN_HUE_RANGE=(77, 86)の上限からわずかに外れる(77・84・85番は
-# H86.3〜86.9)、かつ77・85番はWIN_VAL_MIN=165もクリアできていない(V146.1〜
+# Issue #172: WIN_HUE_RANGE=(77, 86)の上限からわずかに外れる(77・84・85・88番は
+# H86.3〜87.0)、かつ77・85番はWIN_VAL_MIN=165もクリアできていない(V146.1〜
 # 148.5)。単純な閾値緩和は79_result_rank_up_hdr_off.png(ランク昇格オーバーレイ)
 # を誤検知させることが判明したため、判定条件自体の見直しが必要(詳細はIssue
 # #172参照)。ground truthは"win"のまま、既知の欠落としてxfailにする
@@ -33,7 +38,16 @@ _KNOWN_HUE_SHIFT_GAPS = {
     "77_result_win_with_rank_red_hdr_off.png",
     "84_result_win_with_rank_blue_hdr_off.png",
     "85_result_win_with_rank_enlarged_blue_hdr_off.png",
+    "88_result_win_without_rank_blue_hdr_off.png",
 }
+
+# 89番(引き分け)はHDR無効化後で初めて収集した引き分けの参照素材。実測ではH98.6〜
+# 102.2・V82.3〜89.3はLOSE_HUE_RANGE/LOSE_VAL_RANGEの範囲内だが、S28.1〜42.1が
+# LOSE_SAT_RANGE=(35, 65)の下限をわずかに下回り、classify_banner()がNoneを返す
+# (引き分け特有の見た目の暗さによるものか、単にこの1件のサンプルの照明条件による
+# ものかは、参照素材が1件のみのため未確定)。ground truthは"draw"のまま、既知の
+# 欠落としてxfailにする(閾値の再較正は別issueで検討)
+_KNOWN_DRAW_SAT_GAP = {"89_result_draw_without_rank_hdr_off.png"}
 
 
 @requires_fixtures
@@ -49,6 +63,15 @@ _KNOWN_HUE_SHIFT_GAPS = {
             ),
         )
         if name in _KNOWN_HUE_SHIFT_GAPS
+        else pytest.param(
+            name,
+            expected,
+            marks=pytest.mark.xfail(
+                reason="LOSE_SAT_RANGEの下限をHDR無効化後の引き分け実測がわずかに下回っている(要issue化)",
+                strict=False,
+            ),
+        )
+        if name in _KNOWN_DRAW_SAT_GAP
         else (name, expected)
         for name, expected in sorted(EXPECTED.items())
     ],
