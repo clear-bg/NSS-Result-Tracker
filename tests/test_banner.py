@@ -29,16 +29,16 @@ EXPECTED = {
 }
 
 
-# Issue #172: WIN_HUE_RANGE=(77, 86)の上限からわずかに外れる(77・84・85・88番は
-# H86.3〜87.0)、かつ77・85番はWIN_VAL_MIN=165もクリアできていない(V146.1〜
-# 148.5)。単純な閾値緩和は79_result_rank_up_hdr_off.png(ランク昇格オーバーレイ)
-# を誤検知させることが判明したため、判定条件自体の見直しが必要(詳細はIssue
-# #172参照)。ground truthは"win"のまま、既知の欠落としてxfailにする
+# Issue #172: WIN_HUE_RANGEの上限をIssue #172対応で86→87に広げ、84・88番
+# (H86.86、WIN_VAL_MINは165を満たしていた)は解消した。77・85番はV146.1〜148.5が
+# WIN_VAL_MIN=165をクリアできておらず、こちらを緩めると79_result_rank_up_hdr_off.png
+# (ランク昇格オーバーレイ、V150.18)を誤検知させることが分かっている。Hue標準偏差
+# での追加判別も試したが、実際の勝ち動画フレーム(28・30番)にもHstd最大5.68の
+# 高分散フレームが混在しており、79番のHstd3.98と分離できないため見送った
+# (詳細はIssue #172参照)。ground truthは"win"のまま、既知の欠落としてxfailにする
 _KNOWN_HUE_SHIFT_GAPS = {
     "77_result_win_with_rank_red_hdr_off.png",
-    "84_result_win_with_rank_blue_hdr_off.png",
     "85_result_win_with_rank_enlarged_blue_hdr_off.png",
-    "88_result_win_without_rank_blue_hdr_off.png",
 }
 
 # 89番(引き分け)はHDR無効化後で初めて収集した引き分けの参照素材。実測ではH98.6〜

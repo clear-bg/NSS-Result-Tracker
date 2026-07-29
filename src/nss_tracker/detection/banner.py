@@ -128,7 +128,13 @@ BANNER_ROIS = get_detection_value(
 
 # 実測(scripts/inspect_banner_colors.py, fixtures/screenshots + fixtures/videos/00-03):
 # 勝ち: H80.7-83.2 / 負け: H89.0-99.0(配信間の差が大きい)
-WIN_HUE_RANGE = get_detection_value("banner", "WIN_HUE_RANGE", (77, 86))
+# Issue #172: HDR無効化後、84・88番(H86.86)がこの上限からわずかに外れていた。
+# WIN_VAL_MINには触れずHue上限のみ77→87→88(境界含む)に広げても、
+# 79_result_rank_up_hdr_off.png(V150.18)はWIN_VAL_MIN=165を満たさないため
+# 引き続き弾かれることをfixtures/screenshots・fixtures/videos全件で確認済み
+# (77・85番はV146-148がWIN_VAL_MIN未満のため今回のHue側の緩和だけでは直らず、
+# xfailのまま残す。詳細はIssue #172参照)
+WIN_HUE_RANGE = get_detection_value("banner", "WIN_HUE_RANGE", (77, 87))
 WIN_SAT_MIN = get_detection_value("banner", "WIN_SAT_MIN", 120)
 WIN_VAL_MIN = get_detection_value("banner", "WIN_VAL_MIN", 165)
 LOSE_HUE_RANGE = get_detection_value("banner", "LOSE_HUE_RANGE", (87, 103))
