@@ -142,4 +142,13 @@ Issue #147対応。`72`/`73`(VS画面)に続き、それ以外の色ベース判
 
 `83`〜`87`は上記`26`〜`32`とは別の実プレイセッション(ローカルOBS録画)から静止画として直接切り出したもので、対応する動画fixtureは無い。
 
-リーグ降格演出・引き分け(ランク有り)のHDR無効化後の参照素材はまだ無い(発生頻度が低く狙って収集しづらいため、Issue #147では優先度Low〜Mediumとして今後の実プレイで拾えれば追加する方針)。`detection/team_color.py`については`82`(または`72`/`73`)のVS画面素材で代用できる。
+- [x] 勝ち(ランク無し、青チーム、HDR無効化後) `88_result_win_without_rank_blue_hdr_off`
+  - `classify_banner()`がH86.5〜87.0でWIN_HUE_RANGE=(77,86)の上限をわずかに外れ、Issue #172の既知のギャップと同じ原因でxfail扱い(`tests/test_banner.py`の`_KNOWN_HUE_SHIFT_GAPS`参照)
+- [x] 引き分け(ランク無し、HDR無効化後) `89_result_draw_without_rank_hdr_off`
+  - HDR無効化後で初めて収集した引き分けの参照素材。実測でS28.1〜42.1がLOSE_SAT_RANGE=(35,65)の下限をわずかに下回り、`classify_banner()`がNoneを返す既知のギャップとしてxfail扱い(`tests/test_banner.py`の`_KNOWN_DRAW_SAT_GAP`参照、閾値再較正は別issueで検討)。ランクを賭けない対戦のため`64`と同じくランクバッジは表示されない
+- [x] 延長戦バナー(HDR無効化後) `90_start_overtime_hdr_off_1`・`91_start_overtime_hdr_off_2`・`92_start_overtime_hdr_off_3`
+  - スタジアム・カメラアングルが異なる3件。「試合終了」バナーとの誤認識防止(`detection/match_end.py`)の回帰確認に使う。いずれも`classify_banner()`・`is_match_end_screen()`とも正しくNone/Falseを返すことを確認済み
+
+対応する動画は`fixtures/videos/33_lose_pink_overtime_hdr_off.mp4`・`34_win_pink_overtime_hdr_off.mp4`(いずれも延長戦を経て決着する試合、ランクは38帯のままlose/winそれぞれ)。Issue #178(ランクゲージ読み取り精度)の調査で実際に誤検知が見つかった試合の元動画で、`fixtures/videos/metadata.json`に登録済み(banner_confirmed_frame_range・match_result_frame_rangeは未検証のためnull)。
+
+リーグ降格演出のHDR無効化後の参照素材はまだ無い(発生頻度が低く狙って収集しづらいため、Issue #147では優先度Low〜Mediumとして今後の実プレイで拾えれば追加する方針。Issue #176の降格独立検知調査にも使える)。`detection/team_color.py`については`82`(または`72`/`73`)のVS画面素材で代用できる。
