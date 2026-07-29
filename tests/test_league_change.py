@@ -94,13 +94,15 @@ def test_is_league_change_screen_detects_promotion_overlay(videos_dir):
 # 実際に発生したことまでは確認していない(negative-caseの一般的な誤検知防止の
 # 回帰としてのみ使う)
 #
-# 29番はフレーム280〜294(約0.25秒)でis_league_change_screenが誤ってTrueになる
+# 29番はフレーム270〜300付近(約0.5秒)でis_league_change_screenが誤ってTrueになる
 # ことが判明した。原因はCLAUDE.mdに記載済みの「スタジアムのミント/ティール色の
 # 天蓋(屋根の日除け)」がカメラアングルの都合で画面に大きく写り込むケース
 # (Issue #67の2件目の参照サンプル`25_inplay_false_positive_win_blue_teal_canopy.mp4`
 # と同じ現象)で、これまでbanner.py側でのみ報告されていたが、is_league_change_screen
 # (画面全体の平均HSVで判定)も同じ天蓋色に反応しうることが今回新たに判明した。
-# 個別のissueが無いため、Issue #148では既知の欠落としてxfailにするに留める
+# Issue #185で調査したが、本物の昇格演出(79番・30番・21番のH101.21〜104.13)と
+# 天蓋誤検知(H最大103.51)のHue範囲が重なっており、単純な閾値再較正では
+# 分離できないと判明したため、Issue #172・#182と同じ結論でxfailのまま残す
 LEAGUE_DOWN_WITHOUT_OVERLAY_VIDEOS = [
     "29_lose_blue_hdr_off.mp4",
     "31_lose_blue_without_rank_hdr_off.mp4",
@@ -115,7 +117,7 @@ _KNOWN_CANOPY_FALSE_POSITIVE_VIDEOS = {"29_lose_blue_hdr_off.mp4"}
         pytest.param(
             name,
             marks=pytest.mark.xfail(
-                reason="スタジアムのミント色天蓋の写り込みでis_league_change_screenが誤検知する(既知の背景誤検知パターン、個別issue未起票)",
+                reason="スタジアムのミント色天蓋の写り込みでis_league_change_screenが誤検知する(Issue #185で調査、Hue範囲重複のため単純な閾値再較正では未解決)",
                 strict=False,
             ),
         )
