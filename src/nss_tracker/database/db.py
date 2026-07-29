@@ -86,6 +86,20 @@ from nss_tracker.timeutil import now_jst
 
 logger = logging.getLogger("nss_tracker.database")
 
+# Issue #179: 試合と試合の間でランクは変動しない(勝敗が付いた試合でしか
+# 変わらない、ユーザー確認済み)ため、ある試合のrank_afterは次の試合のrank_before
+# と本来一致するはず。#178対応後もrank_afterには読み取りアニメーション由来の
+# 残差(実測: id19で0.209、id20で0.225の1試合分の通常変動幅に対し、残差は
+# 0.05〜0.08程度)が残りうるため、次の試合のrank_before(アニメーションに
+# 依存しない静的な値のため精度が高い)との差がこの残差の範囲内であれば、
+# 続いている試合とみなして直前の試合のrank_afterを補正する。差が1試合分の
+# 通常変動幅に近い/それを超える場合は、間に未記録の試合を挟んだ可能性が
+# あるとみなし補正しない。セッションや経過時間では区切らない(ユーザーとの
+# 相談で決定。セッション再起動を挟んでも試合自体は続いている場合があり、
+# 逆に長時間空いてもゲーム内の試合としては連続している場合があるため)。
+# 他の閾値と同様、実測+マージンで決めており、データが増えたら見直す
+RANK_CONTINUITY_CORRECTION_MAX_DELTA = 0.3
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -297,12 +311,47 @@ def fetch_current_session_id(conn: sqlite3.Connection) -> Optional[int]:
     return row["id"] if row is not None else None
 
 
+def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_rank_before: Optional[float]) -> None:
+    """直前の試合のrank_afterを、今回の試合のrank_beforeを使って必要なら補正する(Issue #179)。
+
+    モジュールdocstring・RANK_CONTINUITY_CORRECTION_MAX_DELTAのコメント参照。
+    league_changedの再計算は行わない(閾値が1帯の幅(1.0)より十分小さいため、
+    この補正で帯を跨ぐことは無い想定)。
+    """
+    if current_rank_before is None:
+        return
+    row = conn.execute("SELECT id, rank_after FROM matches ORDER BY id DESC LIMIT 1").fetchone()
+    if row is None or row["rank_after"] is None:
+        return
+    previous_rank_after = row["rank_after"]
+    diff = abs(current_rank_before - previous_rank_after)
+    if diff == 0 or diff > RANK_CONTINUITY_CORRECTION_MAX_DELTA:
+        return
+    now = now_jst().isoformat()
+    conn.execute(
+        "UPDATE matches SET rank_after = ?, updated_at = ? WHERE id = ?",
+        (current_rank_before, now, row["id"]),
+    )
+    conn.commit()
+    logger.info(
+        "matches.id=%d のrank_afterを%sから%sに補正しました(次の試合のrank_before基準、差分%.4f)",
+        row["id"],
+        previous_rank_after,
+        current_rank_before,
+        diff,
+    )
+
+
 def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: Optional[int] = None) -> int:
     """MatchResultを1件matchesテーブルに保存し、挿入したレコードのidを返す。
 
     session_idを省略した場合はNULLのまま保存する(セッション機構導入前と同じ挙動を
     前提にするテスト・スクリプト向け。main.py本体は必ず実際のsession_idを渡す)。
+
+    保存前に、直前の試合のrank_afterを今回のrank_beforeで補正できないか確認する
+    (Issue #179、_maybe_correct_previous_match_rank_after参照)。
     """
+    _maybe_correct_previous_match_rank_after(conn, match.rank_before)
     now = now_jst().isoformat()
     cursor = conn.execute(
         "INSERT INTO matches "
