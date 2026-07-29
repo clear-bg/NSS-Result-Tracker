@@ -68,46 +68,20 @@ Switch(有線コントローラー操作) → キャプチャーボード(HDMI I
 
 ## データ設計
 
-```sql
-CREATE TABLE matches (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    detected_at TEXT NOT NULL,      -- 結果バナー検知時刻(ISO8601, JST)
-    result TEXT NOT NULL,           -- 'win' / 'lose' / 'draw'
-    rank_before REAL,               -- 結果バナー表示時点のランク値(帯番号+ゲージ溜まり具合の小数値。表示時に丸める)
-    rank_after REAL,                -- ランク変動確定後の値(同上)
-    league_changed TEXT,            -- 'up' / 'down' / NULL
-    created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601, JST)
-    updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601, JST)
-);
+正確なスキーマ(列・制約・コメント)は `src/nss_tracker/database/db.py` の `_SCHEMA` を参照。以下は概要のみ。
 
-CREATE TABLE goals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    match_id INTEGER NOT NULL REFERENCES matches(id),
-    detected_at TEXT NOT NULL,      -- ゴール検知時刻(ISO8601, JST)
-    scorer_name TEXT NOT NULL,
-    assist_name TEXT,               -- アシスト無しの場合NULL
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
+- `sessions`: 配信セッション(`main.py`起動)単位のレコード
+- `matches`: 試合ごとの勝敗・ランク・リーグ昇格降格・チームカラー(VS画面で実測)
+- `goals`: 得点・アシスト。`match_id`で`matches`を参照する
+- `vs_slot_ranks`: マッチング完了直後のVS画面で読み取った両チーム最大4人分のランク(試合結果確定時にまとめて保存する履歴データ)
+- `vs_rank_snapshots`/`vs_rank_snapshot_slots`: 対戦相手ランク比較ウィジェット向けに、VS画面確定を検知した瞬間に即書き込む「直近スナップショット」(`vs_slot_ranks`とは別の、表示用の最新1件だけを見るためのテーブル)
 
-CREATE TABLE vs_slot_ranks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    match_id INTEGER NOT NULL REFERENCES matches(id),
-    side TEXT NOT NULL,             -- 'mine' / 'opponent'
-    slot_index INTEGER NOT NULL,    -- 0(カメラに最も近い位置)〜3(最も奥)
-    rank_tier INTEGER,              -- 読み取れなかった場合(文字階級バッジ・非表示含む)NULL
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-```
+補足:
 
-- `detected_at`は試合結果/ゴールを検知した実時刻(期間で絞り込む集計・グラフ表示等に使う)、`created_at`/`updated_at`はレコード自体の作成・更新時刻(監査用)。今後追加するテーブルにも`created_at`/`updated_at`は同様に持たせる
-- 全ての日時カラムはJST(日本標準時、`src/nss_tracker/timeutil.py`の`now_jst()`)で保存する。個人利用(日本国内)のみを想定しており、UTCで保存すると目視確認時に9時間ズレて分かりにくいため。ログ(`logs/tracker.log`)のタイムスタンプもJSTで統一している
+- 全ての日時カラムはJST(日本標準時、`src/nss_tracker/timeutil.py`の`now_jst()`)で保存する(個人利用・日本国内のみ想定のため)。ログのタイムスタンプもJSTで統一している
 - `result`には引き分け(`draw`)も含まれる(ランクを賭けない対戦限定、`src/nss_tracker/detection/banner.py`参照)
-- `goals`は`matches.id`を`match_id`として参照する。得点者・アシスト者のどちらもプレイヤー許可リスト(`.env`の`ALLOWED_PLAYERS`)に無い場合、そのゴールは保存されない。どちらか一方でも許可されていれば、もう一方が許可リスト外の名前でもそのまま保存する
-- `vs_slot_ranks`は、マッチング完了直後のVS画面で読み取った両チーム最大4人分の∞帯ランク数値を1行=1スロット(最大1試合あたり8行)で保存する。名前を持たない(数値のみの)テーブルのため、`goals`と異なり許可リストによるフィルタリングは行わない。VS画面を見逃した試合では行自体が保存されない
-- `vs_rank_snapshots`/`vs_rank_snapshot_slots`(Issue #145)は、対戦相手ランク比較ウィジェット向けに、試合結果確定を待たずVS画面確定を検知した瞬間に即書き込む「直近スナップショット」。`matches`/`vs_slot_ranks`(試合結果確定時にまとめて保存する履歴データ)とは別の、表示用の最新1件だけを見るためのテーブル
-- 実装は`src/nss_tracker/database/db.py`を参照
+- `goals`は得点者・アシスト者のどちらもプレイヤー許可リスト(`.env`の`ALLOWED_PLAYERS`)に無い場合、保存されない(詳細は`CLAUDE.md`の「ゴール・アシストの記録とプレイヤー許可リスト」参照)
+- `vs_slot_ranks`・`vs_rank_snapshot_slots`は名前を持たない(数値のみの)テーブルのため、`goals`と異なり許可リストによるフィルタリングは行わない
 
 ## セットアップ
 
@@ -182,7 +156,8 @@ OBSが未起動・obs-websocketが無効・パスワード不一致等で接続�
 │       ├── capture/            # ffmpeg+dshowによる継続フレーム取得
 │       ├── detection/          # banner(勝敗判定) / rank_ocr(ランクOCR) / motion(状態監視) /
 │       │                       # league_change(リーグ変更) / goal(ゴール・アシスト検知) /
-│       │                       # matchmaking(VS画面検知) / vs_rank(VS画面ランクOCR)
+│       │                       # match_end(試合終了バナー検知) / matchmaking(VS画面検知) /
+│       │                       # vs_rank(VS画面ランクOCR) / team_color(チームカラー検知)
 │       ├── detection_config.py # config/detection.tomlの読み込み(ROI・色閾値)
 │       ├── state/              # 試合の状態遷移管理
 │       ├── database/           # SQLite読み書き
@@ -195,4 +170,4 @@ OBSが未起動・obs-websocketが無効・パスワード不一致等で接続�
 
 現在: capture(ffmpeg+dshow) → detection → state → database の一連の配線を`main.py`で実装済み。動画ファイルを入力に差し替えた動作確認(`--video`オプション)・OBS Virtual Camera実機での疎通確認(`docs/capture_verification.md`参照)ともに完了。実際にSwitchをプレイしてのend-to-end動作確認(banner検知・ランクOCR・ゴール検知・リーグ昇格/降格判定)も完了しており、SQLiteへの記録まで一通り動作する。
 
-既知の精度課題: ゴール演出中に結果バナーが誤検知されるケース、VS画面のロゴ検知が実プレイでは不安定なケースが見つかっており、追跡・改善中。
+既知の精度課題: 実プレイ中の背景(スタジアムの建造物・天蓋等)が結果バナー判定領域に写り込み誤検知するケースが複数見つかっている(Issue #45/#67)。Issue #159のROI分割対応でほぼ解消したが、根本対応(閾値のみでの判別)は参照サンプル不足のため引き続き見送り中(詳細は`CLAUDE.md`「勝敗判定」参照)。VS画面検知の閾値不安定は#116で解消済み。
