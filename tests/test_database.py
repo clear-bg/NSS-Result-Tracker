@@ -103,6 +103,136 @@ def test_save_match_result_without_session_id_leaves_it_null():
     assert row["session_id"] is None
 
 
+def test_save_match_result_corrects_previous_rank_after_when_within_threshold(caplog):
+    """Issue #179: 直前の試合のrank_afterと今回のrank_beforeの差が閾値以内なら、
+    続いている試合とみなして直前の試合のrank_afterを補正することを確認する。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="lose",
+        rank_before=38.62,
+        rank_after=38.60,  # #178修正後もなお残る読み取り誤差を想定した値
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    first_id = save_match_result(conn, first)
+
+    second = MatchResult(
+        result="win",
+        rank_before=38.41,  # 真の値(精度の高いrank_before)
+        rank_after=38.63,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    with caplog.at_level("INFO", logger="nss_tracker.database"):
+        save_match_result(conn, second)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
+    assert row["rank_after"] == 38.41
+    assert f"matches.id={first_id}" in caplog.text
+    assert "補正しました" in caplog.text
+
+
+def test_save_match_result_does_not_correct_when_diff_exceeds_threshold():
+    """Issue #179: 差が閾値を超える場合は、間に未記録の試合を挟んだ可能性が
+    あるとみなし補正しないことを確認する。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="lose",
+        rank_before=38.62,
+        rank_after=38.60,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    first_id = save_match_result(conn, first)
+
+    second = MatchResult(
+        result="win",
+        rank_before=39.50,  # 1試合分の通常変動幅を大きく超える差
+        rank_after=39.70,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    save_match_result(conn, second)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
+    assert row["rank_after"] == 38.60
+
+
+def test_save_match_result_does_not_correct_when_previous_rank_after_is_none():
+    """直前の試合のrank_afterがNone(バッジ読み取り失敗等)の場合は補正しようがないため
+    何もしないことを確認する。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="lose",
+        rank_before=38.62,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    first_id = save_match_result(conn, first)
+
+    second = MatchResult(
+        result="win",
+        rank_before=38.62,
+        rank_after=38.80,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    save_match_result(conn, second)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
+    assert row["rank_after"] is None
+
+
+def test_save_match_result_does_not_correct_when_current_rank_before_is_none():
+    """今回の試合のrank_beforeがNoneの場合は補正の基準にできないため
+    何もしないことを確認する。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="lose",
+        rank_before=38.62,
+        rank_after=38.60,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    first_id = save_match_result(conn, first)
+
+    second = MatchResult(
+        result="win",
+        rank_before=None,
+        rank_after=38.80,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    save_match_result(conn, second)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
+    assert row["rank_after"] == 38.60
+
+
+def test_save_match_result_does_not_correct_first_match_in_db():
+    """DB内に1件も試合が無い状態で最初の試合を保存する場合、直前の試合が
+    存在しないため補正処理自体が何もしないことを確認する(エラーにならない)。
+    """
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=38.62,
+        rank_after=38.80,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["rank_after"] == 38.80
+
+
 def test_connect_migrates_legacy_matches_without_session_id(tmp_path):
     """Issue #93: session_id列が無い移行前のDBファイルに対しても、connect()を
     呼ぶだけで列が追加され、既存データを保持したまま新しいmatchesを
