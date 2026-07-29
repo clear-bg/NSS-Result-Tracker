@@ -4,8 +4,22 @@ from pathlib import Path
 import cv2
 import pytest
 
-from conftest import requires_fixtures
+from conftest import requires_fixtures, requires_video_fixtures
 from nss_tracker.detection.goal import is_goal_event, is_own_goal_event, read_assist_name, read_scorer_name
+
+TARGET_SIZE = (1920, 1080)
+
+
+def _read_frames(path):
+    cap = cv2.VideoCapture(str(path))
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            yield cv2.resize(frame, TARGET_SIZE)
+    finally:
+        cap.release()
 
 # 得点者・アシスト名の正解データはプレイヤー実名を含むため、fixtures/screenshots
 # 本体と同様に.gitignore対象のローカルファイルから読み込む(リポジトリには含めない)
@@ -37,6 +51,51 @@ def test_is_goal_event(fixtures_dir, filename, expected):
     frame = cv2.imread(str(fixtures_dir / filename))
     assert frame is not None, f"failed to load {filename}"
     assert is_goal_event(frame) == expected
+
+
+# 色閾値の広域監査(Issue #144/#172/#182の関連作業)で判明した既知の誤検知。
+# BANNER_ROI_LEFT/RIGHT(画面上部y=305-415)に青空・スタジアムのミント/ティール
+# 色天蓋(banner.py/league_change.pyで既知のIssue #67/#159/#185と同系統の
+# 天蓋)が写り込むと、is_goal_eventが本物の青ゴールバナーと誤って区別できず
+# Trueを返す。本物の青ゴールバナー(26/27番動画)とH/S/V/Hue標準偏差いずれの
+# 軸でも実測範囲が重複しており、単純な閾値再較正では安全に分離できないと
+# 判明した(Issue #186で詳細調査・記録)。
+#
+# 現状はstate/match_state.pyのgoal_confirm_frames(60fps実キャプチャなら
+# 60フレーム=1秒相当のデバウンス)により本番の誤検知(DB記録)には至って
+# いない(24番の最大連続一致は33フレーム、25番は最大19フレームで、いずれも
+# 必要な60フレームに届かない)。ただし安全マージンとは言えないため、xfailで
+# 状況を可視化しておく(Issue #182・#185と同じ方針)。
+_KNOWN_SKY_CANOPY_FALSE_POSITIVE_VIDEOS = {
+    "24_no_vs_screen_hdr_off_gameplay.mp4",
+    "25_inplay_false_positive_win_blue_teal_canopy.mp4",
+}
+
+
+@requires_video_fixtures
+@pytest.mark.parametrize(
+    "video_name",
+    [
+        pytest.param(
+            name,
+            marks=pytest.mark.xfail(
+                reason="画面上部の青空・スタジアム天蓋の写り込みでis_goal_eventが誤検知する"
+                "(Issue #186で調査、本物の青ゴールバナーとHSV範囲が重複するため単純な閾値"
+                "再較正では未解決。goal_confirm_framesのデバウンスにより本番の誤検知には"
+                "至っていない)",
+                strict=False,
+            ),
+        )
+        for name in sorted(_KNOWN_SKY_CANOPY_FALSE_POSITIVE_VIDEOS)
+    ],
+)
+def test_is_goal_event_false_throughout_non_goal_gameplay_video(videos_dir, video_name):
+    video_path = videos_dir / video_name
+    if not video_path.is_file():
+        pytest.skip(f"{video_name} が見つからない")
+
+    for idx, frame in enumerate(_read_frames(video_path)):
+        assert not is_goal_event(frame), f"{video_name}のフレーム{idx}で誤検知した"
 
 
 @pytest.mark.slow
