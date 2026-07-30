@@ -734,6 +734,96 @@ def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magni
     assert result.league_changed == "down"
 
 
+def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(monkeypatch):
+    """Issue #202: 降格ラベルを確認できているのに帯番号OCRが「変化なし」を
+    返し続けた場合でも、再スキャン経路に合流して最終的に帯番号を1つ下げて
+    記録することを確認する(_is_tier_change_plausibleがdelta=0を無条件に
+    許容していたため、この独立信号が一切参照されずに降格が記録から漏れる
+    バグの回帰テスト)。
+    """
+    read_calls = {"n": 0}
+
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        read_calls["n"] += 1
+        if read_calls["n"] == 1:
+            return (38, 38.2)  # before(小数部0.2)
+        if read_calls["n"] == 2:
+            return (38, 38.3)  # GRACE突入直後(帯番号は変化なしのまま)
+        return (38, 38.4)  # 再スキャンでも変化なしのまま
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.3)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "confirm_demotion_label_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=3,
+        rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
+        demotion_label_confirm_frames=2,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_after == pytest.approx(37.4)
+    assert result.league_changed == "down"
+
+
+def test_unchanged_tier_stays_plausible_without_demotion_confirmation(monkeypatch):
+    """Issue #202の修正が通常ケースを壊していないことを確認する。降格ラベルを
+    確認できていない(通常の)試合では、帯番号が変化なしと読めた場合は
+    再スキャンを挟まず素直に確定することを確認する。
+    """
+    read_calls = {"n": 0}
+
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        read_calls["n"] += 1
+        if read_calls["n"] == 1:
+            return (38, 38.2)
+        return (38, 38.3)
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.3)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=3,
+        rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_after == pytest.approx(38.3)
+    assert result.league_changed is None
+
+
 def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(monkeypatch):
     """Issue #176: 降格ラベルの候補判定はTrueだがOCR確認に失敗した場合、
     独立信号としては採用されず、従来のゲージ小数部の閾値判定にのみ従うことを
