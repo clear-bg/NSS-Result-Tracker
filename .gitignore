@@ -17,6 +17,10 @@ capture_stream_test_last_frame.png
 # プレイヤー実名を含む正解データ(得点者・アシスト名OCRの検証用など)
 fixtures/screenshots/*.json
 
+# fixture画面の説明に他プレイヤーの実名(得点者・アシスト名等)を含むため、
+# fixtures/本体と同じ理由でGit追跡対象外にする(Issue #195)
+docs/screen_states.md
+
 # SQLite(実データは含めない方針)
 *.db
 *.db-shm
