@@ -55,7 +55,30 @@ EXPECTED_EVENT = {
     "85_result_win_with_rank_enlarged_blue_hdr_off.png": False,
     "86_matching_with_rank_4v4_hdr_off.png": False,
     "87_matching_hdr_off_3.png": False,
+    "93_result_win_with_rank_red_hdr_off_2.png": False,
+    "94_result_win_with_rank_red_hdr_off_3.png": False,
+    "95_result_win_with_rank_red_hdr_off_4.png": False,
+    "96_result_win_without_rank_red_hdr_off.png": False,
+    "97_result_lose_with_rank_red_hdr_off.png": False,
+    "98_result_lose_with_rank_demotion_red_hdr_off.png": False,
+    "99_result_win_with_rank_blue_hdr_off_2.png": False,
+    "100_result_win_with_rank_blue_hdr_off_3.png": False,
+    "101_result_rank_up_hdr_off_2.png": False,
+    "102_goal_with_assist_blue_hdr_off.png": True,
+    "103_match_end_knockout_hdr_off.png": False,
+    "104_goal_with_assist_red_hdr_off_2.png": True,
 }
+
+# 105番(fixtures/screenshots/105_goal_with_assist_blue_hdr_off_2.png)は意図的に
+# EXPECTED_EVENTに含めていない。「ゴール!」の色付きフラッシュバナーが始まる
+# 直前で切り出されたクリップ(fixtures/videos/39_lose_red_goal_hdr_off.mp4)由来
+# のため、名前パネル(得点者・アシスト名)は写っているがBANNER_ROI_LEFT/RIGHTの
+# 色帯自体は写っていない。そのためis_goal_event()はFalseだが、ラベルOCRの
+# confirm_goal_text()は名前パネルだけを見て正しくTrueを返す(実際に確認済み)。
+# test_confirm_goal_text()はEXPECTED_EVENTを流用してis_goal_event()の結果と
+# 一致するはずという前提でテストしているため、この前提が崩れる105番を含めると
+# 誤って失敗する。105番はgoal_name_expectations.json経由のtest_name_ocr_accuracy
+# でのみ使う
 
 
 @requires_fixtures
@@ -108,15 +131,30 @@ def test_is_goal_event_true_for_sky_canopy_background(videos_dir, video_name, fr
 
 _KNOWN_SKY_CANOPY_FALSE_POSITIVE_VIDEOS = {name for name, _ in KNOWN_SKY_CANOPY_CANDIDATE_FRAMES}
 
+# 103番(fixtures/screenshots/103_match_end_knockout_hdr_off.png)はIssue #192の
+# 実装時に確認したところ、is_goal_event()の色ベース候補判定(フラッシュバナー、
+# BANNER_ROI_LEFT/RIGHT)はFalseの一方、confirm_goal_text()はTrueを返すと判明した。
+# 実際にスクリーンショットを見ると、「ノックアウト」による即座の試合終了バナーが
+# 表示された瞬間、直前のゴール演出の得点者名パネル(「ゴール」プルヤ・「アシスト」
+# ブルドッグ)がまだ画面下部に残っており、confirm_goal_text()はこの名前パネルを
+# 見て正しくTrueを返している(バグではなく、2つの演出が同一フレームに重なる
+# 実際のゲーム挙動)。105番と同じ理由でEXPECTED_EVENTの前提(is_goal_eventの
+# 結果と一致するはず)が崩れるため、このテストの対象から除外する
+_DIVERGENT_CONFIRM_TEXT_SCREENSHOTS = {"103_match_end_knockout_hdr_off.png"}
+
 
 @pytest.mark.slow
 @requires_fixtures
-@pytest.mark.parametrize("filename, expected", sorted(EXPECTED_EVENT.items()))
+@pytest.mark.parametrize(
+    "filename, expected",
+    sorted((k, v) for k, v in EXPECTED_EVENT.items() if k not in _DIVERGENT_CONFIRM_TEXT_SCREENSHOTS),
+)
 def test_confirm_goal_text(fixtures_dir, filename, expected):
     """confirm_goal_text()(Issue #186対応、得点者名パネルのラベルOCR確認)が、
     is_goal_event()の色ベース判定と同じ真偽になることを実fixtureで確認する
     (このスクリーンショット集合には天蓋・空の誤検知フレームは含まれないため、
-    is_goal_eventの結果=expectedと一致するのが正しい)。
+    is_goal_eventの結果=expectedと一致するのが正しい。ただし
+    _DIVERGENT_CONFIRM_TEXT_SCREENSHOTSに該当するものは例外、上記コメント参照)。
     """
     frame = cv2.imread(str(fixtures_dir / filename))
     assert frame is not None, f"failed to load {filename}"
@@ -154,6 +192,34 @@ def test_goal_ocr_confirmation_rejects_sky_canopy_false_positive(videos_dir, vid
         assert not confirm_goal_text(frame), (
             f"{video_name}のフレーム{idx}で誤検知した(is_goal_event候補+confirm_goal_text両方True)"
         )
+
+
+# Issue #192で追加。37・41はいずれも試合終盤に本物のゴールを含む動画
+# (docs/screen_states.md参照)。実測でis_goal_event()がTrueを返す区間は
+# 37番が138〜189、41番が233〜289(いずれも実測、余裕を持たせて中央付近の
+# 1フレームのみ検証する)
+KNOWN_REAL_GOAL_FRAMES = [
+    ("37_win_red_overtime_goal_hdr_off.mp4", 160),
+    ("41_win_blue_goal_knockout_hdr_off.mp4", 260),
+]
+
+
+@pytest.mark.slow
+@requires_video_fixtures
+@pytest.mark.parametrize("video_name, frame_index", KNOWN_REAL_GOAL_FRAMES)
+def test_confirm_goal_text_true_for_real_goal_in_video(videos_dir, video_name, frame_index):
+    """試合終了バナーを含む動画37・41(Issue #147/#192で追加収集)に写っている
+    本物のゴールが、is_goal_event→confirm_goal_textの2段構成で正しく検知できる
+    ことを確認する回帰テスト。
+    """
+    frame = _read_frame(videos_dir / video_name, frame_index)
+    if frame is None:
+        pytest.skip(f"{video_name} が見つからない")
+    assert is_goal_event(frame), (
+        f"{video_name} frame {frame_index}: 色ベース候補判定がFalseだった"
+        "(このテストの前提が崩れている可能性がある)"
+    )
+    assert confirm_goal_text(frame), f"{video_name} frame {frame_index}: 本物のゴールを検知できなかった"
 
 
 @pytest.mark.slow

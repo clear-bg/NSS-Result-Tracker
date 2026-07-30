@@ -26,6 +26,18 @@ EXPECTED = {
     "90_start_overtime_hdr_off_1.png": None,
     "91_start_overtime_hdr_off_2.png": None,
     "92_start_overtime_hdr_off_3.png": None,
+    "93_result_win_with_rank_red_hdr_off_2.png": "win",
+    "94_result_win_with_rank_red_hdr_off_3.png": "win",
+    "95_result_win_with_rank_red_hdr_off_4.png": "win",
+    "96_result_win_without_rank_red_hdr_off.png": "win",
+    "97_result_lose_with_rank_red_hdr_off.png": "lose",
+    "98_result_lose_with_rank_demotion_red_hdr_off.png": "lose",
+    "99_result_win_with_rank_blue_hdr_off_2.png": "win",
+    "100_result_win_with_rank_blue_hdr_off_3.png": "win",
+    "101_result_rank_up_hdr_off_2.png": None,
+    "102_goal_with_assist_blue_hdr_off.png": None,
+    "103_match_end_knockout_hdr_off.png": None,
+    "104_goal_with_assist_red_hdr_off_2.png": None,
 }
 
 
@@ -48,6 +60,14 @@ _KNOWN_HUE_SHIFT_GAPS = {
 # ものかは、参照素材が1件のみのため未確定)。ground truthは"draw"のまま、既知の
 # 欠落としてxfailにする(閾値の再較正は別issueで検討)
 _KNOWN_DRAW_SAT_GAP = {"89_result_draw_without_rank_hdr_off.png"}
+
+# 98番(降格ラベル付きの負けバナー)はIssue #147/#192で初めて収集した参照素材。
+# 実測ではH97.4〜99.6・S41.5〜49.6はLOSE_HUE_RANGE/LOSE_SAT_RANGEの範囲内だが、
+# V53.7〜59.2がLOSE_VAL_RANGE=(65, 130)の下限をわずかに下回り、classify_banner()が
+# Noneを返す(降格ラベル・演出の影響で通常の負けバナーより暗めに描画されている
+# 可能性があるが、参照素材が1件のみのため未確定)。ground truthは"lose"のまま、
+# 既知の欠落としてxfailにする(閾値の再較正はIssue #193で検討)
+_KNOWN_DEMOTION_VAL_GAP = {"98_result_lose_with_rank_demotion_red_hdr_off.png"}
 
 
 @requires_fixtures
@@ -72,6 +92,15 @@ _KNOWN_DRAW_SAT_GAP = {"89_result_draw_without_rank_hdr_off.png"}
             ),
         )
         if name in _KNOWN_DRAW_SAT_GAP
+        else pytest.param(
+            name,
+            expected,
+            marks=pytest.mark.xfail(
+                reason="LOSE_VAL_RANGEの下限を降格ラベル付きの負けバナー実測がわずかに下回っている(Issue #193で対応予定)",
+                strict=False,
+            ),
+        )
+        if name in _KNOWN_DEMOTION_VAL_GAP
         else (name, expected)
         for name, expected in sorted(EXPECTED.items())
     ],

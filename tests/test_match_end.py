@@ -4,7 +4,15 @@ import pytest
 from conftest import list_screenshot_fixtures, requires_fixtures, requires_video_fixtures
 from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end_screen
 
-MATCH_END_SCREENSHOTS = {"76_match_end_hdr_off.png", "80_match_end_hdr_off_2.png"}
+MATCH_END_SCREENSHOTS = {
+    "76_match_end_hdr_off.png",
+    "80_match_end_hdr_off_2.png",
+    # Issue #192: 通常の「試合終了」単独表示とは異なり、上段に「ノックアウト」の
+    # 文字が追加された複合バナー(fixtures/videos/41由来)。is_match_end_screen()・
+    # confirm_match_end_text()とも実際に検証し、いずれも正しくTrueを返すことを
+    # 確認済み(帯の位置・OCRとも問題なし)
+    "103_match_end_knockout_hdr_off.png",
+}
 
 
 @requires_fixtures
@@ -35,10 +43,11 @@ def test_is_match_end_screen_false_for_non_match_end_screenshots(fixtures_dir):
 
 @pytest.mark.slow
 @requires_fixtures
-def test_confirm_match_end_text_true_for_match_end_screenshot(fixtures_dir):
-    frame = cv2.imread(str(fixtures_dir / "80_match_end_hdr_off_2.png"))
+@pytest.mark.parametrize("filename", sorted(MATCH_END_SCREENSHOTS))
+def test_confirm_match_end_text_true_for_match_end_screenshot(fixtures_dir, filename):
+    frame = cv2.imread(str(fixtures_dir / filename))
     assert frame is not None
-    assert confirm_match_end_text(frame)
+    assert confirm_match_end_text(frame), f"{filename}で「試合終了」の文字を確認できなかった"
 
 
 def _read_frame(path, frame_index: int):
@@ -115,6 +124,13 @@ MATCH_END_VIDEOS = [
     "29_lose_blue_hdr_off.mp4",
     "30_win_blue_league_up_hdr_off.mp4",
     "31_lose_blue_without_rank_hdr_off.mp4",
+    # Issue #192で追加。37は延長戦バナー→ゴール→試合終了→勝ちを1本で含む
+    "37_win_red_overtime_goal_hdr_off.mp4",
+    "39_lose_red_goal_hdr_off.mp4",
+    "40_lose_red_demotion_hdr_off.mp4",
+    # 41は「ノックアウト」併記の複合バナー(103参照)を含む唯一の動画
+    "41_win_blue_goal_knockout_hdr_off.mp4",
+    "42_win_blue_league_up_hdr_off_2.mp4",
 ]
 
 
