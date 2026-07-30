@@ -2,7 +2,11 @@ import cv2
 import pytest
 
 from conftest import list_screenshot_fixtures, requires_fixtures, requires_video_fixtures
-from nss_tracker.detection.league_change import is_league_change_screen
+from nss_tracker.detection.league_change import (
+    confirm_demotion_label_text,
+    is_demotion_label_candidate,
+    is_league_change_screen,
+)
 
 TARGET_SIZE = (1920, 1080)
 
@@ -143,3 +147,82 @@ def test_is_league_change_screen_false_throughout_when_no_dedicated_overlay(vide
             f"{video_name}のフレーム{idx}で誤検知した"
             "(この動画は降格が小さいラベル表示のみで全画面演出が出ないケース)"
         )
+
+
+# Issue #176: 降格ラベル(「降格」の吹き出し)の検知。98・106はいずれも実際に
+# 降格した試合の結果画面(別セッション、106は動画43のframe 360から切り出し)。
+# 「非該当画面は全てFalseのはず」テストの対象からは除く
+DEMOTION_LABEL_SCREENSHOTS = {
+    "98_result_lose_with_rank_demotion_red_hdr_off.png",
+    "106_result_lose_with_rank_demotion_red_hdr_off_2.png",
+}
+
+
+@requires_fixtures
+@pytest.mark.parametrize("filename", sorted(DEMOTION_LABEL_SCREENSHOTS))
+def test_is_demotion_label_candidate_true_for_demotion_screenshot(fixtures_dir, filename):
+    path = fixtures_dir / filename
+    frame = cv2.imread(str(path))
+    assert frame is not None, f"failed to load {filename}"
+    assert is_demotion_label_candidate(frame), f"{filename}で降格ラベルを検知できなかった"
+
+
+@requires_fixtures
+@pytest.mark.parametrize("filename", sorted(DEMOTION_LABEL_SCREENSHOTS))
+def test_confirm_demotion_label_text_true_for_demotion_screenshot(fixtures_dir, filename):
+    """PaddleOCRで実際に「降格」の文字が読み取れることを確認する(重い処理、slow指定はしない。
+
+    goal.py/match_end.pyの確認関数と同じPaddleOCRエンジンを共有しているため、
+    tests/test_goal.py等が既にPaddleOCRの初期化コストを許容している前提と揃える)。
+    """
+    path = fixtures_dir / filename
+    frame = cv2.imread(str(path))
+    assert frame is not None, f"failed to load {filename}"
+    assert confirm_demotion_label_text(frame), f"{filename}でOCRにより「降格」を確認できなかった"
+
+
+@requires_fixtures
+def test_is_demotion_label_candidate_false_for_non_demotion_screenshots(fixtures_dir):
+    """降格ラベルを含まない静止画では常にFalseであることを確認する(誤検知防止)。
+
+    Issue #176の調査でfixtures/screenshots全43枚(DEMOTION_LABEL_SCREENSHOTS除く)を
+    実測し、リーグ昇格の全画面オーバーレイ等の「画面全体が明るい」特殊画面を
+    含め、いずれもDEMOTION_LABEL_WHITE_COUNT_RANGEの範囲外だったことを確認済み。
+    """
+    screenshots = list_screenshot_fixtures(fixtures_dir)
+    assert screenshots, "fixtures/screenshots/にpngが見つからない"
+    for path in screenshots:
+        if path.name in DEMOTION_LABEL_SCREENSHOTS:
+            continue
+        frame = cv2.imread(str(path))
+        assert frame is not None, f"failed to load {path.name}"
+        assert not is_demotion_label_candidate(frame), f"{path.name}で誤検知した"
+
+
+# 実際の映像を目視確認して決めたフレーム区間(60fps換算ではなく実ファイルの
+# フレーム番号。fps=30)。frame 350は降格前(帯39、ラベル無し)、frame 450は
+# 降格ラベル表示中(帯38)であることをcv2.imwrite経由で切り出した画像を目視して
+# 直接確認済み(is_demotion_label_candidate自体の出力をそのまま転記したものではない)。
+DEMOTION_LABEL_VIDEO = "40_lose_red_demotion_hdr_off.mp4"
+BEFORE_LABEL_RANGE = range(0, 300)
+LABEL_VISIBLE_RANGE = range(420, 495)
+
+
+@requires_video_fixtures
+def test_is_demotion_label_candidate_detects_label_in_video(videos_dir):
+    video_path = videos_dir / DEMOTION_LABEL_VIDEO
+    if not video_path.is_file():
+        pytest.skip(f"{DEMOTION_LABEL_VIDEO} が見つからない")
+
+    detected_label = False
+    false_positive_frame = None
+    for idx, frame in enumerate(_read_frames(video_path)):
+        result = is_demotion_label_candidate(frame)
+        if idx in LABEL_VISIBLE_RANGE:
+            detected_label = detected_label or result
+        elif idx in BEFORE_LABEL_RANGE:
+            if result and false_positive_frame is None:
+                false_positive_frame = idx
+
+    assert detected_label, "降格ラベル表示区間で一度もTrueにならなかった"
+    assert false_positive_frame is None, f"ラベル表示前(フレーム{false_positive_frame})で誤検知した"

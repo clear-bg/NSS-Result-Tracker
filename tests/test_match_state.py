@@ -158,6 +158,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
@@ -196,6 +197,7 @@ def test_goal_detection_logs_scorer_and_assist_at_info_level(monkeypatch, caplog
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: ("Bob", 0.90))
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
@@ -224,6 +226,7 @@ def test_goal_detection_logs_not_recorded_when_outside_allowlist(monkeypatch, ca
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
@@ -252,6 +255,7 @@ def test_goal_detection_logs_always_recorded_in_all_mode(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
@@ -280,6 +284,7 @@ def test_goal_detection_logs_partial_redact_in_redact_mode(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: ("ブルドッグ", 0.90))
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "ブルドッグ")
@@ -306,6 +311,7 @@ def test_goal_detection_logs_full_record_in_redact_mode_when_both_allowed(monkey
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: ("Bob", 0.90))
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
@@ -334,6 +340,7 @@ def test_goal_detection_logs_no_redact_when_assist_missing_in_redact_mode(monkey
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
@@ -374,6 +381,7 @@ def test_rank_read_failure_is_logged(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: None)
     monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -425,6 +433,7 @@ def test_track_rank_grace_tracks_slow_drift_every_frame(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", fake_read_rank_gauge_fill)
     monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: 40)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
@@ -472,6 +481,7 @@ def test_track_rank_periodic_recheck_catches_tier_change(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 1.0)
     monkeypatch.setattr(match_state_module, "read_rank", fake_read_rank)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
@@ -523,6 +533,7 @@ def test_tier_jump_recovers_via_rescan(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.5)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", fake_is_league_change_screen)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
@@ -565,6 +576,7 @@ def test_tier_jump_falls_back_to_gauge_continuity_when_rescan_still_implausible_
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.4)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
@@ -608,6 +620,7 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.9)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
@@ -650,6 +663,7 @@ def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.9)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
@@ -672,6 +686,98 @@ def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
     assert result is not None, "MatchResultが確定しなかった"
     assert result.league_changed is None
     assert result.rank_after == pytest.approx(38.9)
+
+
+def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magnitude_is_small(monkeypatch):
+    """Issue #176: 降格ラベルを独立信号として確認できた場合、ゲージ小数部の
+    増加幅がRANK_TIER_WRAP_MIN_MAGNITUDE未満(従来の間接推測だけでは降格と
+    判断できない)であっても、帯番号を1つ下げて記録することを確認する。
+    """
+    read_calls = {"n": 0}
+
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        read_calls["n"] += 1
+        if read_calls["n"] == 1:
+            return (38, 38.2)  # before(小数部0.2)
+        if read_calls["n"] == 2:
+            return (99, 99.9)  # GRACE突入直後の誤読み
+        return (5, 5.3)  # 再スキャンでも誤読みのまま(小数部0.3、before比+0.1のみ)
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.3)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "confirm_demotion_label_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=3,
+        rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
+        demotion_label_confirm_frames=2,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_after == pytest.approx(37.3)
+    assert result.league_changed == "down"
+
+
+def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(monkeypatch):
+    """Issue #176: 降格ラベルの候補判定はTrueだがOCR確認に失敗した場合、
+    独立信号としては採用されず、従来のゲージ小数部の閾値判定にのみ従うことを
+    確認する(小数部の増加幅が閾値未満のため、帯番号は据え置かれるはず)。
+    """
+    read_calls = {"n": 0}
+
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        read_calls["n"] += 1
+        if read_calls["n"] == 1:
+            return (38, 38.2)
+        if read_calls["n"] == 2:
+            return (99, 99.9)
+        return (5, 5.3)  # before比+0.1のみ(閾値未満)
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.3)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "confirm_demotion_label_text", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=3,
+        rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
+        demotion_label_confirm_frames=2,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.league_changed is None
+    assert result.rank_after == pytest.approx(38.3)
 
 
 def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
@@ -704,6 +810,7 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: None)
     monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
@@ -782,6 +889,7 @@ def test_match_end_confirmed_enables_fast_banner_confirm(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=100,
@@ -816,6 +924,7 @@ def test_match_end_candidate_rejected_by_ocr_keeps_slow_banner_confirm(monkeypat
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=5,
@@ -861,6 +970,7 @@ def test_lifecycle_logs_reuse_session_match_number(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.5))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.5)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
         vs_screen_confirm_frames=2,
@@ -917,6 +1027,7 @@ def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(
@@ -966,6 +1077,7 @@ def test_team_colors_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(
@@ -1004,6 +1116,7 @@ def test_vs_screen_not_detected_results_in_none_team_colors(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(
@@ -1109,6 +1222,7 @@ def test_vs_screen_not_detected_results_in_empty_vs_ranks(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
     machine = MatchStateMachine(
@@ -1156,6 +1270,7 @@ def test_in_match_true_after_vs_screen_confirmed_and_false_after_finalize(monkey
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
         vs_screen_confirm_frames=2,
@@ -1207,6 +1322,7 @@ def test_in_match_stays_true_after_finalize_without_match_end_confirmation(monke
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
         vs_screen_confirm_frames=2,
