@@ -100,9 +100,11 @@ def test_is_league_change_screen_detects_promotion_overlay(videos_dir):
 # (Issue #67の2件目の参照サンプル`25_inplay_false_positive_win_blue_teal_canopy.mp4`
 # と同じ現象)で、これまでbanner.py側でのみ報告されていたが、is_league_change_screen
 # (画面全体の平均HSVで判定)も同じ天蓋色に反応しうることが今回新たに判明した。
-# Issue #185で調査したが、本物の昇格演出(79番・30番・21番のH101.21〜104.13)と
+# Issue #150で調査したが、本物の昇格演出(79番・30番・21番のH101.21〜104.13)と
 # 天蓋誤検知(H最大103.51)のHue範囲が重なっており、単純な閾値再較正では
 # 分離できないと判明したため、Issue #172・#182と同じ結論でxfailのまま残す
+# (この調査は当初Issue #150に気づかず#185として重複起票していたが、#150に
+# 統合しduplicateとしてクローズ済み)
 LEAGUE_DOWN_WITHOUT_OVERLAY_VIDEOS = [
     "29_lose_blue_hdr_off.mp4",
     "31_lose_blue_without_rank_hdr_off.mp4",
@@ -117,7 +119,7 @@ _KNOWN_CANOPY_FALSE_POSITIVE_VIDEOS = {"29_lose_blue_hdr_off.mp4"}
         pytest.param(
             name,
             marks=pytest.mark.xfail(
-                reason="スタジアムのミント色天蓋の写り込みでis_league_change_screenが誤検知する(Issue #185で調査、Hue範囲重複のため単純な閾値再較正では未解決)",
+                reason="スタジアムのミント色天蓋の写り込みでis_league_change_screenが誤検知する(Issue #150で調査、Hue範囲重複のため単純な閾値再較正では未解決)",
                 strict=False,
             ),
         )

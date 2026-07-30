@@ -55,7 +55,7 @@ def test_is_goal_event(fixtures_dir, filename, expected):
 
 # 色閾値の広域監査(Issue #144/#172/#182の関連作業)で判明した既知の誤検知。
 # BANNER_ROI_LEFT/RIGHT(画面上部y=305-415)に青空・スタジアムのミント/ティール
-# 色天蓋(banner.py/league_change.pyで既知のIssue #67/#159/#185と同系統の
+# 色天蓋(banner.py/league_change.pyで既知のIssue #67/#159/#150と同系統の
 # 天蓋)が写り込むと、is_goal_eventが本物の青ゴールバナーと誤って区別できず
 # Trueを返す。本物の青ゴールバナー(26/27番動画)とH/S/V/Hue標準偏差いずれの
 # 軸でも実測範囲が重複しており、単純な閾値再較正では安全に分離できないと
@@ -65,7 +65,7 @@ def test_is_goal_event(fixtures_dir, filename, expected):
 # 60フレーム=1秒相当のデバウンス)により本番の誤検知(DB記録)には至って
 # いない(24番の最大連続一致は33フレーム、25番は最大19フレームで、いずれも
 # 必要な60フレームに届かない)。ただし安全マージンとは言えないため、xfailで
-# 状況を可視化しておく(Issue #182・#185と同じ方針)。
+# 状況を可視化しておく(Issue #182・#150と同じ方針)。
 _KNOWN_SKY_CANOPY_FALSE_POSITIVE_VIDEOS = {
     "24_no_vs_screen_hdr_off_gameplay.mp4",
     "25_inplay_false_positive_win_blue_teal_canopy.mp4",
