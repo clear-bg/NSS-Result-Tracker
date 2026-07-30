@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nss_tracker.database import db
+from nss_tracker.database.db import RANK_CONTINUITY_CORRECTION_MAX_DELTA
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchResult
 from nss_tracker.timeutil import now_jst
@@ -24,6 +25,7 @@ from nss_tracker.web.server import (
     _convert_rank_tier_to_unified_scale,
     _fetch_goal_assist_totals,
     _format_vs_rank_value,
+    _is_continuous_transition,
     _percentile,
     _rank_delta_axis_max,
     _rank_graph_x_axis_max,
@@ -283,9 +285,9 @@ def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path, monkey
     assert response.status_code == 200
     assert response.json() == {
         "matches": [
-            {"rank_after": 1.0, "league_changed": None},
-            {"rank_after": 2.0, "league_changed": "up"},
-            {"rank_after": 3.0, "league_changed": None},
+            {"rank_after": 1.0, "rank_before": 0.0, "league_changed": None},
+            {"rank_after": 2.0, "rank_before": 1.0, "league_changed": "up"},
+            {"rank_after": 3.0, "rank_before": 2.0, "league_changed": None},
         ]
     }
 
@@ -371,6 +373,22 @@ def test_rank_history_respects_limit_env_value(tmp_path: Path, monkeypatch):
     assert [m["rank_after"] for m in matches] == [3.0, 4.0, 5.0]
 
 
+def _continuous_history(values: list[float], league_changed: list = None) -> list[dict]:
+    """全区間が連続しているとみなされる(Issue #180のrank-graph-line-gapが
+    発生しない)history。rank_beforeを直前のrank_afterと同じ値にすることで
+    連続性判定(_is_continuous_transition)を必ず満たすようにする。
+    """
+    league_changed_values = league_changed if league_changed is not None else [None] * len(values)
+    return [
+        {
+            "rank_after": value,
+            "rank_before": values[i - 1] if i > 0 else value,
+            "league_changed": league_changed_values[i],
+        }
+        for i, value in enumerate(values)
+    ]
+
+
 def test_render_rank_graph_svg_with_no_data_shows_empty_message():
     svg = _render_rank_graph_svg([])
 
@@ -379,7 +397,7 @@ def test_render_rank_graph_svg_with_no_data_shows_empty_message():
 
 
 def test_render_rank_graph_svg_always_shows_title():
-    history = [{"rank_after": value, "league_changed": None} for value in [10, 20, 15]]
+    history = _continuous_history([10, 20, 15])
 
     assert f'class="rank-graph-title">{_RANK_GRAPH_TITLE}<' in _render_rank_graph_svg(history)
     assert f'class="rank-graph-title">{_RANK_GRAPH_TITLE}<' in _render_rank_graph_svg([])
@@ -387,7 +405,7 @@ def test_render_rank_graph_svg_always_shows_title():
 
 def test_render_rank_graph_svg_always_shows_panel_behind_other_elements():
     """Issue #113: 配信画面での視認性対策の半透明パネルは、他の要素より先(=一番背面)に描画する。"""
-    history = [{"rank_after": value, "league_changed": None} for value in [10, 20, 15]]
+    history = _continuous_history([10, 20, 15])
 
     svg = _render_rank_graph_svg(history)
 
@@ -397,13 +415,13 @@ def test_render_rank_graph_svg_always_shows_panel_behind_other_elements():
 
 
 def test_render_rank_graph_svg_with_single_point_does_not_divide_by_zero():
-    svg = _render_rank_graph_svg([{"rank_after": 10, "league_changed": None}])
+    svg = _render_rank_graph_svg(_continuous_history([10]))
 
     assert svg.count("<circle") == 1
 
 
 def test_render_rank_graph_svg_with_flat_values_does_not_divide_by_zero():
-    history = [{"rank_after": 5, "league_changed": None} for _ in range(3)]
+    history = _continuous_history([5, 5, 5])
 
     svg = _render_rank_graph_svg(history)
 
@@ -412,11 +430,7 @@ def test_render_rank_graph_svg_with_flat_values_does_not_divide_by_zero():
 
 def test_render_rank_graph_svg_points_are_always_white_regardless_of_league_changed():
     """ユーザーとの相談で、昇格/降格による点の色分けはしない(全て白)方針にした。"""
-    history = [
-        {"rank_after": 1, "league_changed": None},
-        {"rank_after": 2, "league_changed": "up"},
-        {"rank_after": 1, "league_changed": "down"},
-    ]
+    history = _continuous_history([1, 2, 1], league_changed=[None, "up", "down"])
 
     svg = _render_rank_graph_svg(history)
 
@@ -426,7 +440,7 @@ def test_render_rank_graph_svg_points_are_always_white_regardless_of_league_chan
 
 
 def test_render_rank_graph_svg_draws_frame_and_axis_ticks():
-    history = [{"rank_after": value, "league_changed": None} for value in [10, 20, 15, 25, 12]]
+    history = _continuous_history([10, 20, 15, 25, 12])
 
     svg = _render_rank_graph_svg(history)
 
@@ -446,7 +460,7 @@ def test_render_rank_graph_svg_outlier_value_does_not_flood_y_axis_ticks():
     目盛りラベルの本数が一定数以下に収まることを確認する(修正前は412本の目盛りが
     密集して描画が崩れていた)。
     """
-    history = [{"rank_after": value, "league_changed": None} for value in [40, 41, 40, 2, 41, 40, 411, 40]]
+    history = _continuous_history([40, 41, 40, 2, 41, 40, 411, 40])
 
     svg = _render_rank_graph_svg(history)
 
@@ -455,7 +469,7 @@ def test_render_rank_graph_svg_outlier_value_does_not_flood_y_axis_ticks():
 
 def test_render_rank_graph_svg_draws_vertical_gridlines_at_x_ticks():
     """横軸の目盛り位置(1, 5, 10試合目)にも縦軸と同様の薄いグリッド線を引く。"""
-    history = [{"rank_after": value, "league_changed": None} for value in [10, 20, 15, 25, 12]]
+    history = _continuous_history([10, 20, 15, 25, 12])
 
     svg = _render_rank_graph_svg(history)
 
@@ -467,7 +481,7 @@ def test_render_rank_graph_svg_adds_half_step_minor_gridlines_when_step_is_one()
     """Issue #146: 目盛り間隔が1(通常運用)のとき、整数目盛りの間に0.5刻みの
     補助グリッド線を追加する。ラベル・目盛り線自体は増やさない。
     """
-    history = [{"rank_after": value, "league_changed": None} for value in [10, 12]]
+    history = _continuous_history([10, 12])
 
     svg = _render_rank_graph_svg(history)
 
@@ -482,7 +496,7 @@ def test_render_rank_graph_svg_omits_minor_gridlines_when_step_widens():
     """Issue #146: 外れ値で目盛り間隔が1以外に広がった場合、0.5刻みの補助線は追加しない
     (ユーザーとの相談で決定、issue #146のコメント参照)。
     """
-    history = [{"rank_after": value, "league_changed": None} for value in [40, 41, 40, 2, 41, 40, 411, 40]]
+    history = _continuous_history([40, 41, 40, 2, 41, 40, 411, 40])
 
     svg = _render_rank_graph_svg(history)
 
@@ -495,7 +509,7 @@ def test_render_rank_graph_svg_last_point_stops_short_of_right_edge():
     """一番右の点は、実際の試合数を上回るまで拡張した横軸(x_axis_max)を使うことで
     枠の右端に接しないようにする(縦軸のbounds拡張と同じ考え方、ユーザーとの相談で決定)。
     """
-    history = [{"rank_after": value, "league_changed": None} for value in [10, 20, 30]]
+    history = _continuous_history([10, 20, 30])
 
     svg = _render_rank_graph_svg(history)
 
@@ -511,7 +525,7 @@ def test_render_rank_graph_svg_last_point_stops_short_of_right_edge():
 
 def test_render_rank_graph_svg_first_point_stops_short_of_left_edge():
     """一番左の点が枠の左端に接しないよう、左側にRANK_GRAPH_LEFT_PADDING分の余白を空ける。"""
-    history = [{"rank_after": value, "league_changed": None} for value in [10, 20, 30]]
+    history = _continuous_history([10, 20, 30])
 
     svg = _render_rank_graph_svg(history)
 
@@ -543,13 +557,73 @@ def test_rank_graph_x_tick_values_small_axis_max():
 
 def test_render_rank_graph_svg_flat_values_widens_y_axis_around_the_value():
     """全試合が同じランク値でも、軸の下限・上限を1つ広げて点が端に接しないようにする。"""
-    history = [{"rank_after": 42, "league_changed": None} for _ in range(3)]
+    history = _continuous_history([42, 42, 42])
 
     svg = _render_rank_graph_svg(history)
 
     assert ">41<" in svg
     assert ">42<" in svg
     assert ">43<" in svg
+
+
+def test_is_continuous_transition_within_threshold_is_continuous():
+    assert _is_continuous_transition(38.5, 38.5 + RANK_CONTINUITY_CORRECTION_MAX_DELTA) is True
+    assert _is_continuous_transition(38.5, 38.5) is True
+
+
+def test_is_continuous_transition_beyond_threshold_is_not_continuous():
+    assert _is_continuous_transition(38.5, 38.5 + RANK_CONTINUITY_CORRECTION_MAX_DELTA + 0.01) is False
+
+
+def test_is_continuous_transition_unreadable_rank_before_is_not_continuous():
+    """rank_beforeが読み取れていない(None)場合、連続しているかどうか確認しようが
+    ないため非連続として扱う(データを捏造せず正直に示す方針、Issue #180)。
+    """
+    assert _is_continuous_transition(38.5, None) is False
+
+
+def test_render_rank_graph_svg_draws_single_solid_line_when_all_continuous():
+    """全区間が連続しているとみなせる場合、rank-graph-line-gap(点線)は描画されない。"""
+    history = _continuous_history([38.1, 38.4, 38.7, 39.0])
+
+    svg = _render_rank_graph_svg(history)
+
+    assert svg.count("<polyline") == 1
+    assert "rank-graph-line-gap" not in svg
+
+
+def test_render_rank_graph_svg_draws_dashed_gap_for_discontinuous_transition():
+    """Issue #180: 前の試合のrank_afterと次の試合のrank_beforeの差が閾値を超える
+    箇所は、縦線ではなくその区間だけを点線(rank-graph-line-gap)でつなぐ。
+    """
+    history = [
+        {"rank_after": 38.1, "rank_before": 38.1, "league_changed": None},
+        {"rank_after": 39.0, "rank_before": 38.1, "league_changed": None},
+        # 39.0との差が閾値を超えるため、ここだけ非連続
+        {"rank_after": 37.6, "rank_before": 37.0, "league_changed": None},
+        {"rank_after": 37.9, "rank_before": 37.6, "league_changed": None},
+    ]
+
+    svg = _render_rank_graph_svg(history)
+
+    assert svg.count('class="rank-graph-line-gap"') == 1
+    # 連続している2区間(1-2試合目、3-4試合目)がそれぞれ独立したpolylineとして描画される
+    assert svg.count("<polyline") == 2
+
+
+def test_render_rank_graph_svg_treats_unreadable_rank_before_as_discontinuous():
+    """rank_beforeがNULL(ランク読み取り失敗)の試合との間も、連続性を確認しようが
+    ないため非連続(点線)として扱う。
+    """
+    history = [
+        {"rank_after": 38.1, "rank_before": 38.1, "league_changed": None},
+        {"rank_after": 38.4, "rank_before": None, "league_changed": None},
+    ]
+
+    svg = _render_rank_graph_svg(history)
+
+    assert "rank-graph-line-gap" in svg
+    assert svg.count("<polyline") == 2
 
 
 def test_overlay_rank_graph_page_links_transparent_background_stylesheet(tmp_path: Path, monkeypatch):
