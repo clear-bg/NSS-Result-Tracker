@@ -212,7 +212,7 @@ src/
 
 ## 参照ドキュメント
 
-- [`docs/screen_states.md`](docs/screen_states.md): 画面状態の一覧(Obsidianのメモから移行)。チェック済み項目 = 参照画像が `fixtures/screenshots/` に用意済み(状態遷移確認用の動画は `fixtures/videos/` に配置)
+- `docs/screen_states.md`: 画面状態の一覧(Obsidianのメモから移行)。チェック済み項目 = 参照画像が `fixtures/screenshots/` に用意済み(状態遷移確認用の動画は `fixtures/videos/` に配置)。**Issue #195対応(2026-07-30)でGit追跡対象から外した**(得点者・アシスト名など他プレイヤーの実名を説明文に含むため、`fixtures/`本体と同じ理由。ローカルにファイル自体は残っており、内容の更新・参照は引き続き行ってよい)
 - [`docs/git_workflow.md`](docs/git_workflow.md): コミット・ブランチ運用・開発フロー
 - [`docs/capture_verification.md`](docs/capture_verification.md): OBS Virtual Camera実機での動作確認手順
 - [`README.md`](README.md): プロジェクト概要とアーキテクチャ図
@@ -222,4 +222,4 @@ src/
 - 本ファイルに書かれた「確定している設計方針」は覆さないこと。変更が必要な場合は提案として提示し、実装前に確認を取る
 - 「未確定・要相談」の項目は、着手前にユーザーに確認してから進める
 - `fixtures/screenshots/` の画像・`fixtures/videos/` の動画は実機キャプチャの参照データなので、テストや検知ロジックの調整に積極的に使ってよい
-- ただし **`fixtures/` 配下(`screenshots/`・`videos/`とも)は `.gitignore` 対象(ローカルのみ、リモートには含めない)**。他プレイヤーの映り込みやプレイヤー名が理由なので、この画像・動画群を誤ってコミットしたりリモートに送信する処理を書かないこと。画像のファイル名の一覧・命名規則は `docs/screen_states.md` を参照すること
+- ただし **`fixtures/` 配下(`screenshots/`・`videos/`とも)、および `docs/screen_states.md` は `.gitignore` 対象(ローカルのみ、リモートには含めない)**。他プレイヤーの映り込みやプレイヤー名が理由なので、この画像・動画群・説明文を誤ってコミットしたりリモートに送信する処理を書かないこと。画像のファイル名の一覧・命名規則は `docs/screen_states.md` を参照すること(ローカルに存在する前提。無い場合はこれまでの経緯を辿れないため、必要に応じてユーザーに確認する)
