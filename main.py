@@ -164,6 +164,7 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
         goal_confirm_frames=confirm_frames,
         vs_screen_confirm_frames=confirm_frames,
         match_end_confirm_frames=match_end_confirm_frames,
+        demotion_label_confirm_frames=confirm_frames,
         league_change_grace_frames=round(fps * 5.0),
         rank_recheck_interval_frames=round(fps * 0.25),
         rank_tier_rescan_wait_frames=round(fps / 6),
