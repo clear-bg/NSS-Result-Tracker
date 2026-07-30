@@ -29,6 +29,9 @@ from common import (
     write_mask,
 )
 
+from nss_tracker.detection.matchmaking import LETTERBOX_BOTTOM_ROI as _LETTERBOX_BOTTOM_ROI
+from nss_tracker.detection.matchmaking import LETTERBOX_MIDDLE_ROI as _LETTERBOX_MIDDLE_ROI
+from nss_tracker.detection.matchmaking import LETTERBOX_TOP_ROI as _LETTERBOX_TOP_ROI
 from nss_tracker.detection.matchmaking import VS_ROI as _VS_ROI
 from nss_tracker.detection.team_color import MINE_ROI as _TEAM_COLOR_MINE_ROI
 from nss_tracker.detection.team_color import OPPONENT_ROI as _TEAM_COLOR_OPPONENT_ROI
@@ -46,6 +49,9 @@ OPPONENT_NUM_ROIS = _OPPONENT_NUM_ROIS
 VS_ROI = _VS_ROI
 TEAM_COLOR_MINE_ROI = _TEAM_COLOR_MINE_ROI
 TEAM_COLOR_OPPONENT_ROI = _TEAM_COLOR_OPPONENT_ROI
+LETTERBOX_TOP_ROI = _LETTERBOX_TOP_ROI
+LETTERBOX_BOTTOM_ROI = _LETTERBOX_BOTTOM_ROI
+LETTERBOX_MIDDLE_ROI = _LETTERBOX_MIDDLE_ROI
 
 # annotated画像を生成する対象fixture(fixtures/screenshots/配下)
 SOURCE_FILENAMES = [
@@ -70,6 +76,24 @@ def main() -> None:
             "color",
             (0, 0, 255),
             [TEAM_COLOR_OPPONENT_ROI],
+        ),
+        Category(
+            "letterbox_top (LETTERBOX_TOP_ROI, matchmaking.py)",
+            "brightness",
+            (0, 255, 255),
+            [LETTERBOX_TOP_ROI],
+        ),
+        Category(
+            "letterbox_bottom (LETTERBOX_BOTTOM_ROI, matchmaking.py)",
+            "brightness",
+            (0, 255, 255),
+            [LETTERBOX_BOTTOM_ROI],
+        ),
+        Category(
+            "letterbox_middle (LETTERBOX_MIDDLE_ROI, matchmaking.py)",
+            "brightness",
+            (128, 128, 128),
+            [LETTERBOX_MIDDLE_ROI],
         ),
     ]
 
@@ -100,13 +124,23 @@ VS画面(マッチング完了直後)という1つの画面状態に対して、
   高さはmine_icon側の対応スロットと同じで、x座標(OPPONENT_X1)のみ個別に実測した値
 - **opponent_num (OPPONENT_NUM_ROIS)** — 相手チーム版のmine_num
 
-## matchmaking.py(VS画面自体の検知、色判定)
+## matchmaking.py(VS画面自体の検知、色判定+レターボックス判定)
 
 - **vs_logo (VS_ROI)** — 画面中央に一瞬表示される「VS」ロゴの文字部分だけを
-  狙った領域。`is_vs_screen()`が使う。**fixture画像(cv2.imread経由)では
-  真陽性の検証ができない**(実際の検知ループはffmpeg経由でフレームを読んでおり
-  色変換経路が異なるため、`detection/matchmaking.py`のモジュールdocstring
-  参照)。この画像で示しているのはあくまでROIの位置のみ
+  狙った領域。`is_vs_screen()`が使う大まかな除外フィルタ(Issue #144/#189で
+  主判定からは格下げ、詳細は`detection/matchmaking.py`のモジュールdocstring参照)
+- **letterbox_top / letterbox_bottom (LETTERBOX_TOP_ROI / LETTERBOX_BOTTOM_ROI)** —
+  VS画面特有の上下黒帯を検知する領域(全幅)。`is_letterboxed()`(`is_vs_screen()`の
+  主判定)が使う
+- **letterbox_middle (LETTERBOX_MIDDLE_ROI)** — 試合間の暗転(画面全体が暗い)と
+  区別するための中央参照領域。ここが暗いままなら暗転とみなしFalseになる
+
+Issue #144/#189対応(2026-07-31)で、色判定単体からレターボックス判定+色判定の
+組み合わせに変更した経緯・実測データは`detection/matchmaking.py`のモジュール
+docstring参照。この変更に伴い、輝度ベースの主判定はcv2.imreadでも
+ffmpegパイプラインでも大きくブレないため、fixture画像でも真陽性の検証が
+できるようになった(`72_matching_hdr_off_1.png`等、"matching"を含む5枚で確認済み。
+`tests/test_matchmaking.py`参照)。
 
 ## team_color.py(チームカラーのサンプリング、色判定)
 

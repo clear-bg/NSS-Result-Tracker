@@ -18,13 +18,23 @@ VS画面(マッチング完了直後)という1つの画面状態に対して、
   高さはmine_icon側の対応スロットと同じで、x座標(OPPONENT_X1)のみ個別に実測した値
 - **opponent_num (OPPONENT_NUM_ROIS)** — 相手チーム版のmine_num
 
-## matchmaking.py(VS画面自体の検知、色判定)
+## matchmaking.py(VS画面自体の検知、色判定+レターボックス判定)
 
 - **vs_logo (VS_ROI)** — 画面中央に一瞬表示される「VS」ロゴの文字部分だけを
-  狙った領域。`is_vs_screen()`が使う。**fixture画像(cv2.imread経由)では
-  真陽性の検証ができない**(実際の検知ループはffmpeg経由でフレームを読んでおり
-  色変換経路が異なるため、`detection/matchmaking.py`のモジュールdocstring
-  参照)。この画像で示しているのはあくまでROIの位置のみ
+  狙った領域。`is_vs_screen()`が使う大まかな除外フィルタ(Issue #144/#189で
+  主判定からは格下げ、詳細は`detection/matchmaking.py`のモジュールdocstring参照)
+- **letterbox_top / letterbox_bottom (LETTERBOX_TOP_ROI / LETTERBOX_BOTTOM_ROI)** —
+  VS画面特有の上下黒帯を検知する領域(全幅)。`is_letterboxed()`(`is_vs_screen()`の
+  主判定)が使う
+- **letterbox_middle (LETTERBOX_MIDDLE_ROI)** — 試合間の暗転(画面全体が暗い)と
+  区別するための中央参照領域。ここが暗いままなら暗転とみなしFalseになる
+
+Issue #144/#189対応(2026-07-31)で、色判定単体からレターボックス判定+色判定の
+組み合わせに変更した経緯・実測データは`detection/matchmaking.py`のモジュール
+docstring参照。この変更に伴い、輝度ベースの主判定はcv2.imreadでも
+ffmpegパイプラインでも大きくブレないため、fixture画像でも真陽性の検証が
+できるようになった(`72_matching_hdr_off_1.png`等、"matching"を含む5枚で確認済み。
+`tests/test_matchmaking.py`参照)。
 
 ## team_color.py(チームカラーのサンプリング、色判定)
 
@@ -54,6 +64,9 @@ VS画面(マッチング完了直後)という1つの画面状態に対して、
 | vs_logo (VS_ROI, matchmaking.py) | #00FFFF | color | (880, 495)–(1050, 600) | 170×105 |
 | team_color_mine (TEAM_COLOR_MINE_ROI, team_color.py) | #0000FF | color | (441, 868)–(461, 886) | 20×18 |
 | team_color_opponent (TEAM_COLOR_OPPONENT_ROI, team_color.py) | #FF0000 | color | (1804, 868)–(1824, 886) | 20×18 |
+| letterbox_top (LETTERBOX_TOP_ROI, matchmaking.py) | #FFFF00 | brightness | (0, 2)–(1920, 10) | 1920×8 |
+| letterbox_bottom (LETTERBOX_BOTTOM_ROI, matchmaking.py) | #FFFF00 | brightness | (0, 1020)–(1920, 1070) | 1920×50 |
+| letterbox_middle (LETTERBOX_MIDDLE_ROI, matchmaking.py) | #808080 | brightness | (0, 200)–(1920, 800) | 1920×600 |
 
 `82_matching_with_rank_4v3_hdr_off_annotated.png`(Issue #147で収集)は
 4vs3の変則試合で、mine[1]・opponent[0]がS帯バッジ、opponent[3]は相手が
