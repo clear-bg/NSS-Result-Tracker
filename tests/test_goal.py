@@ -27,6 +27,13 @@ def _read_frames(path):
     finally:
         cap.release()
 
+
+def _read_frame(path, frame_index: int):
+    for idx, frame in enumerate(_read_frames(path)):
+        if idx == frame_index:
+            return frame
+    return None
+
 # 得点者・アシスト名の正解データはプレイヤー実名を含むため、fixtures/screenshots
 # 本体と同様に.gitignore対象のローカルファイルから読み込む(リポジトリには含めない)
 NAME_EXPECTATIONS_FILENAME = "goal_name_expectations.json"
@@ -69,42 +76,37 @@ def test_is_goal_event(fixtures_dir, filename, expected):
 #
 # Issue #186対応: is_goal_event単体(色ベースの軽量候補判定)は、
 # detection.match_end.is_match_end_screen()と同じ位置づけの「候補」であり、
-# 意図的にこのままにしている(色だけで完全に判別する設計にはしない)。
-# 実際の誤検知対策はconfirm_goal_text()(得点者名パネルのラベルOCR確認、
-# detection.goalのモジュールdocstring参照)との2段構成で行うため、
-# is_goal_event単体のこの回帰テストは今後もxfailのまま維持する
-# (「候補は誤反応するが、実際に使われる2段構成の結果は誤検知しない」ことは
-# 下のtest_goal_ocr_confirmation_rejects_sky_canopy_false_positiveで別途検証する)。
-_KNOWN_SKY_CANOPY_FALSE_POSITIVE_VIDEOS = {
-    "24_no_vs_screen_hdr_off_gameplay.mp4",
-    "25_inplay_false_positive_win_blue_teal_canopy.mp4",
-}
+# 青空・天蓋に反応すること自体は意図した仕様(色だけで完全に判別する設計には
+# しない)。実際の誤検知対策はconfirm_goal_text()(得点者名パネルのラベルOCR確認、
+# detection.goalのモジュールdocstring参照)との2段構成で行う。以前はここを
+# 「まだ直っていないバグ」のように見えるxfailテストにしていたが、実運用上は
+# 2段構成で解消済みのため紛らわしく、tests/test_match_end.pyの
+# test_confirm_match_end_text_false_for_kickoff_bannerと同じ形(候補は反応する
+# ことを肯定的に確認+OCRで正しく弾かれることを別途確認)に書き直した
+KNOWN_SKY_CANOPY_CANDIDATE_FRAMES = [
+    ("24_no_vs_screen_hdr_off_gameplay.mp4", 1053),  # 青空がROIに写り込む場面
+    ("25_inplay_false_positive_win_blue_teal_canopy.mp4", 3048),  # スタジアム天蓋がROIに写り込む場面
+]
 
 
 @requires_video_fixtures
-@pytest.mark.parametrize(
-    "video_name",
-    [
-        pytest.param(
-            name,
-            marks=pytest.mark.xfail(
-                reason="画面上部の青空・スタジアム天蓋の写り込みでis_goal_eventが誤検知する"
-                "(Issue #186で調査、本物の青ゴールバナーとHSV範囲が重複するため単純な閾値"
-                "再較正では未解決。goal_confirm_framesのデバウンスにより本番の誤検知には"
-                "至っていない)",
-                strict=False,
-            ),
-        )
-        for name in sorted(_KNOWN_SKY_CANOPY_FALSE_POSITIVE_VIDEOS)
-    ],
-)
-def test_is_goal_event_false_throughout_non_goal_gameplay_video(videos_dir, video_name):
-    video_path = videos_dir / video_name
-    if not video_path.is_file():
+@pytest.mark.parametrize("video_name, frame_index", KNOWN_SKY_CANOPY_CANDIDATE_FRAMES)
+def test_is_goal_event_true_for_sky_canopy_background(videos_dir, video_name, frame_index):
+    """色ベースのis_goal_eventは青空・スタジアム天蓋の背景もゴールバナーと
+    誤って区別できずTrueを返す(仕様通りの候補判定)。本物のゴールとして
+    記録されないことはconfirm_goal_text側で保証する
+    (test_goal_ocr_confirmation_rejects_sky_canopy_false_positive参照)。
+    """
+    frame = _read_frame(videos_dir / video_name, frame_index)
+    if frame is None:
         pytest.skip(f"{video_name} が見つからない")
+    assert is_goal_event(frame), (
+        f"{video_name} frame {frame_index}: 色ベース候補判定がFalseだった"
+        "(このテストの前提が崩れている可能性がある)"
+    )
 
-    for idx, frame in enumerate(_read_frames(video_path)):
-        assert not is_goal_event(frame), f"{video_name}のフレーム{idx}で誤検知した"
+
+_KNOWN_SKY_CANOPY_FALSE_POSITIVE_VIDEOS = {name for name, _ in KNOWN_SKY_CANOPY_CANDIDATE_FRAMES}
 
 
 @pytest.mark.slow
@@ -136,8 +138,8 @@ _REAL_GOAL_FRAME_RANGES: dict[str, range] = {
 @pytest.mark.parametrize("video_name", sorted(_KNOWN_SKY_CANOPY_FALSE_POSITIVE_VIDEOS))
 def test_goal_ocr_confirmation_rejects_sky_canopy_false_positive(videos_dir, video_name):
     """Issue #186の修正確認。is_goal_event単体(色ベースの候補判定)は青空・天蓋で
-    誤検知する(上のtest_is_goal_event_false_throughout_non_goal_gameplay_videoの
-    xfail参照、これは今後も期待通りの挙動)が、実際にstate/match_state.pyが使う
+    誤検知する(上のtest_is_goal_event_true_for_sky_canopy_background参照、
+    これは今後も期待通りの挙動)が、実際にstate/match_state.pyが使う
     「is_goal_event→confirm_goal_text」の2段構成では、本物のゴールバナーが
     無い限り誤検知しないことを確認する。
     """
