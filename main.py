@@ -152,9 +152,11 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     # Issue #76: 「試合終了」バナーを確認できていれば、Issue #67修正前と同じ1秒
     # (confirm_framesと同じ)に短縮する(state/match_state.pyのモジュールdocstring参照)
     banner_confirm_frames = round(fps * 2.0)
-    # 「試合終了」バナーは実測最短7フレーム(60fps)程度しか綺麗に表示されないことが
-    # あるため、他のconfirm系より短いデバウンスにする(state/match_state.py参照)
-    match_end_confirm_frames = round(fps * 0.1)
+    # Issue #190: このデバウンスは安全マージンとして機能しておらず(真偽の判定は
+    # OCR文字一致confirm_match_end_textが担う)、「試合終了」バナーは実測最短
+    # 7フレーム(60fps)程度しか綺麗に表示されないことがあるため、色候補判定を
+    # 満たした最初のフレームで即OCR確認する(state/match_state.py参照)
+    match_end_confirm_frames = 1
     return MatchStateMachine(
         banner_confirm_frames=banner_confirm_frames,
         banner_confirm_frames_after_match_end=confirm_frames,

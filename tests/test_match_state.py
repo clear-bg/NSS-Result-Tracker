@@ -48,7 +48,8 @@ def _run_state_machine(path: Path):
 
     confirm_frames = round(fps * 1.0)
     banner_confirm_frames = round(fps * 2.0)
-    match_end_confirm_frames = round(fps * 0.1)
+    # Issue #190: main.pyの_make_match_state_machineと同じく1フレームに固定
+    match_end_confirm_frames = 1
     machine = MatchStateMachine(
         banner_confirm_frames=banner_confirm_frames,
         banner_confirm_frames_after_match_end=confirm_frames,
@@ -1131,6 +1132,64 @@ def test_vs_screen_not_detected_results_in_empty_vs_ranks(monkeypatch):
 def test_in_match_true_after_vs_screen_confirmed_and_false_after_finalize(monkeypatch):
     """Issue #83: OBSシーン自動切替のトリガーであるin_matchが、VS画面確定でTrueになり、
     試合結果確定(ランク確定含む_finalize())でFalseに戻ることを確認する。
+    Issue #190対応後は「試合終了」バナーをOCR確認できた試合のみFalseに戻るため、
+    ここでは確認できたケースとしてis_match_end_screen/confirm_match_end_textを
+    Trueにする。
+    """
+    frame_idx = {"n": 0}
+
+    def fake_is_vs_screen(frame):
+        return frame_idx["n"] < 2
+
+    def fake_is_match_end_screen(frame):
+        return 2 <= frame_idx["n"] < 4
+
+    def fake_classify_banner(frame):
+        return "win" if frame_idx["n"] >= 5 else None
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", fake_is_match_end_screen)
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        vs_screen_confirm_frames=2,
+        banner_confirm_frames=2,
+        banner_confirm_frames_after_match_end=2,
+        match_end_confirm_frames=1,
+        league_change_grace_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    assert machine.in_match is False, "初期状態はFalse(試合間)のはず"
+
+    result = None
+    in_match_became_true_frame = None
+    for _ in range(30):
+        result = machine.process_frame(frame)
+        if in_match_became_true_frame is None and machine.in_match:
+            in_match_became_true_frame = frame_idx["n"]
+        frame_idx["n"] += 1
+        if result is not None:
+            break
+
+    assert in_match_became_true_frame is not None, "VS画面確定後にin_matchがTrueにならなかった"
+    assert result is not None, "MatchResultが確定しなかった"
+    assert machine.in_match is False, "「試合終了」を確認できた試合結果確定後はin_matchがFalseに戻るはず"
+
+
+def test_in_match_stays_true_after_finalize_without_match_end_confirmation(monkeypatch):
+    """Issue #190: 「試合終了」バナーをOCR確認できないまま試合結果が確定した場合
+    (実プレイ中の背景誤検知がbanner_confirm_framesを突破した可能性を否定できない
+    ケース)、OBSシーン切替の誤爆を防ぐためin_matchはTrueのまま維持され、
+    (視聴者体験としては)試合中シーンに留まることを確認する。MatchResult自体は
+    従来どおり記録される。
     """
     frame_idx = {"n": 0}
 
@@ -1157,21 +1216,15 @@ def test_in_match_true_after_vs_screen_confirmed_and_false_after_finalize(monkey
     )
 
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
-    assert machine.in_match is False, "初期状態はFalse(試合間)のはず"
-
     result = None
-    in_match_became_true_frame = None
     for _ in range(30):
         result = machine.process_frame(frame)
-        if in_match_became_true_frame is None and machine.in_match:
-            in_match_became_true_frame = frame_idx["n"]
         frame_idx["n"] += 1
         if result is not None:
             break
 
-    assert in_match_became_true_frame is not None, "VS画面確定後にin_matchがTrueにならなかった"
-    assert result is not None, "MatchResultが確定しなかった"
-    assert machine.in_match is False, "試合結果確定(ランク確定)後はin_matchがFalseに戻るはず"
+    assert result is not None, "MatchResultが確定しなかった(記録自体は確認結果に関わらず行われるはず)"
+    assert machine.in_match is True, "「試合終了」を確認できなかった場合はin_matchがTrueのまま維持されるはず"
 
 
 def test_vs_screen_shown_continuously_reads_ranks_only_once(monkeypatch):
