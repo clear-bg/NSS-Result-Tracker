@@ -151,4 +151,38 @@ Issue #147対応。`72`/`73`(VS画面)に続き、それ以外の色ベース判
 
 対応する動画は`fixtures/videos/33_lose_pink_overtime_hdr_off.mp4`・`34_win_pink_overtime_hdr_off.mp4`(いずれも延長戦を経て決着する試合、ランクは38帯のままlose/winそれぞれ)。Issue #178(ランクゲージ読み取り精度)の調査で実際に誤検知が見つかった試合の元動画で、`fixtures/videos/metadata.json`に登録済み(banner_confirmed_frame_range・match_result_frame_rangeは未検証のためnull)。
 
-リーグ降格演出のHDR無効化後の参照素材はまだ無い(発生頻度が低く狙って収集しづらいため、Issue #147では優先度Low〜Mediumとして今後の実プレイで拾えれば追加する方針。Issue #176の降格独立検知調査にも使える)。`detection/team_color.py`については`82`(または`72`/`73`)のVS画面素材で代用できる。
+`detection/team_color.py`については`82`(または`72`/`73`)のVS画面素材で代用できる。
+
+### 追加収集(HDR無効化後、Issue #147 2026-07-30追加)
+
+上記で優先度Low〜Mediumとして保留していたリーグ降格演出、および勝敗バナー・ゴール・試合終了バナーの追加サンプルをまとめて収集した。実プレイ数試合分の録画から静止画・動画を切り出している。
+
+- [x] 勝ち(ランク有り・コンパクト表示、赤チーム、HDR無効化後) `93_result_win_with_rank_red_hdr_off_2`
+- [x] 勝ち(ランク有り・コンパクト表示、赤チーム、HDR無効化後) `94_result_win_with_rank_red_hdr_off_3`
+- [x] 勝ち(ランク有り・コンパクト表示、赤チーム、HDR無効化後、延長戦決着) `95_result_win_with_rank_red_hdr_off_4`
+  - 延長戦のゴールデンゴールで決着した試合の結果バナー(対応動画`37`参照)
+- [x] 勝ち(ランク無し、赤チーム、HDR無効化後) `96_result_win_without_rank_red_hdr_off`
+- [x] 負け(ランク有り・コンパクト表示、赤チーム、HDR無効化後) `97_result_lose_with_rank_red_hdr_off`
+- [x] 負け(ランク有り・降格ラベル付き、赤チーム、HDR無効化後) `98_result_lose_with_rank_demotion_red_hdr_off`
+  - **リーグ降格演出のHDR無効化後の参照素材はこれまで無かったが、今回初めて収集できた**。CLAUDE.md記載の通り降格は全画面オーバーレイが出ず、ランクバッジ上に小さな「降格」ラベルが乗るのみ。Issue #176(降格の独立検知調査)にそのまま使える
+- [x] 勝ち(ランク有り・コンパクト表示、青チーム、HDR無効化後) `99_result_win_with_rank_blue_hdr_off_2`
+- [x] 勝ち(ランク有り・コンパクト表示、青チーム、HDR無効化後、帯内ゲージ微増) `100_result_win_with_rank_blue_hdr_off_3`
+- [x] リーグ昇格演出(HDR無効化後、2件目) `101_result_rank_up_hdr_off_2`
+- [x] ゴール(アシスト有り、青チーム、HDR無効化後) `102_goal_with_assist_blue_hdr_off`
+  - 得点者プルヤ・アシストブルドッグ。**青チームの「アシスト有り」ゴールはこれが初めて**(既存`83`はアシスト無し、`75`はオウンゴールのため得点者名OCRの検証に使えなかった)。`goal_name_expectations.json`に登録済み
+- [x] 試合終了バナー(「ノックアウト」併記、HDR無効化後) `103_match_end_knockout_hdr_off`
+  - 通常の「試合終了」単独表示とは異なり、上段に「ノックアウト」の文字が追加された複合バナー。`detection/match_end.py`のOCR確認(`confirm_match_end_text`は部分一致のため通る想定だが未検証)・帯の位置がずれていないか個別確認が必要
+- [x] ゴール(アシスト有り、赤チーム、HDR無効化後、2件目・延長戦のゴールデンゴール) `104_goal_with_assist_red_hdr_off_2`
+  - 得点者ブルドッグ・アシストまいぞの。`goal_name_expectations.json`に登録済み
+
+対応する動画は`fixtures/videos/35`〜`42`(`_hdr_off`サフィックス)。
+
+- `35_win_red_hdr_off`・`36_win_red_hdr_off_2`: 勝ち(赤チーム、ランク有り)
+- `37_win_red_overtime_goal_hdr_off`: 延長戦バナー→ゴールデンゴール(`104`)→試合終了→勝ち(`95`)までを1本で含む
+- `38_win_red_without_rank_hdr_off`: 勝ち(赤チーム、ランク無し、`96`)
+- `39_lose_red_goal_hdr_off`: 終盤のゴール(スコア推移から青チームの得点と確認済み。ただし「ゴール!」の色付きフラッシュバナーが始まる直前から切り出されており、名前パネルのみで色帯自体は写っていない)→試合終了→負け(`97`)
+- `40_lose_red_demotion_hdr_off`: 試合終了→負け+降格ラベル(`98`)
+- `41_win_blue_goal_knockout_hdr_off`: ゴール(`102`)→「ノックアウト/試合終了」複合バナー(`103`)→勝ち(`99`)
+- `42_win_blue_league_up_hdr_off_2`: 勝ち→リーグ昇格演出(`101`)
+
+`fixtures/videos/metadata.json`への登録(`expected_result`等)は今回見送った。タイミング系の期待値と同様、実装の出力を転記せず実際に動画を最後まで見て確定させる必要があるため(既存の運用方針)、必要になった時点で確認の上登録すること。
