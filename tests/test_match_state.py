@@ -150,6 +150,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
         return None if frame_idx["n"] < 5 else "win"
 
     monkeypatch.setattr(match_state_module, "is_goal_event", fake_is_goal_event)
+    monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
@@ -189,6 +190,7 @@ def test_goal_detection_logs_scorer_and_assist_at_info_level(monkeypatch, caplog
     frame_idx = {"n": 0}
 
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: ("Bob", 0.90))
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
@@ -216,6 +218,7 @@ def test_goal_detection_logs_not_recorded_when_outside_allowlist(monkeypatch, ca
     frame_idx = {"n": 0}
 
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Charlie", 0.95))
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
@@ -243,6 +246,7 @@ def test_goal_detection_logs_always_recorded_in_all_mode(monkeypatch, caplog):
     frame_idx = {"n": 0}
 
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Charlie", 0.95))
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
@@ -270,6 +274,7 @@ def test_goal_detection_logs_partial_redact_in_redact_mode(monkeypatch, caplog):
     frame_idx = {"n": 0}
 
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("たなか", 0.95))
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: ("ブルドッグ", 0.90))
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
@@ -295,6 +300,7 @@ def test_goal_detection_logs_full_record_in_redact_mode_when_both_allowed(monkey
     frame_idx = {"n": 0}
 
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: ("Bob", 0.90))
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
@@ -322,6 +328,7 @@ def test_goal_detection_logs_no_redact_when_assist_missing_in_redact_mode(monkey
     frame_idx = {"n": 0}
 
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
@@ -725,6 +732,7 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
 def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
     """同じゴールバナーが表示され続けている間、複数回記録されない(デバウンス)ことを確認する。"""
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
     monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
@@ -738,6 +746,27 @@ def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
         machine.process_frame(frame)
 
     assert len(machine._pending_goals) == 1
+
+
+def test_goal_candidate_rejected_by_ocr_is_not_recorded(monkeypatch):
+    """is_goal_event(色ベース)がTrueでも、confirm_goal_text(OCR)がFalseを返す場合
+    (青空・スタジアム天蓋の映り込み等、Issue #186参照)は記録されないことを確認する。
+    """
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
+
+    machine = MatchStateMachine(goal_confirm_frames=2)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    for _ in range(10):
+        machine.process_frame(frame)
+
+    assert len(machine._pending_goals) == 0
 
 
 def test_match_end_confirmed_enables_fast_banner_confirm(monkeypatch):

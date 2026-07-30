@@ -5,7 +5,13 @@ import cv2
 import pytest
 
 from conftest import requires_fixtures, requires_video_fixtures
-from nss_tracker.detection.goal import is_goal_event, is_own_goal_event, read_assist_name, read_scorer_name
+from nss_tracker.detection.goal import (
+    confirm_goal_text,
+    is_goal_event,
+    is_own_goal_event,
+    read_assist_name,
+    read_scorer_name,
+)
 
 TARGET_SIZE = (1920, 1080)
 
@@ -61,11 +67,14 @@ def test_is_goal_event(fixtures_dir, filename, expected):
 # 軸でも実測範囲が重複しており、単純な閾値再較正では安全に分離できないと
 # 判明した(Issue #186で詳細調査・記録)。
 #
-# 現状はstate/match_state.pyのgoal_confirm_frames(60fps実キャプチャなら
-# 60フレーム=1秒相当のデバウンス)により本番の誤検知(DB記録)には至って
-# いない(24番の最大連続一致は33フレーム、25番は最大19フレームで、いずれも
-# 必要な60フレームに届かない)。ただし安全マージンとは言えないため、xfailで
-# 状況を可視化しておく(Issue #182・#150と同じ方針)。
+# Issue #186対応: is_goal_event単体(色ベースの軽量候補判定)は、
+# detection.match_end.is_match_end_screen()と同じ位置づけの「候補」であり、
+# 意図的にこのままにしている(色だけで完全に判別する設計にはしない)。
+# 実際の誤検知対策はconfirm_goal_text()(得点者名パネルのラベルOCR確認、
+# detection.goalのモジュールdocstring参照)との2段構成で行うため、
+# is_goal_event単体のこの回帰テストは今後もxfailのまま維持する
+# (「候補は誤反応するが、実際に使われる2段構成の結果は誤検知しない」ことは
+# 下のtest_goal_ocr_confirmation_rejects_sky_canopy_false_positiveで別途検証する)。
 _KNOWN_SKY_CANOPY_FALSE_POSITIVE_VIDEOS = {
     "24_no_vs_screen_hdr_off_gameplay.mp4",
     "25_inplay_false_positive_win_blue_teal_canopy.mp4",
@@ -96,6 +105,53 @@ def test_is_goal_event_false_throughout_non_goal_gameplay_video(videos_dir, vide
 
     for idx, frame in enumerate(_read_frames(video_path)):
         assert not is_goal_event(frame), f"{video_name}のフレーム{idx}で誤検知した"
+
+
+@pytest.mark.slow
+@requires_fixtures
+@pytest.mark.parametrize("filename, expected", sorted(EXPECTED_EVENT.items()))
+def test_confirm_goal_text(fixtures_dir, filename, expected):
+    """confirm_goal_text()(Issue #186対応、得点者名パネルのラベルOCR確認)が、
+    is_goal_event()の色ベース判定と同じ真偽になることを実fixtureで確認する
+    (このスクリーンショット集合には天蓋・空の誤検知フレームは含まれないため、
+    is_goal_eventの結果=expectedと一致するのが正しい)。
+    """
+    frame = cv2.imread(str(fixtures_dir / filename))
+    assert frame is not None, f"failed to load {filename}"
+    assert confirm_goal_text(frame) == expected
+
+
+# 25番動画は本物のゴール(青チーム得点の「ゴール!」バナー)を含む唯一の
+# 誤検知対策動画。is_goal_event単体で実測したところ、フレーム4294〜4410付近が
+# 本物のバナー(confirm_goal_textもTrueになるのが正しい)、それ以外の候補フレーム
+# (3039〜3475付近等)は天蓋の誤検知だった(Issue #186調査時に実測、余裕を持たせて
+# 4260〜4440を除外区間とする)。24番動画には本物のゴールは無い
+_REAL_GOAL_FRAME_RANGES: dict[str, range] = {
+    "25_inplay_false_positive_win_blue_teal_canopy.mp4": range(4260, 4440),
+}
+
+
+@pytest.mark.slow
+@requires_video_fixtures
+@pytest.mark.parametrize("video_name", sorted(_KNOWN_SKY_CANOPY_FALSE_POSITIVE_VIDEOS))
+def test_goal_ocr_confirmation_rejects_sky_canopy_false_positive(videos_dir, video_name):
+    """Issue #186の修正確認。is_goal_event単体(色ベースの候補判定)は青空・天蓋で
+    誤検知する(上のtest_is_goal_event_false_throughout_non_goal_gameplay_videoの
+    xfail参照、これは今後も期待通りの挙動)が、実際にstate/match_state.pyが使う
+    「is_goal_event→confirm_goal_text」の2段構成では、本物のゴールバナーが
+    無い限り誤検知しないことを確認する。
+    """
+    video_path = videos_dir / video_name
+    if not video_path.is_file():
+        pytest.skip(f"{video_name} が見つからない")
+
+    real_goal_range = _REAL_GOAL_FRAME_RANGES.get(video_name, range(0, 0))
+    for idx, frame in enumerate(_read_frames(video_path)):
+        if idx in real_goal_range or not is_goal_event(frame):
+            continue
+        assert not confirm_goal_text(frame), (
+            f"{video_name}のフレーム{idx}で誤検知した(is_goal_event候補+confirm_goal_text両方True)"
+        )
 
 
 @pytest.mark.slow
