@@ -55,6 +55,18 @@ detection.match_end参照)。「試合終了」を確認できていれば、_wa
 逃すだけで正しさは損なわれない。VS画面検知(Issue #39、下記)を「見逃しても
 既存フローに影響しない任意のエンリッチ」として扱っている設計方針と同じ考え方。
 
+Issue #186: is_goal_event()(「ゴール!」バナーの色ベース候補判定)も、Issue #76の
+「試合終了」と同じ理由で青空・スタジアム天蓋の映り込みに誤反応することが
+広域監査で判明した(本物の青ゴールバナーとHSVが実測で重複しており、色閾値の
+みでの安全な分離は不可)。同じ2段構成の考え方で、_check_for_goal()は
+goal_confirm_frames回連続したタイミングで1回だけconfirm_goal_text()を呼び、
+得点者名パネルのラベル文字(「ゴール」「アシスト」「オウンゴール」、固定語彙で
+OCRの信頼性が高い)が実際に読み取れた場合のみゴールとして確定する
+(detection.goalのモジュールdocstring参照)。確認できなかった場合はその
+ストリークでは記録せず、is_goal_event()が一旦Falseに戻ってストリークがリセット
+されるまで再確認しない(「試合終了」同様、重いOCRを毎フレーム呼ばないための
+デバウンス+1回確認の設計)。
+
 Issue #71: 実プレイでの動作確認をしやすくするため、試合のライフサイクルの節目
 (セッション内でn試合目か、を含む)をINFOログとして出す。カウンタ(_session_match_no)は
 「試合開始」ログ(_check_for_vs_screen、VS画面確定時)でのみ増加させ、「試合終了」
@@ -152,7 +164,7 @@ import numpy as np
 
 from nss_tracker.config import get_goal_record_mode, is_allowed_player
 from nss_tracker.detection.banner import BannerResult, classify_banner
-from nss_tracker.detection.goal import is_goal_event, read_assist_name, read_scorer_name
+from nss_tracker.detection.goal import confirm_goal_text, is_goal_event, read_assist_name, read_scorer_name
 from nss_tracker.detection.league_change import is_league_change_screen
 from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end_screen
 from nss_tracker.detection.matchmaking import is_vs_screen, read_vs_roi_hsv
@@ -441,6 +453,15 @@ class MatchStateMachine:
 
         self._goal_streak += 1
         if self._goal_streak >= self._goal_confirm_frames and not self._goal_recorded_this_event:
+            self._goal_recorded_this_event = True
+            # is_goal_eventは色ベースの候補判定のため、青空・スタジアム天蓋の映り込み
+            # (Issue #186)等の誤検知をここでOCRにより除外する(detection.goal参照)
+            if not confirm_goal_text(frame):
+                logger.info(
+                    "ゴール候補を検知しましたが、得点者名パネルのラベルを確認できなかったため誤検知として無視します"
+                )
+                return
+
             scorer = read_scorer_name(frame)
             assist = read_assist_name(frame)
             # Issue #71: OCRの誤読診断のため、信頼度スコア込みの実名をDEBUGレベルに
@@ -483,7 +504,6 @@ class MatchStateMachine:
                     detected_at=now_jst(),
                 )
             )
-            self._goal_recorded_this_event = True
 
     def _watch_for_banner(self, frame: np.ndarray) -> Optional[MatchResult]:
         result = classify_banner(frame)

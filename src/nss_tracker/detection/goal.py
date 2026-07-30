@@ -33,6 +33,21 @@ GOAL_LABEL_ROI・ASSIST_LABEL_ROIの両方を確認し、実際にどちらに�
 表示され、得点者名は表示されない(実データで確認済み、
 fixtures/screenshots/75_goal_blue_owngoal_hdr_off.png参照)。そのため
 read_scorer_name()・read_assist_name()はオウンゴールの場合常にNoneを返す。
+
+Issue #186: is_goal_event()は画面上部の色のみを見る軽量な候補判定のため、
+青空・スタジアムのミント/ティール色天蓋(banner.py/league_change.pyで既知の
+Issue #67/#159/#150と同系統の背景)がBANNER_ROI_LEFT/RIGHTに写り込むと、
+本物の青ゴールバナーと誤って区別できずTrueを返すことが広域監査で判明した
+(本物の青ゴールバナーとHSVが実測で重複しており、色閾値のみでの安全な
+分離は不可と判明済み)。対応として、得点者名パネルの各ラベル行
+(「ゴール」「アシスト」「オウンゴール」)が固定語彙でOCRの信頼性が高い点に
+着目し(プレイヤー名のような自由文字列とは異なり、既知の誤読パターンのみを
+許容する厳密一致で判定できる。得点者・アシスト名自体は毎回変わるため
+確認材料には使えない)、confirm_goal_text()を追加した。detection.match_end の
+is_match_end_screen()→confirm_match_end_text()と同じ2段構成で、
+state/match_state.pyがis_goal_event()の候補判定がgoal_confirm_frames回連続した
+タイミングで1回だけconfirm_goal_text()を呼び、実際にラベル文字が読み取れた
+場合のみゴールとして確定する(state/match_state.pyのモジュールdocstring参照)。
 """
 
 from functools import lru_cache
@@ -185,8 +200,30 @@ def is_own_goal_event(frame: np.ndarray, roi: tuple[int, int, int, int] = OWN_GO
     オウンゴールは得点者名が表示されないため、read_scorer_name()・
     read_assist_name()はどちらもNoneを返す(それ単独で正しく空扱いになる)。
     この関数は「ゴール自体は検知したが名前が無い」ことの理由がオウンゴールで
-    あることを区別したい呼び出し元向けの補助。現時点ではstate/match_state.py
-    側への組み込みは行っておらず、検知のみ可能な状態(Issue #141はROI分割まで
-    がスコープ、記録方針側の変更は別途要相談)。
+    あることを区別したい呼び出し元向けの補助。試合単位でオウンゴールをどう
+    扱うか(MatchResult・DBスキーマへの反映方法)は未着手・要相談のため、
+    state/match_state.py側でこの関数を直接使った記録方針の分岐はまだ無い
+    (Issue #186対応のconfirm_goal_text()からは、ゴール自体が本物かどうかの
+    判定材料の1つとして間接的に使われる)。
     """
     return _label_matches(frame, roi, _OWN_GOAL_LABEL_VARIANTS)
+
+
+def confirm_goal_text(frame: np.ndarray) -> bool:
+    """得点者名パネルのラベル文字をOCRで読み取り、実際に本物のゴールシーンか確認する。
+
+    is_goal_event()は色ベースの候補判定のため、青空・スタジアム天蓋の映り込み
+    (Issue #186)等でも誤ってTrueを返しうる。得点者・アシスト名自体は毎回
+    変わる自由文字列でOCRの信頼性を判定材料にできないが、各ラベル行
+    (「ゴール」「アシスト」「オウンゴール」)は固定語彙で読み取り精度が高いため、
+    このいずれかが実際に読み取れた場合のみ本物のゴールシーンとして確認する
+    (detection.match_end.confirm_match_end_text()と同じ2段構成の考え方。
+    モジュールdocstring参照)。呼び出し側は、is_goal_event()の候補判定が
+    一定時間連続したタイミングで1回だけこの関数を呼ぶこと
+    (state/match_state.py参照)。
+    """
+    return (
+        _label_matches(frame, GOAL_LABEL_ROI, _GOAL_LABEL_VARIANTS)
+        or _label_matches(frame, ASSIST_LABEL_ROI, _GOAL_LABEL_VARIANTS)
+        or is_own_goal_event(frame)
+    )
