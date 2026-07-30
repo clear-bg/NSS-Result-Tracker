@@ -187,6 +187,22 @@ Issue #76と同じ「見逃しても既存フローの正しさは損なわれ�
 frame 958、表示が消える直前の縮小アニメーションでOCRが失敗したケース)は
 「確認が遅すぎて表示終了直前の不安定なフレームに当たった」方向のリスクのため、
 デバウンスを縮めて可能な限り早いフレームで1回きりのOCRを実行する方が安全。
+
+Issue #176: 降格(帯番号-1)は、昇格(is_league_change_screen()の全画面
+オーバーレイ)と違って独立した確認手段が無く、_infer_tier_from_gauge_continuity()の
+「負けているのにゲージ小数部が閾値を超えて増えて見える」という間接的な
+推測に頼っていた。調査の結果、降格時にランクバッジ上へ乗る「降格」ラベル
+(白背景の吹き出し)が、Issue #73で断念したS/A帯バッジのOCRとは異なり
+形状(輝度)・OCRいずれの手法でも安定して検知できることが分かったため
+(detection/league_change.pyのモジュールdocstring参照)、
+is_demotion_label_candidate()/confirm_demotion_label_text()を追加した。
+match_end/goalと同じ2段構成(色/形状の軽量な候補判定→デバウンス確定時に
+1回だけOCRで確認)を、TRACKING_RANK中(_track_rank())で常時チェックする形で
+組み込み、確認できれば_demotion_confirmed_this_matchに保持する。
+_infer_tier_from_gauge_continuity()では、この独立信号が得られていれば
+ゲージ小数部の閾値判定より優先して降格と確定させ、得られていない場合は
+従来どおりの間接的な推測にフォールバックする(見逃しても既存の正しさは
+損なわれない、という他の2段構成の信号と同じ設計)。
 """
 
 from dataclasses import dataclass, field
@@ -200,7 +216,11 @@ import numpy as np
 from nss_tracker.config import get_goal_record_mode, is_allowed_player
 from nss_tracker.detection.banner import BannerResult, classify_banner
 from nss_tracker.detection.goal import confirm_goal_text, is_goal_event, read_assist_name, read_scorer_name
-from nss_tracker.detection.league_change import is_league_change_screen
+from nss_tracker.detection.league_change import (
+    confirm_demotion_label_text,
+    is_demotion_label_candidate,
+    is_league_change_screen,
+)
 from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end_screen
 from nss_tracker.detection.matchmaking import is_vs_screen, read_letterbox_brightness, read_vs_roi_hsv
 from nss_tracker.detection.motion import StabilityMonitor
@@ -234,6 +254,9 @@ DEFAULT_BANNER_CONFIRM_FRAMES_AFTER_MATCH_END = 30
 DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES = 30
 DEFAULT_GOAL_CONFIRM_FRAMES = 30
 DEFAULT_VS_SCREEN_CONFIRM_FRAMES = 30
+# Issue #176: 降格ラベルは実測で2秒以上安定して表示され続けるため(detection/
+# league_change.pyのモジュールdocstring参照)、goal/vs_screenと同じ1秒相当で良い
+DEFAULT_DEMOTION_LABEL_CONFIRM_FRAMES = 30
 # Issue #190: このデバウンスは誤検知を防ぐ安全マージンとしては機能しておらず
 # (実際の真偽はOCR文字一致confirm_match_end_textが決める)、「試合終了」バナーは
 # 実データで最短7フレーム程度(60fps)しか綺麗に表示されないケースがあったため、
@@ -332,6 +355,7 @@ class MatchStateMachine:
         vs_screen_confirm_frames: int = DEFAULT_VS_SCREEN_CONFIRM_FRAMES,
         match_end_confirm_frames: int = DEFAULT_MATCH_END_CONFIRM_FRAMES,
         rank_tier_rescan_wait_frames: int = DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES,
+        demotion_label_confirm_frames: int = DEFAULT_DEMOTION_LABEL_CONFIRM_FRAMES,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
     ) -> None:
         self._banner_confirm_frames = banner_confirm_frames
@@ -343,6 +367,7 @@ class MatchStateMachine:
         self._vs_screen_confirm_frames = vs_screen_confirm_frames
         self._match_end_confirm_frames = match_end_confirm_frames
         self._rank_tier_rescan_wait_frames = rank_tier_rescan_wait_frames
+        self._demotion_label_confirm_frames = demotion_label_confirm_frames
         self._rank_monitor = rank_stability_monitor or StabilityMonitor(roi=rank_roi)
 
         self._state = _State.WATCHING
@@ -365,6 +390,12 @@ class MatchStateMachine:
         # 観測されたか。帯番号の急変を検証する際、昇格側はこの独立信号で
         # 確認できていない限り認めない
         self._promotion_confirmed_this_match = False
+        # Issue #176: 降格ラベル(is_demotion_label_candidate/confirm_demotion_label_text)を
+        # この試合中に確認できたか。_infer_tier_from_gauge_continuity()で
+        # ゲージ小数部の間接推測より優先して使う独立信号
+        self._demotion_confirmed_this_match = False
+        self._demotion_label_streak = 0
+        self._demotion_label_recorded_this_event = False
         self._rescan_counter = 0
         self._goal_streak = 0
         self._goal_recorded_this_event = False
@@ -599,6 +630,9 @@ class MatchStateMachine:
             self._grace_candidate_rank_tier = None
             self._latest_gauge_fill = None
             self._promotion_confirmed_this_match = False
+            self._demotion_confirmed_this_match = False
+            self._demotion_label_streak = 0
+            self._demotion_label_recorded_this_event = False
             self._rank_monitor.reset()
             self._rank_monitor.update(frame)
             self._state = _State.TRACKING_RANK
@@ -607,6 +641,8 @@ class MatchStateMachine:
         return None
 
     def _track_rank(self, frame: np.ndarray) -> Optional[MatchResult]:
+        self._check_for_demotion_label(frame)
+
         if is_league_change_screen(frame):
             self._rank_phase = _RankPhase.IN_LEAGUE_CHANGE
             self._grace_counter = 0
@@ -693,6 +729,30 @@ class MatchStateMachine:
             return None
         self._fill_grace_candidate_if_missing(frame)
         return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank())
+
+    def _check_for_demotion_label(self, frame: np.ndarray) -> None:
+        """降格ラベル(「降格」の吹き出し)を検知する(Issue #176)。
+
+        is_demotion_label_candidate()(軽量な輝度判定)がdemotion_label_confirm_frames回
+        連続したタイミングで1回だけconfirm_demotion_label_text()を呼んでOCRで
+        確認する(is_goal_event/confirm_goal_textと同じ2段構成、モジュールdocstring
+        参照)。確認できれば_demotion_confirmed_this_matchに保持し、_finalize()まで
+        持ち越す。
+        """
+        if not is_demotion_label_candidate(frame):
+            self._demotion_label_streak = 0
+            self._demotion_label_recorded_this_event = False
+            return
+
+        self._demotion_label_streak += 1
+        if (
+            self._demotion_label_streak >= self._demotion_label_confirm_frames
+            and not self._demotion_label_recorded_this_event
+        ):
+            self._demotion_label_recorded_this_event = True
+            if confirm_demotion_label_text(frame):
+                self._demotion_confirmed_this_match = True
+                logger.info("%d試合目 降格ラベルを検知しました", self._session_match_no)
 
     def _current_grace_rank(self) -> Optional[float]:
         """帯番号(OCR)+ゲージ小数部(継続追跡している最新値)を組み合わせた現在値。
@@ -793,12 +853,16 @@ class MatchStateMachine:
         勝敗結果を使って帯番号を推測し直す。
 
         昇格はis_league_change_screen()で独立確認済みの場合のみそれを正として
-        採用する。降格は独立確認手段が無いため、「負けているのにゲージ小数部が
+        採用する。降格はIssue #176でis_demotion_label_candidate()/
+        confirm_demotion_label_text()による独立確認信号を追加したため、
+        この試合中に確認できていればそれを優先して1帯下げる。確認できて
+        いない場合は従来どおり「負けているのにゲージ小数部が
         RANK_TIER_WRAP_MIN_MAGNITUDEを超えて増えて見える(0を割り込んで前の帯に
-        巻き戻ったように見える)」場合にのみ1帯下げる。それ以外(勝ち・引き分け、
-        または負けでも矛盾がしきい値未満)は帯番号を変えず、小数部だけをそのまま
-        採用する(ゲージが全く動かない引き分けも含め、変な値に書き換えない
-        という方針)。
+        巻き戻ったように見える)」という間接的な判定にフォールバックする
+        (見逃しても既存の正しさは損なわれない設計、モジュールdocstring参照)。
+        それ以外(勝ち・引き分け、または負けでも矛盾がしきい値未満・降格ラベルも
+        未確認)は帯番号を変えず、小数部だけをそのまま採用する(ゲージが全く
+        動かない引き分けも含め、変な値に書き換えないという方針)。
         """
         tier_before = self._pending_rank_before_tier
         rank_before = self._pending_rank_before
@@ -811,7 +875,9 @@ class MatchStateMachine:
         if self._promotion_confirmed_this_match:
             return tier_before + 1, tier_before + 1 + frac_after
 
-        if self._pending_result == "lose" and frac_after - frac_before > RANK_TIER_WRAP_MIN_MAGNITUDE:
+        if self._pending_result == "lose" and (
+            self._demotion_confirmed_this_match or frac_after - frac_before > RANK_TIER_WRAP_MIN_MAGNITUDE
+        ):
             return tier_before - 1, tier_before - 1 + frac_after
 
         return tier_before, tier_before + frac_after
@@ -848,6 +914,9 @@ class MatchStateMachine:
         self._pending_rank_before = None
         self._pending_rank_before_tier = None
         self._promotion_confirmed_this_match = False
+        self._demotion_confirmed_this_match = False
+        self._demotion_label_streak = 0
+        self._demotion_label_recorded_this_event = False
         self._pending_goals = []
         self._goal_streak = 0
         self._goal_recorded_this_event = False
