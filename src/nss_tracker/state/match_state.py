@@ -152,6 +152,41 @@ Issue #145: 対戦相手ランク比較ウィジェット(web/server.py)は、�
 (in_matchのような常時参照可能なプロパティではなく、process_frame()と同じ
 「取得したら消費される」設計。main.py側がprocess_frame()呼び出しのたびに
 ポーリングし、Noneでなければその場でDBへ即時反映する)。
+
+Issue #190: 実プレイ中(ゴール演出とは無関係な通常プレイ中)の背景誤検知が
+banner_confirm_frames(2秒デバウンス)を突破し、OBSシーンが誤って試合中→
+試合間(ワイプ)へ切り替わってしまう事象が実配信で確認された。特にランクを
+賭けない試合(rank_before=Noneのため_is_tier_change_plausible等の数値ベースの
+安全装置が一切効かない)は、StabilityMonitorの「安定」判定さえ誤検知フレームで
+たまたま満たされれば、あとはbanner_confirm_framesの2秒デバウンスだけが最後の
+砦になる。配信者体験として「マッチング待機中に誤って試合中シーンのままになる」
+より「実プレイ中に誤ってワイプへ切り替わる」方がはるかに困るという優先順位が
+示されたため、_check_for_match_end()で「試合終了」バナーのOCR確認
+(confirm_match_end_text)ができた試合に限り、_finalize()でin_matchをFalseに
+戻す(OBSシーン切替を実行する)ことにした。確認できなかった試合は、
+MatchResultの記録自体(勝敗・ランク)は従来どおり行うが、in_matchはTrueの
+ままにする(OBSシーン切替は見送り、試合中シーンに留まる)。既存の
+banner_confirm_frames_after_match_end(デバウンス短縮)用途とは別に
+_match_end_confirmed_this_matchで確認結果を_finalize()まで持ち越す
+(_match_end_seenは短縮用のフラグのままbanner確定時にリセットされるため、
+そのままでは_finalize()到達時点で常にFalseになってしまう)。
+
+見逃した場合、in_matchはその試合の終了時点ではFalseに戻らず、次の試合の
+VS画面確定(既にTrueなので実質no-op)を経て、次にmatch_endを確認できた
+試合の_finalize()で初めてFalseに戻る。「見逃した試合の間は試合中シーンに
+居座り続ける」形になるが、これはユーザーが許容すると明言した失敗方向であり、
+DB記録自体は毎試合従来どおり行われるため実害は無い(モジュールトップの
+Issue #76と同じ「見逃しても既存フローの正しさは損なわれない」設計)。
+
+あわせて、match_end_confirm_frames(色候補判定→OCR確認までのデバウンス)を
+1フレームに短縮した。このデバウンスは実質「誤検知を防ぐ安全マージン」としては
+機能しておらず、実際に真偽を決めているのはOCRの文字一致(confirm_match_end_text)
+そのものである(色条件を満たした最初のフレームで即OCRを呼んでも、「延長戦」
+「キックオフ」等の誤った文字列であればOCR側で弾かれるため誤検知には
+つながらない)。むしろ唯一実測されている不具合(29_lose_blue_hdr_off.mp4の
+frame 958、表示が消える直前の縮小アニメーションでOCRが失敗したケース)は
+「確認が遅すぎて表示終了直前の不安定なフレームに当たった」方向のリスクのため、
+デバウンスを縮めて可能な限り早いフレームで1回きりのOCRを実行する方が安全。
 """
 
 from dataclasses import dataclass, field
@@ -199,9 +234,11 @@ DEFAULT_BANNER_CONFIRM_FRAMES_AFTER_MATCH_END = 30
 DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES = 30
 DEFAULT_GOAL_CONFIRM_FRAMES = 30
 DEFAULT_VS_SCREEN_CONFIRM_FRAMES = 30
-# 「試合終了」バナーは実データで最短7フレーム程度(60fps)しか綺麗に表示されない
-# ケースがあったため、他のconfirm系より短いデフォルト値にしている
-DEFAULT_MATCH_END_CONFIRM_FRAMES = 3
+# Issue #190: このデバウンスは誤検知を防ぐ安全マージンとしては機能しておらず
+# (実際の真偽はOCR文字一致confirm_match_end_textが決める)、「試合終了」バナーは
+# 実データで最短7フレーム程度(60fps)しか綺麗に表示されないケースがあったため、
+# 色候補判定を満たした最初のフレームで即OCR確認する(モジュールdocstring参照)
+DEFAULT_MATCH_END_CONFIRM_FRAMES = 1
 # 実測(fixtures/videos/01_win_blue_2-1.mp4, 60fps):
 # ランク数値が一旦静止してから昇格演出が始まるまで約270フレーム(4.5秒)の間があった
 DEFAULT_LEAGUE_CHANGE_GRACE_FRAMES = 150
@@ -344,6 +381,11 @@ class MatchStateMachine:
         self._match_end_streak = 0
         self._match_end_recorded_this_event = False
         self._match_end_seen = False
+        # Issue #190: _match_end_seenはbanner確定時のデバウンス短縮用にすぐ
+        # リセットされてしまうため、_finalize()到達時点まで確認結果を持ち越す
+        # 別フラグ。OBSシーン切替(in_match)の必須条件にのみ使う
+        # (MatchResultの記録自体は従来どおり、このフラグの有無に関わらず行う)
+        self._match_end_confirmed_this_match = False
         # Issue #83: OBSシーン切替のトリガー用。VS画面確定でTrue、_finalize()でFalseに戻す
         self._in_match = False
         # Issue #71: セッション内の試合数カウンタ。「試合開始」ログ(VS画面確定時)
@@ -443,6 +485,7 @@ class MatchStateMachine:
             # 誤検知をここでOCRにより除外する(detection.match_end参照)
             if confirm_match_end_text(frame):
                 self._match_end_seen = True
+                self._match_end_confirmed_this_match = True
                 logger.info("%d試合目 試合終了", self._session_match_no)
 
     def _check_for_goal(self, frame: np.ndarray) -> None:
@@ -805,7 +848,20 @@ class MatchStateMachine:
         self._pending_opponent_team_color = None
         self._vs_streak = 0
         self._vs_recorded_this_match = False
-        self._in_match = False
+        # Issue #190: 「試合終了」バナーをOCRで確認できた試合に限りOBSシーン切替
+        # (in_match=False)を行う。確認できなかった試合(実プレイ中の背景誤検知が
+        # banner_confirm_framesを突破した可能性を否定できない)はin_matchをTrueの
+        # ままにし、試合中シーンに留める。MatchResultの記録自体はこの確認結果に
+        # 関わらず常に行う(モジュールdocstring参照)
+        if self._match_end_confirmed_this_match:
+            self._in_match = False
+        else:
+            logger.info(
+                "%d試合目: 「試合終了」バナーを確認できなかったためOBSシーン切替を見送ります"
+                "(試合中シーンのまま維持、次に確認できた試合まで持ち越します)",
+                self._session_match_no,
+            )
+        self._match_end_confirmed_this_match = False
         self._absence_streak = 0
         self._state = _State.COOLDOWN
         return match_result
