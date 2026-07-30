@@ -19,23 +19,27 @@ def _read_frames(path):
         cap.release()
 
 
-# 79_result_rank_up_hdr_off.pngはリーグ昇格の全画面オーバーレイそのもの
-# (意図的にTrueになるべき唯一のfixture)なので、以下の「非該当画面は全てFalseの
-# はず」テストの対象から除く
-LEAGUE_CHANGE_OVERLAY_SCREENSHOT = "79_result_rank_up_hdr_off.png"
+# 79_result_rank_up_hdr_off.png・101_result_rank_up_hdr_off_2.pngはいずれも
+# リーグ昇格の全画面オーバーレイそのもの(意図的にTrueになるべき唯一のfixture群、
+# 101はIssue #192で2件目のサンプルとして追加)なので、以下の「非該当画面は
+# 全てFalseのはず」テストの対象から除く
+LEAGUE_CHANGE_OVERLAY_SCREENSHOTS = {
+    "79_result_rank_up_hdr_off.png",
+    "101_result_rank_up_hdr_off_2.png",
+}
 
 
 @requires_fixtures
 def test_is_league_change_screen_false_for_non_overlay_screenshots(fixtures_dir):
     """ロビー・マッチング・試合中・結果バナー等、演出画面ではない静止画では
     is_league_change_screenが常にFalseであることを確認する
-    (fixtures/screenshots/*.pngのうち79_result_rank_up_hdr_off.png以外は演出画面を
-    含まないため全件が非該当のはず)。
+    (fixtures/screenshots/*.pngのうちLEAGUE_CHANGE_OVERLAY_SCREENSHOTS以外は
+    演出画面を含まないため全件が非該当のはず)。
     """
     screenshots = list_screenshot_fixtures(fixtures_dir)
     assert screenshots, "fixtures/screenshots/にpngが見つからない"
     for path in screenshots:
-        if path.name == LEAGUE_CHANGE_OVERLAY_SCREENSHOT:
+        if path.name in LEAGUE_CHANGE_OVERLAY_SCREENSHOTS:
             continue
         frame = cv2.imread(str(path))
         assert frame is not None, f"failed to load {path.name}"
@@ -43,11 +47,12 @@ def test_is_league_change_screen_false_for_non_overlay_screenshots(fixtures_dir)
 
 
 @requires_fixtures
-def test_is_league_change_screen_true_for_promotion_overlay_screenshot(fixtures_dir):
-    path = fixtures_dir / LEAGUE_CHANGE_OVERLAY_SCREENSHOT
+@pytest.mark.parametrize("filename", sorted(LEAGUE_CHANGE_OVERLAY_SCREENSHOTS))
+def test_is_league_change_screen_true_for_promotion_overlay_screenshot(fixtures_dir, filename):
+    path = fixtures_dir / filename
     frame = cv2.imread(str(path))
-    assert frame is not None, f"failed to load {path.name}"
-    assert is_league_change_screen(frame), f"{path.name}で検知できなかった"
+    assert frame is not None, f"failed to load {filename}"
+    assert is_league_change_screen(frame), f"{filename}で検知できなかった"
 
 
 # 実際の映像を目視確認して決めたフレーム区間(is_league_change_screen自体の
