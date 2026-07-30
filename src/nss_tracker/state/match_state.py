@@ -202,7 +202,7 @@ from nss_tracker.detection.banner import BannerResult, classify_banner
 from nss_tracker.detection.goal import confirm_goal_text, is_goal_event, read_assist_name, read_scorer_name
 from nss_tracker.detection.league_change import is_league_change_screen
 from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end_screen
-from nss_tracker.detection.matchmaking import is_vs_screen, read_vs_roi_hsv
+from nss_tracker.detection.matchmaking import is_vs_screen, read_letterbox_brightness, read_vs_roi_hsv
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import (
     GAUGE_ROI_COMPACT,
@@ -434,7 +434,16 @@ class MatchStateMachine:
         # 調整に使用、閾値自体はIssue #116の実測で確定済み(detection.matchmaking参照)
         if logger.isEnabledFor(DEBUG):
             h, s, v = read_vs_roi_hsv(frame)
-            logger.debug("VS_ROI HSV: H=%.2f S=%.2f V=%.2f", h, s, v)
+            top, bottom, middle = read_letterbox_brightness(frame)
+            logger.debug(
+                "VS_ROI HSV: H=%.2f S=%.2f V=%.2f letterbox(top=%.2f bottom=%.2f middle=%.2f)",
+                h,
+                s,
+                v,
+                top,
+                bottom,
+                middle,
+            )
         if not is_vs_screen(frame):
             self._vs_streak = 0
             self._vs_recorded_this_match = False

@@ -49,6 +49,17 @@ V220+)からHueが10ポイント以上外れていた。単純なRGBチャンネ
 読み込み経路そのものに起因する)。そのため真陽性の検証は、実測したHSV値を
 直接使う合成フレームによるテストに置き換えている。
 
+【2026-07-31追記・下記Issue #144/#189対応で状況が変わった】上記は色判定
+単体が主判定だった当時の話。レターボックス判定(is_letterboxed、下記)を
+主判定にした後は、fixtures/screenshots内の実際のVS画面スクリーンショット
+(`72_matching_hdr_off_1.png`等、"matching"を含む5枚)がcv2.imread経由でも
+`is_vs_screen()`でTrueと判定されることを確認した。輝度(黒帯かどうか)は
+色相ほど読み込み経路の違いに敏感ではなく、かつ色判定側もこの対応で
+大まかな除外フィルタへ緩めたため、両方が揃って初めてcv2経由でも真陽性の
+検証ができるようになった。この5枚は`tests/test_matchmaking.py`で真陽性の
+regressionテストとして使っている(cv2.imread経由でのVS画面検知が壊れて
+いないことを継続的に検証できる、という副次的な効果)。
+
 ROIの妥当性(他の画面状態との重複が無いこと)自体は旧fixture収集時に
 fixtures/screenshots全44枚・fixtures/videos全動画で確認済み。
 
@@ -57,8 +68,37 @@ fixtures/screenshots全44枚・fixtures/videos全動画で確認済み。
 (fixtures/videos/12_win_red_vs_screen_to_result.mp4のframe 4397)。この
 誤検知は1フレーム(30fps換算で約33ms)しか継続せず、本物のVS画面は
 150フレーム(5秒)以上安定して表示され続けるため、banner.pyのバナー判定
-同様、呼び出し側でmotion.find_confirmed_valueによるデバウンス
+同様、呼び出し側でmotion.find_confirmed_value等によるデバウンス
 (数百ms〜1秒程度の連続を要求)と組み合わせて使うことを前提とする。
+
+Issue #144/#189対応(2026-07-31、実配信でVS画面が最後まで一度も確定しなかった
+セッションの調査): 録画(`tmp/2026-07-31 00-03-29.mkv`)とログを突き合わせたところ、
+実際のVS画面表示中(ユーザーが目視で特定した2試合分、動画内0:01:38-0:01:44・
+0:06:24-0:06:38)のHSVは**H≈82-84/S≈89-90/V≈222-224**で、Issue #116時点の
+閾値(H95-104/S88-98/V230+)からHueが約11〜22ポイント・Valueが約6〜8ポイント
+外れていた(Saturationのみ閾値内)。Issue #68・#116に続き3度目の発色ドリフト。
+
+この調査の過程で、VS画面には他の画面には無い構造的な特徴があることが分かった:
+**画面上部(row 0-27)と下部(row 985-1079)が完全に黒い帯になり、中央部分は
+通常どおり背景・キャラクターが表示され続ける**(レターボックス状のクロップ)。
+この録画全編(約11分・42352フレーム、実プレイ中・試合間の暗転を含む)を
+「上帯・下帯がLETTERBOX_MAX_BRIGHTNESS未満、かつ中央帯が
+LETTERBOX_MIDDLE_MIN_BRIGHTNESS以上」という条件でスキャンしたところ、
+該当したのは目視で確認した2試合分のVS画面区間のみで、誤検知は0件だった
+(試合間の暗転は中央帯も含め画面全体が暗くなるため、中央帯の明るさ条件で
+自然に区別できる)。輝度(黒かどうか)はYUV→BGR変換の経路が変わっても
+Hueほどブレないと考えられるため、今回の発色ドリフトに対してロゴの色判定
+単体より頑健な信号として、`is_letterboxed()`を`is_vs_screen()`の主判定に
+採用した(ユーザーとの相談で決定)。
+
+ただし今回の検証は1セッション(2試合)分のみのデータであり、このゲームには
+今回観測していない画面(リプレイ演出等)で偶然同じレターボックス構図を
+持つものが無いとは言い切れない。そのため、ロゴの色判定を完全に廃止はせず、
+`is_vs_screen()`はレターボックス判定とのAND条件として残す。ただし主判定は
+レターボックス側に移ったため、色判定はもう精密な閾値である必要が無く、
+「明らかに違う色ではないことの大まかな確認」程度の緩いフィルタへ格下げした
+(`VS_HUE_RANGE`/`VS_SAT_RANGE`/`VS_VAL_MIN`を今回の実測値中心に大きく
+広いマージンを取って再較正)。
 """
 
 import cv2
@@ -71,15 +111,27 @@ from nss_tracker.detection_config import get_detection_value
 # (config/detection.tomlの[matchmaking]で上書き可能。以下同様)
 VS_ROI = get_detection_value("matchmaking", "VS_ROI", (880, 495, 1050, 600))
 
-# 実測(Issue #116、2026-07-24の実機ライブパイプライン・FfmpegFrameReader経由)。
-# 2026-07-24 23:26:02〜23:26:15の安定区間(750サンプル)でH99.47-99.83/
-# S91.97-94.72/V236.14-238.28(モジュールdocstring参照)。過去の閾値決定
-# (Issue #68・cv2実測値ベース)は一切考慮せず、この実測値のみにマージンを
-# 加えて決め直した(単一セッションの実測のため、実測範囲より広めにマージンを
-# 取っている)
-VS_HUE_RANGE = get_detection_value("matchmaking", "VS_HUE_RANGE", (95, 104))
-VS_SAT_RANGE = get_detection_value("matchmaking", "VS_SAT_RANGE", (88, 98))
-VS_VAL_MIN = get_detection_value("matchmaking", "VS_VAL_MIN", 230)
+# Issue #144/#189: 今回実測(2026-07-31、実機ライブパイプライン・
+# FfmpegFrameReader経由、2試合分)したVS画面のHSVはH≈82-84/S≈89-90/V≈222-224
+# (モジュールdocstring参照)。主判定がis_letterboxed()に移ったため、ここでは
+# 大まかな除外フィルタとして機能すればよく、実測値に大きく広いマージンを
+# 加えている(単一セッションの実測のため、今後さらにズレても壊れにくいよう
+# 意図的に広め)
+VS_HUE_RANGE = get_detection_value("matchmaking", "VS_HUE_RANGE", (65, 100))
+VS_SAT_RANGE = get_detection_value("matchmaking", "VS_SAT_RANGE", (70, 105))
+VS_VAL_MIN = get_detection_value("matchmaking", "VS_VAL_MIN", 195)
+
+# Issue #144/#189: VS画面だけが持つレターボックス状の黒帯(モジュールdocstring
+# 参照)。上帯・下帯とも実測で境界からマージンを取った範囲(全幅)。
+# 上帯: 実測で黒→通常表示の境界はrow27→28(2試合とも同じ)。下帯: 境界は
+# row983→985だが、境界ぎりぎりを避けるため1000-1070とかなり内側に取っている
+LETTERBOX_TOP_ROI = get_detection_value("matchmaking", "LETTERBOX_TOP_ROI", (0, 2, 1920, 10))
+LETTERBOX_BOTTOM_ROI = get_detection_value("matchmaking", "LETTERBOX_BOTTOM_ROI", (0, 1020, 1920, 1070))
+# 中央帯: 暗転(試合間の画面全体が暗くなる区間)との区別用。ここが暗いままなら
+# レターボックスではなく単なる暗転とみなす
+LETTERBOX_MIDDLE_ROI = get_detection_value("matchmaking", "LETTERBOX_MIDDLE_ROI", (0, 200, 1920, 800))
+LETTERBOX_MAX_BRIGHTNESS = get_detection_value("matchmaking", "LETTERBOX_MAX_BRIGHTNESS", 10)
+LETTERBOX_MIDDLE_MIN_BRIGHTNESS = get_detection_value("matchmaking", "LETTERBOX_MIDDLE_MIN_BRIGHTNESS", 30)
 
 
 def read_vs_roi_hsv(frame: np.ndarray, roi: tuple[int, int, int, int] = VS_ROI) -> tuple[float, float, float]:
@@ -99,12 +151,47 @@ def read_vs_roi_hsv(frame: np.ndarray, roi: tuple[int, int, int, int] = VS_ROI) 
     return float(h), float(s), float(v)
 
 
+def read_letterbox_brightness(
+    frame: np.ndarray,
+    top_roi: tuple[int, int, int, int] = LETTERBOX_TOP_ROI,
+    bottom_roi: tuple[int, int, int, int] = LETTERBOX_BOTTOM_ROI,
+    middle_roi: tuple[int, int, int, int] = LETTERBOX_MIDDLE_ROI,
+) -> tuple[float, float, float]:
+    """上帯・下帯・中央帯それぞれの平均輝度(グレースケール)をそのまま返す(診断用)。
+
+    read_vs_roi_hsvと同じ位置づけで、DEBUGログから直接確認できるようにしている
+    (state.match_stateの_check_for_vs_screen参照)。
+    """
+
+    def _mean_gray(roi: tuple[int, int, int, int]) -> float:
+        x1, y1, x2, y2 = roi
+        gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+        return float(gray.mean())
+
+    return _mean_gray(top_roi), _mean_gray(bottom_roi), _mean_gray(middle_roi)
+
+
+def is_letterboxed(frame: np.ndarray) -> bool:
+    """VS画面特有のレターボックス(上下黒帯・中央は通常表示)になっているかを判定する。
+
+    モジュールdocstring参照(Issue #144/#189)。試合間の暗転(画面全体が暗くなる)
+    とは、中央帯が暗いままかどうかで区別する。
+    """
+    top, bottom, middle = read_letterbox_brightness(frame)
+    return top < LETTERBOX_MAX_BRIGHTNESS and bottom < LETTERBOX_MAX_BRIGHTNESS and middle >= LETTERBOX_MIDDLE_MIN_BRIGHTNESS
+
+
 def is_vs_screen(frame: np.ndarray, roi: tuple[int, int, int, int] = VS_ROI) -> bool:
     """マッチング完了(VS画面)の「VS」ロゴが表示されているかを判定する。
+
+    Issue #144/#189: レターボックス判定(is_letterboxed、モジュールdocstring参照)を
+    主判定とし、ロゴの色判定は大まかな除外フィルタとしてAND条件で組み合わせる。
 
     単発フレームでは試合中の演出アイコン等で稀に誤検知しうる(モジュール
     docstring参照)。呼び出し側でmotion.find_confirmed_value等によるデバウンスと
     組み合わせて使うことを前提とする。
     """
+    if not is_letterboxed(frame):
+        return False
     h, s, v = read_vs_roi_hsv(frame, roi)
     return VS_HUE_RANGE[0] <= h <= VS_HUE_RANGE[1] and VS_SAT_RANGE[0] <= s <= VS_SAT_RANGE[1] and v >= VS_VAL_MIN
