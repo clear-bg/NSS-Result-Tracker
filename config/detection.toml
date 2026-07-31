@@ -81,7 +81,9 @@ LETTERBOX_MAX_BRIGHTNESS = 10
 LETTERBOX_MIDDLE_MIN_BRIGHTNESS = 30
 
 [vs_rank]
-MINE_ICON_XYWH = [[83, 830, 33, 33], [305, 752, 28, 26], [465, 686, 28, 22], [649, 629, 24, 16]]
+# Issue #144: ユーザーが再実測し、各スロットの高さをやや拡張(根拠はdetection/
+# vs_rank.pyのモジュールdocstring参照)
+MINE_ICON_XYWH = [[83, 830, 33, 38], [305, 752, 28, 34], [465, 686, 28, 26], [649, 626, 24, 22]]
 MINE_NUM_XYWH = [[83, 871, 33, 19], [305, 788, 28, 17], [465, 714, 28, 14], [649, 652, 24, 12]]
 OPPONENT_X1 = [1448, 1270, 1151, 991]
 UPSCALE = 3
