@@ -98,6 +98,25 @@ Issue #159対応(BANNER_ROIの複数矩形化): 従来の単一ROI(1300,5,1750,3
 絡む形で再調査する。79_result_rank_up_hdr_off.png(ランク昇格オーバーレイ)
 がWIN_VAL_MINを緩めると誤検知することが判明したため、単純な閾値緩和では
 済まないことが分かっている)。
+
+Issue #193対応(2026-07-31、LOSE_VAL_RANGE再較正): 降格ラベル付きの負け
+バナー(fixtures/screenshots/98)はV53.7-59.2がLOSE_VAL_RANGEの下限65を
+下回り、classify_banner()がNoneを返すことがIssue #147/#192で判明していた。
+参照素材が1件のみのため一旦xfail扱いとしていたが、Issue #176/#201の調査で
+2件目の降格素材(106、動画43から切り出し)を収集した際、BANNER_ROIS平均
+V53.7-56.0が別セッション同士で高い一貫性を示し、かつ動画40・43それぞれで
+2秒以上安定していることを確認した(単発フレームのノイズではない)。この
+一貫性を踏まえ、下限を65→50に再較正した。降格ラベル・演出表示中は通常の
+負けバナーより画面全体がやや暗めに描画される(降格ラベル自体の半透明
+オーバーレイの影響と推測、根本原因は未確定)ことが、これで2セッション分の
+実データにより裏付けられた形になる。
+
+再較正にあたり、fixtures/screenshots全45枚・fixtures/videos全24本を新しい
+下限(50)でスキャンし、新たな誤検知が発生しないことを確認済み。該当した
+動画(29・33・39番)はいずれも本物の"lose"シーンの一部区間で、緩和後も
+正しく"lose"であり続けるべきフレームだった。Issue #172(WIN_HUE_RANGE/
+WIN_VAL_MIN、リーグ昇格演出と衝突するため単純な閾値緩和では解決しない)
+とは異なり、今回は衝突するfixtureが見つからなかったため安全に緩和できた。
 """
 
 from typing import Literal, Optional
@@ -139,7 +158,13 @@ WIN_SAT_MIN = get_detection_value("banner", "WIN_SAT_MIN", 120)
 WIN_VAL_MIN = get_detection_value("banner", "WIN_VAL_MIN", 165)
 LOSE_HUE_RANGE = get_detection_value("banner", "LOSE_HUE_RANGE", (87, 103))
 LOSE_SAT_RANGE = get_detection_value("banner", "LOSE_SAT_RANGE", (35, 65))
-LOSE_VAL_RANGE = get_detection_value("banner", "LOSE_VAL_RANGE", (65, 130))
+# Issue #193: 降格ラベル付きの負けバナーはV53.7-59.2と下限65を下回っていたが、
+# 別セッション2件(98・106、モジュールdocstring参照)で2秒以上安定した実測値
+# だったため、下限を65→50に再較正した(実測最小値53.7に対しマージン約4)。
+# fixtures/screenshots全45枚・fixtures/videos全24本を緩和後の範囲でスキャンし、
+# 新たな誤検知が無いことを確認済み(該当したのはいずれも本物のlose動画の
+# 一部区間のみ)
+LOSE_VAL_RANGE = get_detection_value("banner", "LOSE_VAL_RANGE", (50, 130))
 
 # 実測(Issue #45): 本物のバナーはH標準偏差1〜3程度(単色のリボン状の帯に白文字が
 # 乗る程度のばらつき)。マッチング待機画面の誤検知は背景の建造物が写実的なため
