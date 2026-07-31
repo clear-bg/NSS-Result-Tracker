@@ -64,13 +64,17 @@ EXPECTED = {
 # WIN_VAL_MINの閾値変更も不要(現状のVの下限が拡大表示の残光・昇格オーバーレイ
 # 双方を正しく除外できている)。ground truthをNoneに訂正し、xfailは解消する
 
-# 89番(引き分け)はHDR無効化後で初めて収集した引き分けの参照素材。実測ではH98.6〜
-# 102.2・V82.3〜89.3はLOSE_HUE_RANGE/LOSE_VAL_RANGEの範囲内だが、S28.1〜42.1が
-# LOSE_SAT_RANGE=(35, 65)の下限をわずかに下回り、classify_banner()がNoneを返す
-# (引き分け特有の見た目の暗さによるものか、単にこの1件のサンプルの照明条件による
-# ものかは、参照素材が1件のみのため未確定)。ground truthは"draw"のまま、既知の
-# 欠落としてxfailにする(閾値の再較正は別issueで検討)
-_KNOWN_DRAW_SAT_GAP = {"89_result_draw_without_rank_hdr_off.png"}
+# Issue #182(解消済み): 89番(引き分け)はH98.6〜102.2・V82.3〜89.3はLOSE_HUE_RANGE/
+# LOSE_VAL_RANGEの範囲内だが、S28.1〜42.1がLOSE_SAT_RANGE=(35, 65)の下限をわずかに
+# 下回りclassify_banner()がNoneを返していた。実際の"lose"バナー(S42.7〜45.3、
+# 複数fixture間で揃っている)との差が9〜12ポイントと大きく一貫しているため、単なる
+# 照明条件のノイズではなく「引き分けは負けより彩度が低い」という実際の色の違いと
+# 判断した。LOSE_SAT_RANGE自体を緩めると誤検知対策動画(fixtures/videos/
+# 21_goal_event_false_positive_win_blue_4-3.mp4)と衝突するため、代わりに"draw"の
+# 確定条件を独立した強い判定材料である_is_draw_text()の確認のみに切り離し
+# (LOSE_SAT_RANGEを通らなくても良い)、classify_banner()を組み替えて解消した
+# (詳細はdetection/banner.pyのモジュールdocstring参照)。89番も通常どおりEXPECTEDで
+# "draw"を期待する。
 
 # Issue #193(解消済み): 98番(降格ラベル付きの負けバナー)はV53.7〜59.2が
 # LOSE_VAL_RANGEの下限をわずかに下回りclassify_banner()がNoneを返していたが、
@@ -80,22 +84,7 @@ _KNOWN_DRAW_SAT_GAP = {"89_result_draw_without_rank_hdr_off.png"}
 
 
 @requires_fixtures
-@pytest.mark.parametrize(
-    "filename, expected",
-    [
-        pytest.param(
-            name,
-            expected,
-            marks=pytest.mark.xfail(
-                reason="LOSE_SAT_RANGEの下限をHDR無効化後の引き分け実測がわずかに下回っている(要issue化)",
-                strict=False,
-            ),
-        )
-        if name in _KNOWN_DRAW_SAT_GAP
-        else (name, expected)
-        for name, expected in sorted(EXPECTED.items())
-    ],
-)
+@pytest.mark.parametrize("filename, expected", sorted(EXPECTED.items()))
 def test_classify_banner(fixtures_dir, filename, expected):
     frame = cv2.imread(str(fixtures_dir / filename))
     assert frame is not None, f"failed to load {filename}"

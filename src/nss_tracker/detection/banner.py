@@ -140,6 +140,34 @@ WIN_VAL_MINの閾値変更は不要(現状のVの下限が拡大表示の残光�
 双方を正しく除外できている)。真に誤っていたのはtests/test_banner.py側の
 ground truth("win"を期待していた)であり、77・85の期待値をNoneに訂正して
 解決した(詳細はtests/test_banner.py参照)。
+
+Issue #182(引き分け判定をLOSE_SAT_RANGEから独立させる、2026-07-31): 89番
+(引き分け、ランク無し)はS=33.48が、実際の"lose"バナー(78・81・97番、
+S=42.7〜45.3、複数fixture間で揃っている)より9〜12ポイント低く、
+LOSE_SAT_RANGE=(35, 65)の下限をわずかに下回りclassify_banner()がNoneを
+返していた。この差は単発フレームのノイズにしては大きく一貫しており、
+「引き分けバナーは負けバナーより実際に彩度が低い」という本物の色の違いと
+判断した(#172の77・85番のような、撮影タイミングが違うフレームを誤って
+期待値にしていたテスト前提の誤りとは異なる)。
+
+一方、判定ロジックの構造に見直す余地があった。従来は"draw"の確定が
+"lose"用に決めたLOSE_SAT_RANGEの関門を通った後でなければ、独立した強い
+判定材料である_is_draw_text()(勝ち55%・引き分け25-27%・負け0%と明確に
+分離できる、上記「引き分け(draw)判定について」の節参照)に到達できない
+構造だった。89番はSがわずかに足りないだけでこの強い判定材料に辿り着く前に
+弾かれていた。
+
+このissueで緩和を見送る根拠になっていた衝突ケース(fixtures/videos/
+21_goal_event_false_positive_win_blue_4-3.mp4のframe 8165〜8175、
+S≈27.4〜30.7)を実際にコードで検証したところ、この区間は全フレームで
+_is_draw_text()がFalse(DRAW_TEXT_ROI内のteal_fraction=0.0000)だった。
+そのため、"draw"の確定条件をLOSE_SAT_RANGEから切り離し、H/V/hue_stdが
+"lose"相当の範囲内であることと_is_draw_text()の確認のみで決定するよう
+classify_banner()を組み替えた。"lose"は引き分けのようなテキストによる
+独立確認を持たないため、従来通りLOSE_SAT_RANGEでの色判定を維持している。
+この変更によりLOSE_SAT_RANGE自体は変更しておらず、"lose"の判定には
+影響しない。fixtures/screenshots全件・fixtures/videos全件を新旧ロジックで
+比較し、89番以外に判定結果が変わるフレームが無いことを確認済み。
 """
 
 from typing import Literal, Optional
@@ -239,10 +267,12 @@ def classify_banner(
         return None
     if WIN_HUE_RANGE[0] <= h <= WIN_HUE_RANGE[1] and s >= WIN_SAT_MIN and v >= WIN_VAL_MIN:
         return "win"
-    if (
-        LOSE_HUE_RANGE[0] <= h <= LOSE_HUE_RANGE[1]
-        and LOSE_SAT_RANGE[0] <= s <= LOSE_SAT_RANGE[1]
-        and LOSE_VAL_RANGE[0] <= v <= LOSE_VAL_RANGE[1]
-    ):
-        return "draw" if _is_draw_text(frame) else "lose"
+    if LOSE_HUE_RANGE[0] <= h <= LOSE_HUE_RANGE[1] and LOSE_VAL_RANGE[0] <= v <= LOSE_VAL_RANGE[1]:
+        # Issue #182: "draw"はLOSE_SAT_RANGEを満たさなくても_is_draw_text()の
+        # 独立した確認だけで確定する(モジュールdocstring参照)。"lose"はこの
+        # テキスト確認を持たないため、引き続きLOSE_SAT_RANGEで色のみから判定する
+        if _is_draw_text(frame):
+            return "draw"
+        if LOSE_SAT_RANGE[0] <= s <= LOSE_SAT_RANGE[1]:
+            return "lose"
     return None
