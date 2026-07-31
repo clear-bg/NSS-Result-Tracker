@@ -65,6 +65,20 @@ Issue #144対応(2026-07-31): MINE_ICON_XYWHをユーザーが再実測し、各
 変更なし。OPPONENT_ICON_ROISはこの値からOPPONENT_X1経由で自動導出されるため
 併せて更新される(OPPONENT_X1自体の値に変更は無い)。MINE_NUM_XYWH/
 OPPONENT_NUM_ROIS(数値ピル側)は変更していない。
+
+Issue #205対応(2026-07-31): 上記#144の作業中、単独1桁の数値ピル(例:
+fixtures/screenshots/82のopponent[0]、バッジ表記「S1」)がvalue=Noneとして
+読み取れない不具合が見つかった。切り出しROI自体には問題が無く(数字は
+くっきり写っている)、_ocr_texts()がPaddleOCRの文字検出(detection)段階で
+テキスト領域自体を1件も検出できていないことが原因と判明した。同じ試合の
+2桁の数値(opponent[1]の「41」等)は問題なく検出できているため、「1という
+文字が読みにくい」のではなく「単独1文字だと拡大後の文字が画像端に近すぎて
+検出器がテキスト領域と認識しにくい」という仮説を実測で確認した。ROI自体は
+変えず、_ocr_texts()が拡大後に追加する単色パディング(_PAD)を20→40pxに
+広げたところ、この問題が解消することを確認した(fixtures/screenshots/82・86、
+fixtures/videos/32のframe660で検証。86は元々8スロット全て2桁以上のため、
+パディングを広げても結果に変化が無く、既存の正しい読み取りへの悪影響が
+無いことも確認済み)。
 """
 
 import re
@@ -104,8 +118,15 @@ MINE_NUM_XYWH = get_detection_value(
 # x1(左上のx座標)だけが異なる(モジュールdocstring参照)。icon・numとも同じx1を使う
 OPPONENT_X1 = get_detection_value("vs_rank", "OPPONENT_X1", (1448, 1270, 1151, 991))
 
+# Issue #205: 単独1桁の数値ピル(例: opponent[0]の「1」1文字のみ)は、
+# パディング20pxだと拡大後の文字が画像端に近すぎてPaddleOCRの文字検出
+# (detection)自体が失敗する(空リストを返す)ことが判明した。40pxに広げると
+# 検出できるようになることを実測で確認済み(fixtures/screenshots/82・86、
+# fixtures/videos/32のframe660で検証。86は8スロット全て2桁以上のため
+# 元々問題なかったが、40pxに広げても結果に変化が無いことを確認し、
+# 既存の正しい読み取りへの悪影響が無いことも確認した)
 _UPSCALE = get_detection_value("vs_rank", "UPSCALE", 3)
-_PAD = get_detection_value("vs_rank", "PAD", 20)
+_PAD = get_detection_value("vs_rank", "PAD", 40)
 _LEADING_DIGITS = re.compile(r"^\d+")
 _LETTER_TIERS = ("S", "A")
 

@@ -86,8 +86,10 @@ LETTERBOX_MIDDLE_MIN_BRIGHTNESS = 30
 MINE_ICON_XYWH = [[83, 830, 33, 38], [305, 752, 28, 34], [465, 686, 28, 26], [649, 626, 24, 22]]
 MINE_NUM_XYWH = [[83, 871, 33, 19], [305, 788, 28, 17], [465, 714, 28, 14], [649, 652, 24, 12]]
 OPPONENT_X1 = [1448, 1270, 1151, 991]
+# Issue #205: 単独1桁の数値ピルのOCR検出漏れ対策で20→40に拡張(根拠は
+# detection/vs_rank.pyのモジュールdocstring参照)
 UPSCALE = 3
-PAD = 20
+PAD = 40
 
 [team_color]
 MINE_ROI = [441, 868, 461, 886]
