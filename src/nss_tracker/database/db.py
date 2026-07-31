@@ -405,6 +405,7 @@ def save_goal(
     scorer_name: Optional[str],
     assist_name: Optional[str],
     detected_at: datetime,
+    is_own_goal: bool = False,
 ) -> Optional[int]:
     """ゴールを1件goalsテーブルに保存する。
 
@@ -415,12 +416,28 @@ def save_goal(
     両方そのまま保存(どちらも無ければNoneを返す)、"allowlist_redact"は
     どちらか一方が許可リストにあれば保存するが、許可リストに無い方の名前は
     NULLにして保存する。
+
+    Issue #217: オウンゴール(is_own_goal=True)は得点者名パネル自体が表示され
+    ないためscorer_nameは常にNoneで渡ってくる(state.match_state参照)。
+    GOAL_RECORD_MODE="all"の場合のみ、scorer_nameに固定文字列「オウンゴール」を
+    書き込んで記録する。許可リストと照合できる実名が無いため、allowlist/
+    allowlist_redactでは記録しない。
     """
+    mode = get_goal_record_mode()
+
+    if is_own_goal:
+        if mode != "all":
+            logger.info(
+                "オウンゴールを検知しましたがGOAL_RECORD_MODE=allではないため記録しません: match_id=%d",
+                match_id,
+            )
+            return None
+        scorer_name = "オウンゴール"
+
     if not scorer_name:
         logger.info("ゴールを検知しましたが得点者名を読み取れなかったため記録しません: match_id=%d", match_id)
         return None
 
-    mode = get_goal_record_mode()
     scorer_allowed = is_allowed_player(scorer_name)
     assist_allowed = bool(assist_name) and is_allowed_player(assist_name)
 

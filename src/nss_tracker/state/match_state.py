@@ -269,7 +269,13 @@ import numpy as np
 
 from nss_tracker.config import get_goal_record_mode, is_allowed_player
 from nss_tracker.detection.banner import BannerResult, classify_banner
-from nss_tracker.detection.goal import confirm_goal_text, is_goal_event, read_assist_name, read_scorer_name
+from nss_tracker.detection.goal import (
+    confirm_goal_text,
+    is_goal_event,
+    is_own_goal_event,
+    read_assist_name,
+    read_scorer_name,
+)
 from nss_tracker.detection.league_change import (
     confirm_demotion_label_text,
     is_demotion_label_candidate,
@@ -368,6 +374,9 @@ class GoalEvent:
     scorer_name: Optional[str]
     assist_name: Optional[str]
     detected_at: datetime
+    # Issue #217: オウンゴールかどうか(検知層が見たものをそのまま報告するのみで、
+    # GOAL_RECORD_MODEに応じた記録可否の判断はdatabase.db.save_goal側の責務)
+    is_own_goal: bool = False
 
 
 class VsScreenEvent(NamedTuple):
@@ -613,6 +622,11 @@ class MatchStateMachine:
 
             scorer_name = scorer[0] if scorer is not None else None
             assist_name = assist[0] if assist is not None else None
+            # Issue #217: オウンゴールは得点者名パネル自体が表示されないため
+            # scorer_name/assist_nameは常にNoneのまま(detection.goalのdocstring参照)。
+            # 判定結果は見えたものをそのまま報告するのみで、GOAL_RECORD_MODEに応じた
+            # 記録可否の判断は永続化層(database.db.save_goal)の責務のまま変更しない
+            is_own_goal = is_own_goal_event(frame)
             # Issue #86: 検知した瞬間に得点者・アシスト名を許可リストの判定結果に
             # よらずINFOレベルで表示する(2026-07決め事、CLAUDE.md「ログ方針」参照。
             # 個人のローカル環境のみでの運用のため、許可リスト外の実名がログに
@@ -623,7 +637,9 @@ class MatchStateMachine:
             mode = get_goal_record_mode()
             scorer_allowed = scorer_name is not None and is_allowed_player(scorer_name)
             assist_allowed = assist_name is not None and is_allowed_player(assist_name)
-            if mode == "all":
+            if is_own_goal:
+                status = "記録対象(オウンゴール)" if mode == "all" else "オウンゴールのため記録対象外"
+            elif mode == "all":
                 status = "記録対象"
             elif not scorer_allowed and not assist_allowed:
                 status = "許可リスト外のため記録対象外"
@@ -645,6 +661,7 @@ class MatchStateMachine:
                     scorer_name=scorer_name,
                     assist_name=assist_name,
                     detected_at=now_jst(),
+                    is_own_goal=is_own_goal,
                 )
             )
 

@@ -948,6 +948,72 @@ def test_save_goal_all_mode_still_skips_when_scorer_name_missing(monkeypatch):
     assert fetch_all_goals(conn) == []
 
 
+def test_save_goal_own_goal_all_mode_records_with_marker_scorer_name(monkeypatch):
+    """Issue #217: オウンゴールはGOAL_RECORD_MODE=allの場合のみ、得点者名パネル
+    自体が表示されない(scorer_name=None)にも関わらず固定文字列「オウンゴール」を
+    scorer_nameとして記録する。
+    """
+    monkeypatch.setenv("ALLOWED_PLAYERS", "")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    goal_id = save_goal(
+        conn,
+        match_id=match_id,
+        scorer_name=None,
+        assist_name=None,
+        detected_at=datetime.now(timezone.utc),
+        is_own_goal=True,
+    )
+
+    assert goal_id is not None
+    row = fetch_all_goals(conn)[0]
+    assert row["scorer_name"] == "オウンゴール"
+    assert row["assist_name"] is None
+
+
+def test_save_goal_own_goal_allowlist_mode_is_skipped(monkeypatch):
+    """Issue #217: allowlistモードではオウンゴールに許可リストと照合できる実名が
+    無いため記録しない(現状維持)。
+    """
+    monkeypatch.setenv("ALLOWED_PLAYERS", "")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    goal_id = save_goal(
+        conn,
+        match_id=match_id,
+        scorer_name=None,
+        assist_name=None,
+        detected_at=datetime.now(timezone.utc),
+        is_own_goal=True,
+    )
+
+    assert goal_id is None
+    assert fetch_all_goals(conn) == []
+
+
+def test_save_goal_own_goal_allowlist_redact_mode_is_skipped(monkeypatch):
+    monkeypatch.setenv("ALLOWED_PLAYERS", "")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
+    conn = connect(":memory:")
+    match_id = _make_match(conn)
+
+    goal_id = save_goal(
+        conn,
+        match_id=match_id,
+        scorer_name=None,
+        assist_name=None,
+        detected_at=datetime.now(timezone.utc),
+        is_own_goal=True,
+    )
+
+    assert goal_id is None
+    assert fetch_all_goals(conn) == []
+
+
 def test_save_goal_redact_mode_nulls_out_disallowed_scorer(monkeypatch):
     """Issue #88の例そのもの: 許可リストに「ブルドッグ」がいて、
     得点者=たなか(許可リスト外)・アシスト=ブルドッグ(許可リスト内)の場合、
