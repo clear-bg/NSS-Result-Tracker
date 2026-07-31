@@ -135,6 +135,22 @@ is_league_change_screen()分岐が先に捕捉するため、正しく昇格と�
 約60フレーム、42番は約30フレームの安定した静止区間があり、いずれも既存の
 StabilityMonitorの安定待ち(30fps換算15フレーム相当)で問題なく間に合う)。
 
+ただし上記のleague_change_grace_frames満了待ちには依然として上限時間が
+あるため、理論上はそれより長く昇格演出の開始が遅れた場合(例: 何らかの理由で
+結果画面のまま長時間状態が変化しない)、同じ形の見逃しが再現しうる。この
+残存リスクに対する最終的な安全装置として、CLAUDE.md記載の「4. 暗転」
+(ランク確定〜昇格演出を含む一連の演出が完全に終わった直後、マッチング画面に
+戻る前に必ず一度全画面が真っ黒になる区間、detection.motion.is_full_blackout
+参照)を検知したら、grace_counter・near_tier_cap・バナー消灯確認の状態に
+一切関わらず直ちに確定するようにした(Issue #209)。暗転はランク確定と
+無関係なタイミング(マッチング開始直後・対戦相手が集まらずゲーム再起動する際等)
+でも起こりうるが、この判定はGRACE以降(_grace_candidate_rank_tierが一度でも
+読み取れた後)でのみ使うため、他のタイミングでの暗転が誤って確定をトリガー
+することはない。fixtures/videos全24本を実測し、結果バナーを含む全ての
+試合系クリップで暗転区間が輝度平均0.40〜0.43・標準偏差8.0〜8.2に収まり、
+それ以外の区間の最も暗いフレームでも輝度平均30以上だったことを確認済み
+(detection.motion.is_full_blackoutのモジュールdocstring参照)。
+
 ゴール(得点・アシスト)はWATCHING中(試合結果バナーを待っている=まさに
 プレイ中の期間)にのみ起こりうるため、_watch_for_banner()と並行して
 毎フレームチェックする。検知したゴールは試合単位でメモリ上にバッファし
@@ -261,7 +277,7 @@ from nss_tracker.detection.league_change import (
 )
 from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end_screen
 from nss_tracker.detection.matchmaking import is_vs_screen, read_letterbox_brightness, read_vs_roi_hsv
-from nss_tracker.detection.motion import StabilityMonitor
+from nss_tracker.detection.motion import StabilityMonitor, is_full_blackout
 from nss_tracker.detection.rank_ocr import (
     GAUGE_ROI_COMPACT,
     GAUGE_ROI_ENLARGED,
@@ -699,6 +715,17 @@ class MatchStateMachine:
             self._rank_monitor.update(frame)
             self._rank_phase = _RankPhase.WAITING_STABLE
             return None
+
+        # Issue #209: 暗転(画面全体が真っ黒)を検知したら、grace_counter・
+        # near_tier_cap・バナー消灯確認等の状態に関わらず直ちに確定する。
+        # この暗転は試合結果〜ランク確定演出(昇格演出を含む)が完全に終わった
+        # 直後にのみ現れるため、候補値を一度でも読み取れていればそれを採用して
+        # よい(モジュールdocstring参照)。is_stable系のロジックより前で
+        # チェックする必要がある: 暗転自体が直前フレームとの急激な変化になり
+        # StabilityMonitorを不安定化させてしまい、素通りするとWAITING_STABLEへ
+        # 戻ってこの確定に到達できなくなるため
+        if self._grace_candidate_rank_tier is not None and is_full_blackout(frame):
+            return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank())
 
         if self._rank_phase is _RankPhase.RESCAN_WAIT:
             return self._continue_rescan_wait(frame)
