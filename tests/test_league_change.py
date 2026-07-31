@@ -103,40 +103,19 @@ def test_is_league_change_screen_detects_promotion_overlay(videos_dir):
 # 実際に発生したことまでは確認していない(negative-caseの一般的な誤検知防止の
 # 回帰としてのみ使う)
 #
-# 29番はフレーム270〜300付近(約0.5秒)でis_league_change_screenが誤ってTrueになる
-# ことが判明した。原因はCLAUDE.mdに記載済みの「スタジアムのミント/ティール色の
-# 天蓋(屋根の日除け)」がカメラアングルの都合で画面に大きく写り込むケース
-# (Issue #67の2件目の参照サンプル`25_inplay_false_positive_win_blue_teal_canopy.mp4`
-# と同じ現象)で、これまでbanner.py側でのみ報告されていたが、is_league_change_screen
-# (画面全体の平均HSVで判定)も同じ天蓋色に反応しうることが今回新たに判明した。
-# Issue #150で調査したが、本物の昇格演出(79番・30番・21番のH101.21〜104.13)と
-# 天蓋誤検知(H最大103.51)のHue範囲が重なっており、単純な閾値再較正では
-# 分離できないと判明したため、Issue #172・#182と同じ結論でxfailのまま残す
-# (この調査は当初Issue #150に気づかず#185として重複起票していたが、#150に
-# 統合しduplicateとしてクローズ済み)
+# Issue #150(解消済み): 29番はフレーム270〜300付近(約0.5秒)でis_league_change_screenが
+# 誤ってTrueになっていた(スタジアムのミント/ティール色の天蓋の写り込み、
+# 画面全体の平均HSV判定だったことが原因)。Issue #160でROIベースの判定
+# (detection/league_change.pyのモジュールdocstring参照)に切り替えたことで解消し、
+# xfailを解除した。
 LEAGUE_DOWN_WITHOUT_OVERLAY_VIDEOS = [
     "29_lose_blue_hdr_off.mp4",
     "31_lose_blue_without_rank_hdr_off.mp4",
 ]
-_KNOWN_CANOPY_FALSE_POSITIVE_VIDEOS = {"29_lose_blue_hdr_off.mp4"}
 
 
 @requires_video_fixtures
-@pytest.mark.parametrize(
-    "video_name",
-    [
-        pytest.param(
-            name,
-            marks=pytest.mark.xfail(
-                reason="スタジアムのミント色天蓋の写り込みでis_league_change_screenが誤検知する(Issue #150で調査、Hue範囲重複のため単純な閾値再較正では未解決)",
-                strict=False,
-            ),
-        )
-        if name in _KNOWN_CANOPY_FALSE_POSITIVE_VIDEOS
-        else name
-        for name in LEAGUE_DOWN_WITHOUT_OVERLAY_VIDEOS
-    ],
-)
+@pytest.mark.parametrize("video_name", LEAGUE_DOWN_WITHOUT_OVERLAY_VIDEOS)
 def test_is_league_change_screen_false_throughout_when_no_dedicated_overlay(videos_dir, video_name):
     video_path = videos_dir / video_name
     if not video_path.is_file():
@@ -147,6 +126,30 @@ def test_is_league_change_screen_false_throughout_when_no_dedicated_overlay(vide
             f"{video_name}のフレーム{idx}で誤検知した"
             "(この動画は降格が小さいラベル表示のみで全画面演出が出ないケース)"
         )
+
+
+# Issue #160のROIベース再較正の検証中に、Issue #67のbanner.py誤検知動画として
+# 収集されていた21番に、これまで気付かれていなかった本物の昇格演出区間が
+# 含まれていることが判明した(frame 8532以降、目視確認済み)。天蓋誤検知の
+# 解消を確認する既存のnegative-caseとは別に、この動画でも真陽性を検知できる
+# ことを確認する回帰テストとして追加する
+PROMOTION_IN_GOAL_FALSE_POSITIVE_VIDEO = "21_goal_event_false_positive_win_blue_4-3.mp4"
+PROMOTION_IN_GOAL_FALSE_POSITIVE_RANGE = range(8532, 8850)
+
+
+@requires_video_fixtures
+def test_is_league_change_screen_detects_previously_unnoticed_promotion_in_video21(videos_dir):
+    video_path = videos_dir / PROMOTION_IN_GOAL_FALSE_POSITIVE_VIDEO
+    if not video_path.is_file():
+        pytest.skip(f"{PROMOTION_IN_GOAL_FALSE_POSITIVE_VIDEO} が見つからない")
+
+    detected_overlay = False
+    for idx, frame in enumerate(_read_frames(video_path)):
+        if idx in PROMOTION_IN_GOAL_FALSE_POSITIVE_RANGE and is_league_change_screen(frame):
+            detected_overlay = True
+            break
+
+    assert detected_overlay, "昇格演出の区間で一度もTrueにならなかった"
 
 
 # Issue #176: 降格ラベル(「降格」の吹き出し)の検知。98・106はいずれも実際に

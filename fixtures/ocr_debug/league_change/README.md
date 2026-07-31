@@ -2,25 +2,59 @@
 
 `detection/league_change.py`は昇格・降格それぞれ別方式で判定する。
 
-## 昇格: is_league_change_screen()(ROI無し、画面全体の平均HSV)
+## 昇格: is_league_change_screen()(Issue #160/#150、ROIベース)
 
-ROI(部分領域)を持たず、**フレーム全体**の平均HSVで判定する。リーグ**昇格**時
-のみ表示される半透明の白っぽいオーバーレイが画面全体にかぶるため。
-領域を絞った判定ではないため、annotated画像・マスク画像は生成していない
-(画面全体を囲む枠を描いても位置の情報にならないため)。
-`79_result_rank_up_hdr_off_reference.png`はfixture本体を
-そのまま置いたもの。
+昇格演出は画面上下に**白い横長の帯**が出る(`PROMOTION_TOP_BAND_ROI`/
+`PROMOTION_BOTTOM_BAND_ROI`、下記annotated画像の水色枠)。輝度が非常に均一で
+明るいことを主判定とし、帯の内側のラベンダー色パネル(`PROMOTION_CONTENT_ROI`、
+下記のピンク枠)の色相を補助判定として組み合わせる。
+
+以前はフレーム全体の平均HSVで判定していたが、スタジアムのミント色天蓋が
+画面の大部分を占めるだけで誤検知する欠点があった(Issue #150)。VS画面の
+レターボックス判定(Issue #144/#189、`detection/matchmaking.py`の
+`is_letterboxed()`)と同じ、構造的な特徴(帯の均一性)を主判定にする方式へ
+切り替えて解消した。詳細な経緯は`detection/league_change.py`のモジュール
+docstring参照。
+
+| ROI | 枠色 | 種別 | 座標 (x1, y1)–(x2, y2) | サイズ (w×h px) |
+| --- | --- | --- | --- | --- |
+| promotion_top_band (PROMOTION_TOP_BAND_ROI) | #FFFF00 | brightness | (0, 122)–(1920, 158) | 1920×36 |
+| promotion_bottom_band (PROMOTION_BOTTOM_BAND_ROI) | #FFFF00 | brightness | (0, 924)–(1920, 957) | 1920×33 |
+| promotion_content (PROMOTION_CONTENT_ROI) | #C800FF | color | (0, 183)–(1920, 893) | 1920×710 |
 
 判定に使う閾値:
 
 | 閾値 | 値 |
 | --- | --- |
-| HUE_RANGE | (95, 108) |
-| SAT_RANGE | (55, 80) |
-| VAL_MIN | 180 |
+| PROMOTION_BAND_MIN_BRIGHTNESS | 200 |
+| PROMOTION_BAND_MAX_BRIGHTNESS_STD | 15.0 |
+| PROMOTION_CONTENT_HUE_RANGE | (100, 130) |
+| PROMOTION_CONTENT_SAT_MIN | 30 |
 
-`79_result_rank_up_hdr_off.png`(昇格演出、実測: H≈100-103, S≈66-70, V≈183-194)が
-唯一のHDR無効化後の参照fixture。
+実測(fixtures/screenshots/79・101、別セッション):
+
+| 領域 | H | S | 輝度(グレースケール)平均 | 輝度の標準偏差 |
+| --- | --- | --- | --- | --- |
+| 上帯(79) | 84.7 | 2.5 | 244.0 | 6.8 |
+| 上帯(101) | 80.2 | 3.1 | 245.0 | 6.8 |
+| 下帯(79) | 85.7 | 2.5 | 244.0 | 6.8 |
+| 下帯(101) | 80.0 | 2.8 | 245.1 | 6.8 |
+| 中身(79) | 115.3 | 60.0 | 202.8 | 27.4 |
+| 中身(101) | 115.6 | 60.0 | 203.2 | 27.4 |
+
+比較として、Issue #150の天蓋誤検知区間(fixtures/videos/29_lose_blue_hdr_off.mp4
+のframe 275〜298)における同じ上下帯の実測: 彩度39〜77・輝度の標準偏差29〜53と、
+昇格演出時(彩度2.5〜3.1・標準偏差6.8)から明確に分離できている。
+
+再較正後、fixtures/screenshots全45枚・fixtures/videos全24本(既知の天蓋誤検知
+2本(25・29番)を含む)をこのROIでスキャンし、天蓋誤検知は完全に解消(0件)、
+既知の昇格演出動画(30・42番)は引き続き正しく検知できることを確認した。
+副産物として、`21_goal_event_false_positive_win_blue_4-3.mp4`(Issue #67の
+banner.py誤検知動画として収集されたもの)にも、これまで気付かれていなかった
+本物の昇格演出区間が含まれていたことが判明した(frame 8532以降)。
+
+`79_result_rank_up_hdr_off_annotated.png`・`101_result_rank_up_hdr_off_2_annotated.png`
+がこのROIを重ねた画像。`roi_mask_promotion.png`はROI枠のみのマスク画像。
 
 ## 降格: is_demotion_label_candidate() / confirm_demotion_label_text()(Issue #176)
 

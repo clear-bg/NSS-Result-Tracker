@@ -1,8 +1,7 @@
 """リーグ**昇格**演出画面(全画面の半透明オーバーレイ)の検知。
 
 CLAUDE.md記載のとおり、この演出はランクの帯(数値)が実際に変化した場合のみ
-表示される特別イベント。通常のランク確定より低彩度・高輝度な半透明の白っぽい
-オーバーレイが画面全体にかぶるため、フレーム全体の平均HSVで判定する。
+表示される特別イベント。
 
 **この関数が検知するのは昇格側の全画面オーバーレイのみ**。降格時は全画面
 オーバーレイが表示されず、ランクバッジの上に小さな「降格」ラベルが乗るだけで
@@ -12,10 +11,35 @@ CLAUDE.md記載のとおり、この演出はランクの帯(数値)が実際に
 state.match_state側のバナー消灯時フォールバック確定・rank_recheck機構で
 別途対応している(state/match_state.py参照)。
 
-閾値は fixtures/videos/01_win_blue_2-1.mp4 の昇格演出区間と、
-fixtures/screenshots の非該当状態(ロビー・マッチング・試合中・結果バナー等)
-を実測して決定した(オーバーレイ: H≈100-103, S≈66-70, V≈183-194、
-非該当状態はいずれもHがもっと低いか、Sがもっと高い)。
+Issue #160/#150対応(2026-07-31、画面全体判定からROIベースへの移行):
+従来はフレーム全体の平均HSVで判定していたが(オーバーレイ: H≈100-103,
+S≈66-70, V≈183-194)、Issue #150でスタジアムのミント色天蓋が画面の
+大部分を占めるだけで誤検知することが判明した(fixtures/videos/
+29_lose_blue_hdr_off.mp4のframe 280〜294)。「画面全体」判定という設計自体が
+天蓋の映り込み面積に弱いことが根本原因のため、VS画面のレターボックス判定
+(Issue #144/#189、detection/matchmaking.pyのis_letterboxed())と同じ考え方の
+構造的な特徴に切り替えた。
+
+昇格演出は、画面の上下に**輝度が非常に均一で明るい白い横帯**が出る
+(PROMOTION_TOP_BAND_ROI/PROMOTION_BOTTOM_BAND_ROI)。実測(fixtures/screenshots/
+79・101、別セッション)では、この帯の輝度標準偏差は6.8で、天蓋誤検知区間
+(fixtures/videos/29のframe 275〜298、同じ帯領域を輝度標準偏差29.2〜52.8で
+実測)と比べて明確に分離できた。輝度標準偏差(≒帯の内側が単色でどれだけ
+均一か)は彩度・色相よりもYUV→BGR変換経路の違いの影響を受けにくいと
+考えられる(Issue #144のVS画面レターボックス判定でも同じ理由を採用した)。
+
+ただし白帯だけだと、画面が単に真っ白になっただけの別の状況(理論上)でも
+満たしてしまいうるため、白帯の内側にあるラベンダー色のパネル(PROMOTION_CONTENT_ROI)
+の色相も補助条件として確認する(実測: H≈115.3〜115.6で2セッションとも
+ほぼ一致)。
+
+この再較正後、fixtures/screenshots全45枚・fixtures/videos全24本(既知の
+天蓋誤検知2本(25・29番)を含む)を新しいROIでスキャンし、天蓋誤検知は
+完全に解消(0件)、既知の昇格演出動画(30・42番)は引き続き正しく検知
+できることを確認した。副産物として、21_goal_event_false_positive_win_blue_4-3.mp4
+(Issue #67のbanner.py誤検知動画として収集されたもの)にも、これまで
+気付かれていなかった本物の昇格演出区間が含まれていたことが判明した
+(frame 8532以降)。
 
 Issue #176対応(2026-07-31): 降格を独立した信号で検知できないか調査した結果、
 検知可能と判明したため`is_demotion_label_candidate()`/`confirm_demotion_label_text()`を
@@ -54,10 +78,25 @@ import numpy as np
 from nss_tracker.detection.goal import _get_name_reader
 from nss_tracker.detection_config import get_detection_value
 
-# config/detection.tomlの[league_change]で上書き可能
-HUE_RANGE = get_detection_value("league_change", "HUE_RANGE", (95, 108))
-SAT_RANGE = get_detection_value("league_change", "SAT_RANGE", (55, 80))
-VAL_MIN = get_detection_value("league_change", "VAL_MIN", 180)
+# Issue #160/#150: 昇格演出の上下に出る白帯(主判定)。解像度1920x1080の
+# フレームを前提とする(config/detection.tomlの[league_change]で上書き可能。
+# 以下同様。モジュールdocstring参照)
+PROMOTION_TOP_BAND_ROI = get_detection_value("league_change", "PROMOTION_TOP_BAND_ROI", (0, 122, 1920, 158))
+PROMOTION_BOTTOM_BAND_ROI = get_detection_value("league_change", "PROMOTION_BOTTOM_BAND_ROI", (0, 924, 1920, 957))
+# 帯が「明るく均一な単色」であることの判定閾値。実測(モジュールdocstring参照):
+# 昇格演出時は輝度平均244.0〜245.1・標準偏差6.8、天蓋誤検知時は輝度平均
+# 112.7〜221.8・標準偏差29.2〜52.8。標準偏差の方が分離が明確なためこちらを
+# 主に使い、輝度平均は暗い一様な背景(誤検知の可能性は低いが念のため)を
+# 除外する目的で緩めに設定している
+PROMOTION_BAND_MIN_BRIGHTNESS = get_detection_value("league_change", "PROMOTION_BAND_MIN_BRIGHTNESS", 200)
+PROMOTION_BAND_MAX_BRIGHTNESS_STD = get_detection_value("league_change", "PROMOTION_BAND_MAX_BRIGHTNESS_STD", 15.0)
+
+# 白帯の内側にあるラベンダー色のパネル部分(補助判定)。画面が単に真っ白に
+# なっただけの状況(理論上)と区別するために色相も確認する
+PROMOTION_CONTENT_ROI = get_detection_value("league_change", "PROMOTION_CONTENT_ROI", (0, 183, 1920, 893))
+# 実測(モジュールdocstring参照): H≈115.3〜115.6・S≈60(2セッションともほぼ一致)
+PROMOTION_CONTENT_HUE_RANGE = get_detection_value("league_change", "PROMOTION_CONTENT_HUE_RANGE", (100, 130))
+PROMOTION_CONTENT_SAT_MIN = get_detection_value("league_change", "PROMOTION_CONTENT_SAT_MIN", 30)
 
 # Issue #176: 降格ラベル(「降格」の吹き出し)の画面上の固定位置。解像度
 # 1920x1080のフレームを前提とする(モジュールdocstring参照)
@@ -69,15 +108,29 @@ DEMOTION_LABEL_BRIGHTNESS_THRESHOLD = get_detection_value("league_change", "DEMO
 DEMOTION_LABEL_WHITE_COUNT_RANGE = get_detection_value("league_change", "DEMOTION_LABEL_WHITE_COUNT_RANGE", (8000, 20000))
 
 
+def _is_uniform_bright_band(frame: np.ndarray, roi: tuple[int, int, int, int]) -> bool:
+    x1, y1, x2, y2 = roi
+    gray = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY)
+    return bool(gray.mean() >= PROMOTION_BAND_MIN_BRIGHTNESS and gray.std() <= PROMOTION_BAND_MAX_BRIGHTNESS_STD)
+
+
 def is_league_change_screen(frame: np.ndarray) -> bool:
     """リーグ**昇格**の演出オーバーレイが表示されているかを判定する。
 
     降格時はこの全画面オーバーレイ自体が発生しないため、常にFalseを返す
-    (モジュールdocstring参照)。
+    (モジュールdocstring参照)。上下の白帯(構造的な特徴)を主判定とし、
+    帯の内側のラベンダー色パネルの色相を補助判定として組み合わせる
+    (Issue #160/#150、モジュールdocstring参照)。
     """
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    h, s, v = hsv.reshape(-1, 3).mean(axis=0)
-    return HUE_RANGE[0] <= h <= HUE_RANGE[1] and SAT_RANGE[0] <= s <= SAT_RANGE[1] and v >= VAL_MIN
+    if not (
+        _is_uniform_bright_band(frame, PROMOTION_TOP_BAND_ROI)
+        and _is_uniform_bright_band(frame, PROMOTION_BOTTOM_BAND_ROI)
+    ):
+        return False
+    x1, y1, x2, y2 = PROMOTION_CONTENT_ROI
+    hsv = cv2.cvtColor(frame[y1:y2, x1:x2], cv2.COLOR_BGR2HSV).reshape(-1, 3)
+    h, s, _v = hsv.mean(axis=0)
+    return bool(s >= PROMOTION_CONTENT_SAT_MIN and PROMOTION_CONTENT_HUE_RANGE[0] <= h <= PROMOTION_CONTENT_HUE_RANGE[1])
 
 
 def is_demotion_label_candidate(frame: np.ndarray, roi: tuple[int, int, int, int] = DEMOTION_LABEL_ROI) -> bool:
