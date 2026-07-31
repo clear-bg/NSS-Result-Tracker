@@ -10,7 +10,7 @@ EXPECTED = {
     "74_goal_with_assist_red_hdr_off.png": None,
     "75_goal_blue_owngoal_hdr_off.png": None,
     "76_match_end_hdr_off.png": None,
-    "77_result_win_with_rank_red_hdr_off.png": "win",
+    "77_result_win_with_rank_red_hdr_off.png": None,
     "78_result_lose_with_rank_blue_hdr_off.png": "lose",
     "79_result_rank_up_hdr_off.png": None,
     "80_match_end_hdr_off_2.png": None,
@@ -18,7 +18,7 @@ EXPECTED = {
     "82_matching_with_rank_4v3_hdr_off.png": None,
     "83_goal_without_assist_blue_hdr_off.png": None,
     "84_result_win_with_rank_blue_hdr_off.png": "win",
-    "85_result_win_with_rank_enlarged_blue_hdr_off.png": "win",
+    "85_result_win_with_rank_enlarged_blue_hdr_off.png": None,
     "86_matching_with_rank_4v4_hdr_off.png": None,
     "87_matching_hdr_off_3.png": None,
     "88_result_win_without_rank_blue_hdr_off.png": "win",
@@ -42,17 +42,27 @@ EXPECTED = {
 }
 
 
-# Issue #172: WIN_HUE_RANGEの上限をIssue #172対応で86→87に広げ、84・88番
-# (H86.86、WIN_VAL_MINは165を満たしていた)は解消した。77・85番はV146.1〜148.5が
-# WIN_VAL_MIN=165をクリアできておらず、こちらを緩めると79_result_rank_up_hdr_off.png
-# (ランク昇格オーバーレイ、V150.18)を誤検知させることが分かっている。Hue標準偏差
-# での追加判別も試したが、実際の勝ち動画フレーム(28・30番)にもHstd最大5.68の
-# 高分散フレームが混在しており、79番のHstd3.98と分離できないため見送った
-# (詳細はIssue #172参照)。ground truthは"win"のまま、既知の欠落としてxfailにする
-_KNOWN_HUE_SHIFT_GAPS = {
-    "77_result_win_with_rank_red_hdr_off.png",
-    "85_result_win_with_rank_enlarged_blue_hdr_off.png",
-}
+# Issue #172/#211: 77・85番は当初「WIN_HUE_RANGE/WIN_VAL_MINがカバーできていない
+# 既知の欠落」としてground truthを"win"のままxfail扱いにしていたが、後日の調査で
+# 前提が誤っていたと判明した。両者とも実は**拡大表示**(ランク変動アニメーション
+# 開始後〜暗転までの間に表示されるサイズ)のタイミングのフレームであり(85はファイル
+# 名の通り、77はIssue #143対応時に「長らくコンパクト表示として誤分類されていた」と
+# 判明済み。CLAUDE.mdのランクOCR節参照)、正しく"win"判定できて
+# いる84・88・93〜96・99・100番(いずれもコンパクト表示=結果バナー確定直後)とは
+# 撮影タイミングが異なる。
+#
+# ランクゲージが動き始めた後(拡大表示以降)は画面全体がやや暗くなる演出が入り、
+# これがバナー帯のV(146.1〜148.5)を押し下げている。79・101番(昇格オーバーレイ、
+# V≈150)がこれと近い値になるのも、同じ「拡大表示以降の暗くなった局面」で右上に
+# バナーの残光が透けて見えているためで偶然ではない。
+#
+# state/match_state.pyを確認したところ、拡大表示以降のフェーズ(_track_rankの
+# GRACE中)でclassify_banner()を呼んでいる箇所は「バナーが消えたか(is None)」の
+# 確認のみで、"win"かどうかを再確認する箇所は無い。実際のwin/lose確定
+# (_watch_for_banner)はコンパクト表示のうち(V≈218前後)に完了しているため、
+# 77・85が"win"を返さないことは運用上のバグではなかった。WIN_HUE_RANGE/
+# WIN_VAL_MINの閾値変更も不要(現状のVの下限が拡大表示の残光・昇格オーバーレイ
+# 双方を正しく除外できている)。ground truthをNoneに訂正し、xfailは解消する
 
 # 89番(引き分け)はHDR無効化後で初めて収集した引き分けの参照素材。実測ではH98.6〜
 # 102.2・V82.3〜89.3はLOSE_HUE_RANGE/LOSE_VAL_RANGEの範囲内だが、S28.1〜42.1が
@@ -74,15 +84,6 @@ _KNOWN_DRAW_SAT_GAP = {"89_result_draw_without_rank_hdr_off.png"}
     "filename, expected",
     [
         pytest.param(
-            name,
-            expected,
-            marks=pytest.mark.xfail(
-                reason="WIN_HUE_RANGE/WIN_VAL_MINがHDR無効化後の実測を僅かにカバーできていない(Issue #172で対応予定)",
-                strict=False,
-            ),
-        )
-        if name in _KNOWN_HUE_SHIFT_GAPS
-        else pytest.param(
             name,
             expected,
             marks=pytest.mark.xfail(
