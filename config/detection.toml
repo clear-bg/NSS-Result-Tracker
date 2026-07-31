@@ -104,6 +104,8 @@ OPPONENT_ROI = [1804, 868, 1824, 886]
 [match_state]
 RANK_RECHECK_CHANGE_TOLERANCE = 0.05
 RANK_TIER_WRAP_MIN_MAGNITUDE = 0.5
+# Issue #209: 根拠はsrc/nss_tracker/state/match_state.pyのモジュールdocstring参照
+LEAGUE_CHANGE_IMMINENT_FILL_THRESHOLD = 0.95
 
 [match_end]
 MATCH_END_LEFT_ROI = [638, 422, 719, 509]
