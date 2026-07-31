@@ -66,11 +66,15 @@ def _read_frame(path, frame_index: int):
 
 
 # 目視で実際に確認したフレーム(is_match_end_screen/confirm_match_end_textの
-# 出力を転記したものではない、60fps)。21番のframe 465は「キックオフ」バナーで、
+# 出力を転記したものではない、60fps)。26番のframe 1232は「キックオフ」バナーで、
 # 色ベースのis_match_end_screenはTrueを返すがconfirm_match_end_textはFalseに
 # ならなければならない(Issue #76、モジュールdocstring参照)。
+#
+# Issue #215: 以前はHDRオン収録の21番動画(frame 465)を使っていたが、fixtureを
+# HDR無効化後の収録に統一するため、同じ「キックオフ」パターンをHDR無効化後の
+# 26番動画で代用するよう差し替えた
 KNOWN_KICKOFF_FRAMES = [
-    ("21_goal_event_false_positive_win_blue_4-3.mp4", 465),
+    ("26_goal_red_hdr_off.mp4", 1232),
 ]
 
 # state/match_state.pyのDEFAULT_MATCH_END_CONFIRM_FRAMES(30fps換算)と同じ値。

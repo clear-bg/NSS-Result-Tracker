@@ -128,28 +128,13 @@ def test_is_league_change_screen_false_throughout_when_no_dedicated_overlay(vide
         )
 
 
-# Issue #160のROIベース再較正の検証中に、Issue #67のbanner.py誤検知動画として
-# 収集されていた21番に、これまで気付かれていなかった本物の昇格演出区間が
-# 含まれていることが判明した(frame 8532以降、目視確認済み)。天蓋誤検知の
-# 解消を確認する既存のnegative-caseとは別に、この動画でも真陽性を検知できる
-# ことを確認する回帰テストとして追加する
-PROMOTION_IN_GOAL_FALSE_POSITIVE_VIDEO = "21_goal_event_false_positive_win_blue_4-3.mp4"
-PROMOTION_IN_GOAL_FALSE_POSITIVE_RANGE = range(8532, 8850)
-
-
-@requires_video_fixtures
-def test_is_league_change_screen_detects_previously_unnoticed_promotion_in_video21(videos_dir):
-    video_path = videos_dir / PROMOTION_IN_GOAL_FALSE_POSITIVE_VIDEO
-    if not video_path.is_file():
-        pytest.skip(f"{PROMOTION_IN_GOAL_FALSE_POSITIVE_VIDEO} が見つからない")
-
-    detected_overlay = False
-    for idx, frame in enumerate(_read_frames(video_path)):
-        if idx in PROMOTION_IN_GOAL_FALSE_POSITIVE_RANGE and is_league_change_screen(frame):
-            detected_overlay = True
-            break
-
-    assert detected_overlay, "昇格演出の区間で一度もTrueにならなかった"
+# Issue #215: 以前はここに、Issue #160のROIベース再較正の検証中に見つかった
+# 21番動画内の(それまで気付かれていなかった)本物の昇格演出区間を検知できるかの
+# 回帰テストがあった。21番はHDRオン収録のfixtureだったため削除し、このテストも
+# 削除した。同じ「実際の昇格演出動画で真陽性を検知できる」内容は、専用の
+# 昇格演出動画である30_win_blue_league_up_hdr_off.mp4(test_is_league_change_
+# screen_detects_promotion_overlay、上記参照)で既にカバーされているため、
+# 実質的な検証内容の損失は無い。
 
 
 # Issue #176: 降格ラベル(「降格」の吹き出し)の検知。98・106はいずれも実際に

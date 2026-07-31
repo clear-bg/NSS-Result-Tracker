@@ -39,8 +39,8 @@ def _run_state_machine(path: Path):
 
     main.pyの_make_match_state_machineと同じ設定でMatchStateMachineを構築する
     (Issue #76: 「試合終了」バナーを検知できた動画は短いデバウンス(1.0秒)、
-    できなかった動画(21_goal_event_false_positive_*.mp4)は長いデバウンス(2.0秒)に
-    自動的に切り替わる。個別のfixtureごとに閾値を指定する必要はない)。
+    できなかった動画は長いデバウンス(2.0秒)に自動的に切り替わる。個別の
+    fixtureごとに閾値を指定する必要はない)。
     """
     cap = cv2.VideoCapture(str(path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
