@@ -927,6 +927,116 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
     )
 
 
+def test_near_tier_cap_gauge_skips_early_finalize_and_catches_promotion(monkeypatch):
+    """Issue #209: ゲージが帯の上限付近(near_tier_cap)のままバナーが消えても、
+    早期確定パス(Issue #178)を使わずに待ち続け、その後実際に昇格演出
+    (is_league_change_screen)が始まれば正しく帯を+1して記録することを確認する。
+
+    fixtures/videos/30・42番の回帰(昇格演出が始まる前にゲージの踊り場+バナー消灯が
+    重なって誤って早期確定していた)を再現するテスト。
+    """
+    league_change_calls = {"n": 0}
+    # 昇格演出が始まる前の「踊り場」を十分な回数再現した後、1回だけ演出が来たことにする
+    PROMOTION_AT_CALL = 30
+
+    def fake_is_league_change_screen(frame):
+        league_change_calls["n"] += 1
+        return league_change_calls["n"] == PROMOTION_AT_CALL
+
+    precise_calls = {"n": 0}
+
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        precise_calls["n"] += 1
+        # 呼び出し1回目はbanner確定時の(before)読み取り、2回目はGRACE突入時
+        # (昇格演出が始まる前)の読み取りで、いずれも帯の上限付近の値を返す。
+        # 3回目以降(演出後の再度のGRACE突入時)から昇格後の値を返す
+        if precise_calls["n"] <= 2:
+            return (37, 37.98)  # 昇格直前、帯の上限付近で踊り場になっている状態
+        return (38, 38.06)  # 昇格後
+
+    def fake_read_rank_gauge_fill(frame, roi):
+        return 0.98 if precise_calls["n"] <= 2 else 0.06
+
+    banner_call_count = {"n": 0}
+
+    def fake_classify_banner(frame):
+        banner_call_count["n"] += 1
+        # banner_confirm_frames分は"win"を返して確定させ、以降はTRACKING_RANK中に
+        # バナーのテキストが一時的に(または最後まで)消えている状態を再現する
+        return "win" if banner_call_count["n"] <= 2 else None
+
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", fake_read_rank_gauge_fill)
+    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", fake_is_league_change_screen)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=200,
+        rank_recheck_interval_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(300):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_after == pytest.approx(38.06)
+    assert result.league_changed == "up", (
+        "昇格演出が始まる前に早期確定してしまい、昇格を見逃した(Issue #209の回帰)"
+    )
+
+
+def test_near_tier_cap_gauge_without_promotion_still_finalizes_after_full_grace_period(monkeypatch):
+    """Issue #209: ゲージが帯の上限付近でバナーが消えても、実際には昇格演出が
+    一度も来ない場合は、早期確定パスを使わないぶん通常より遅くはなるが、
+    league_change_grace_frames(通常のタイムアウト)満了時点で正しく確定する
+    ことを確認する(帯番号は変化なしのまま)。
+    """
+    banner_call_count = {"n": 0}
+
+    def fake_classify_banner(frame):
+        banner_call_count["n"] += 1
+        return "win" if banner_call_count["n"] <= 2 else None
+
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (37, 37.98))
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.98)
+    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: 37)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=10,
+        rank_recheck_interval_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった(通常のタイムアウトでも確定しないのは別の不具合)"
+    assert result.rank_after == pytest.approx(37.98)
+    assert result.league_changed is None
+
+
 def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
     """同じゴールバナーが表示され続けている間、複数回記録されない(デバウンス)ことを確認する。"""
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: True)
