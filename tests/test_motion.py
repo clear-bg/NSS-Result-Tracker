@@ -2,7 +2,7 @@ import cv2
 import pytest
 
 from conftest import requires_video_fixtures
-from nss_tracker.detection.motion import StabilityMonitor, find_confirmed_value
+from nss_tracker.detection.motion import StabilityMonitor, find_confirmed_value, is_full_blackout
 
 VIDEO_NAME = "28_win_red_1-0_hdr_off.mp4"
 TARGET_SIZE = (1920, 1080)
@@ -99,3 +99,59 @@ def test_find_confirmed_value_none_breaks_the_run():
 
 def test_find_confirmed_value_returns_none_when_nothing_confirmed():
     assert find_confirmed_value([None, "lose", "win", None], min_run_length=3) is None
+
+
+# Issue #209: 実際の映像を目視確認して決めたフレーム区間(is_full_blackout自体の
+# 判定結果をそのまま転記したものではない、60fps)。リーグ昇格試合で、ランク確定
+# 演出が完全に終わった直後・マッチング画面に戻る前に一度全画面が真っ黒になる
+# 区間(detection/motion.pyのモジュールdocstring参照)。
+BLACKOUT_VIDEO = "30_win_blue_league_up_hdr_off.mp4"
+BLACKOUT_NOT_YET_RANGE = range(2000, 2340)
+BLACKOUT_RANGE = range(2365, 2385)
+BLACKOUT_AFTER_RANGE = range(2410, 2460)
+
+
+def _read_frames(path):
+    cap = cv2.VideoCapture(str(path))
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            yield frame
+    finally:
+        cap.release()
+
+
+@requires_video_fixtures
+def test_is_full_blackout_detects_post_result_blackout(videos_dir):
+    video_path = videos_dir / BLACKOUT_VIDEO
+    if not video_path.is_file():
+        pytest.skip(f"{BLACKOUT_VIDEO} が見つからない")
+
+    detected_blackout = False
+    false_positive_frame = None
+    for idx, frame in enumerate(_read_frames(video_path)):
+        result = is_full_blackout(frame)
+        if idx in BLACKOUT_RANGE:
+            detected_blackout = detected_blackout or result
+        elif idx in BLACKOUT_NOT_YET_RANGE or idx in BLACKOUT_AFTER_RANGE:
+            if result and false_positive_frame is None:
+                false_positive_frame = idx
+
+    assert detected_blackout, "暗転区間で一度もTrueにならなかった"
+    assert false_positive_frame is None, f"暗転区間外(フレーム{false_positive_frame})で誤検知した"
+
+
+def test_is_full_blackout_true_for_synthetic_black_frame():
+    import numpy as np
+
+    black_frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    assert is_full_blackout(black_frame)
+
+
+def test_is_full_blackout_false_for_synthetic_bright_frame():
+    import numpy as np
+
+    bright_frame = np.full((10, 10, 3), 200, dtype=np.uint8)
+    assert not is_full_blackout(bright_frame)

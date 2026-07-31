@@ -161,6 +161,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(
@@ -200,6 +201,7 @@ def test_goal_detection_logs_scorer_and_assist_at_info_level(monkeypatch, caplog
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
@@ -229,6 +231,7 @@ def test_goal_detection_logs_not_recorded_when_outside_allowlist(monkeypatch, ca
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
@@ -258,6 +261,7 @@ def test_goal_detection_logs_always_recorded_in_all_mode(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
 
@@ -287,6 +291,7 @@ def test_goal_detection_logs_partial_redact_in_redact_mode(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "ブルドッグ")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
 
@@ -314,6 +319,7 @@ def test_goal_detection_logs_full_record_in_redact_mode_when_both_allowed(monkey
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
 
@@ -343,6 +349,7 @@ def test_goal_detection_logs_no_redact_when_assist_missing_in_redact_mode(monkey
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
 
@@ -376,6 +383,7 @@ def test_rank_read_failure_is_logged(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: None)
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: None)
@@ -437,6 +445,7 @@ def test_track_rank_grace_tracks_slow_drift_every_frame(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -485,6 +494,7 @@ def test_track_rank_periodic_recheck_catches_tier_change(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -537,6 +547,7 @@ def test_tier_jump_recovers_via_rescan(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -580,6 +591,7 @@ def test_tier_jump_falls_back_to_gauge_continuity_when_rescan_still_implausible_
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -624,6 +636,7 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -667,6 +680,7 @@ def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -712,6 +726,7 @@ def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magni
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -760,6 +775,7 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -803,6 +819,7 @@ def test_unchanged_tier_stays_plausible_without_demotion_confirmation(monkeypatc
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -848,6 +865,7 @@ def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(mo
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -904,6 +922,7 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -974,6 +993,7 @@ def test_near_tier_cap_gauge_skips_early_finalize_and_catches_promotion(monkeypa
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -1017,6 +1037,7 @@ def test_near_tier_cap_gauge_without_promotion_still_finalizes_after_full_grace_
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -1037,6 +1058,51 @@ def test_near_tier_cap_gauge_without_promotion_still_finalizes_after_full_grace_
     assert result.league_changed is None
 
 
+def test_full_blackout_triggers_immediate_finalize_bypassing_grace_timeout(monkeypatch):
+    """Issue #209: 暗転(is_full_blackout)を検知したら、grace_counter・near_tier_cap・
+    バナー消灯確認の状態に関わらず直ちに確定することを確認する。
+
+    league_change_grace_framesを通常のタイムアウトでは到底終わらない大きさにし、
+    banner・ゲージとも通常どおり(帯の上限付近ではない)動いている想定でも、
+    暗転自体が独立した安全装置として機能することを示す回帰テスト。
+    """
+    blackout_calls = {"n": 0}
+    BLACKOUT_AT_CALL = 20
+
+    def fake_is_full_blackout(frame):
+        blackout_calls["n"] += 1
+        return blackout_calls["n"] >= BLACKOUT_AT_CALL
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (37, 37.40))
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.40)
+    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: 37)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=10_000,
+        rank_recheck_interval_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(100):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "暗転を検知しても確定しなかった"
+    assert result.rank_after == pytest.approx(37.40)
+    assert result.league_changed is None
+
+
 def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
     """同じゴールバナーが表示され続けている間、複数回記録されない(デバウンス)ことを確認する。"""
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: True)
@@ -1046,6 +1112,7 @@ def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(goal_confirm_frames=2)
@@ -1067,6 +1134,7 @@ def test_goal_candidate_rejected_by_ocr_is_not_recorded(monkeypatch):
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(goal_confirm_frames=2)
@@ -1229,6 +1297,7 @@ def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -1279,6 +1348,7 @@ def test_team_colors_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -1318,6 +1388,7 @@ def test_vs_screen_not_detected_results_in_none_team_colors(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -1354,6 +1425,7 @@ def test_vs_screen_confirmation_logs_ranks_at_info_level(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(vs_screen_confirm_frames=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -1380,6 +1452,7 @@ def test_pop_vs_screen_event_fires_once_at_confirmation(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(vs_screen_confirm_frames=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -1424,6 +1497,7 @@ def test_vs_screen_not_detected_results_in_empty_vs_ranks(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
@@ -1517,6 +1591,7 @@ def test_in_match_stays_true_after_finalize_without_match_end_confirmation(monke
     monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
     monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
@@ -1559,6 +1634,7 @@ def test_vs_screen_shown_continuously_reads_ranks_only_once(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(vs_screen_confirm_frames=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
