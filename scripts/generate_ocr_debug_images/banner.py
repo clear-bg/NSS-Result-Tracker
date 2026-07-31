@@ -29,12 +29,13 @@ BANNER_ROIS = _BANNER_ROIS
 DRAW_TEXT_ROI = _DRAW_TEXT_ROI
 
 # annotated画像を生成する対象fixture(fixtures/screenshots/配下)。
-# 引き分け(draw)のHDR無効化後fixtureはまだ無いため、勝ち/負けの2例のみ
-# (DRAW_TEXT_ROI自体の位置はどちらの画像でも変わらないため、内容が引き分けで
-# なくても枠の位置確認には使える)
+# 89番(引き分け、Issue #182)はHDR無効化後で初めて収集した引き分けの参照素材で、
+# 「引き分け」の文字自体が実際に写っている唯一のfixture(DRAW_TEXT_ROI枠が
+# 文字にかかっていないか確認する用途)
 SOURCE_FILENAMES = [
     "77_result_win_with_rank_red_hdr_off.png",
     "78_result_lose_with_rank_blue_hdr_off.png",
+    "89_result_draw_without_rank_hdr_off.png",
 ]
 
 
@@ -73,9 +74,13 @@ def main() -> None:
 
 `77_result_win_with_rank_red_hdr_off_annotated.png`(勝ち)・
 `78_result_lose_with_rank_blue_hdr_off_annotated.png`(負け)を参考として
-置いている。**引き分け(draw)のHDR無効化後fixtureは現時点で無い**ため、
-draw_text (DRAW_TEXT_ROI)の枠は位置の参考のみで、これらの画像では
-「引き分け」の文字自体は写っていない。
+置いている(draw_text (DRAW_TEXT_ROI)の枠は位置の参考のみで、これらの画像では
+「引き分け」の文字自体は写っていない)。
+
+`89_result_draw_without_rank_hdr_off_annotated.png`はHDR無効化後で初めて
+収集した引き分けの参照素材(Issue #182)。「引き分け」の文字自体が実際に
+写っている唯一のfixtureで、DRAW_TEXT_ROIの枠が文字にかかっていないか、
+BANNER_ROISの枠が帯にきちんと収まっているかを確認できる。
 
 `roi_mask.png`はROI枠のみを描画し、それ以外は透過にした画像(fixture本体の
 画像データは含まない)。手元の任意の画像に重ねて、現在のROIがどの位置に

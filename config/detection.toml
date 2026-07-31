@@ -19,7 +19,9 @@ WIN_SAT_MIN = 120
 WIN_VAL_MIN = 165
 LOSE_HUE_RANGE = [87, 103]
 LOSE_SAT_RANGE = [35, 65]
-LOSE_VAL_RANGE = [65, 130]
+# Issue #193: 降格ラベル付きの負けバナーの実測値(2セッション分)に合わせて
+# 下限を65→50に再較正(根拠はdetection/banner.pyのモジュールdocstring参照)
+LOSE_VAL_RANGE = [50, 130]
 BANNER_HUE_STD_MAX = 10.0
 DRAW_TEXT_ROI = [270, 45, 650, 250]
 DRAW_TEXT_HUE_RANGE = [75, 95]
