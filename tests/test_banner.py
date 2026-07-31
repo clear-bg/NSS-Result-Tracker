@@ -38,6 +38,7 @@ EXPECTED = {
     "102_goal_with_assist_blue_hdr_off.png": None,
     "103_match_end_knockout_hdr_off.png": None,
     "104_goal_with_assist_red_hdr_off_2.png": None,
+    "106_result_lose_with_rank_demotion_red_hdr_off_2.png": "lose",
 }
 
 
@@ -61,13 +62,11 @@ _KNOWN_HUE_SHIFT_GAPS = {
 # 欠落としてxfailにする(閾値の再較正は別issueで検討)
 _KNOWN_DRAW_SAT_GAP = {"89_result_draw_without_rank_hdr_off.png"}
 
-# 98番(降格ラベル付きの負けバナー)はIssue #147/#192で初めて収集した参照素材。
-# 実測ではH97.4〜99.6・S41.5〜49.6はLOSE_HUE_RANGE/LOSE_SAT_RANGEの範囲内だが、
-# V53.7〜59.2がLOSE_VAL_RANGE=(65, 130)の下限をわずかに下回り、classify_banner()が
-# Noneを返す(降格ラベル・演出の影響で通常の負けバナーより暗めに描画されている
-# 可能性があるが、参照素材が1件のみのため未確定)。ground truthは"lose"のまま、
-# 既知の欠落としてxfailにする(閾値の再較正はIssue #193で検討)
-_KNOWN_DEMOTION_VAL_GAP = {"98_result_lose_with_rank_demotion_red_hdr_off.png"}
+# Issue #193(解消済み): 98番(降格ラベル付きの負けバナー)はV53.7〜59.2が
+# LOSE_VAL_RANGEの下限をわずかに下回りclassify_banner()がNoneを返していたが、
+# 2件目の参照素材(106、別セッション)でも同水準のVが確認できたため、
+# LOSE_VAL_RANGEの下限を65→50に再較正して解消した(詳細はdetection/banner.pyの
+# モジュールdocstring参照)。98・106とも通常どおりEXPECTEDで"lose"を期待する。
 
 
 @requires_fixtures
@@ -92,15 +91,6 @@ _KNOWN_DEMOTION_VAL_GAP = {"98_result_lose_with_rank_demotion_red_hdr_off.png"}
             ),
         )
         if name in _KNOWN_DRAW_SAT_GAP
-        else pytest.param(
-            name,
-            expected,
-            marks=pytest.mark.xfail(
-                reason="LOSE_VAL_RANGEの下限を降格ラベル付きの負けバナー実測がわずかに下回っている(Issue #193で対応予定)",
-                strict=False,
-            ),
-        )
-        if name in _KNOWN_DEMOTION_VAL_GAP
         else (name, expected)
         for name, expected in sorted(EXPECTED.items())
     ],

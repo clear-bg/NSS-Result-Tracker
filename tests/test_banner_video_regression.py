@@ -56,44 +56,14 @@ def _confirmed_banner_result(path: Path) -> str | None:
         cap.release()
 
 
-# Issue #176調査用に追加収集した降格素材。結果バナー(「負け」)の表示区間が
-# 26フレーム(0.87秒)しかなく、MIN_CONFIRM_SECONDS(1.0秒)にわずかに届かない
-# ため、find_confirmed_valueがNoneのまま確定しない。目視確認済みで実際に
-# 「負け」バナーは表示されている(fixtures/ocr_debug/league_change/参照)ため、
-# classify_banner自体の誤検知ではなく、クリップの切り出しタイミングが
-# 他のfixtureより短かったことが原因と判断した(バグではないため既知のギャップ
-# としてxfail化。banner_confirm_frames_after_match_end相当の短いデバウンスで
-# あれば実運用では問題にならない)
-_KNOWN_SHORT_BANNER_VIDEOS = {"43_lose_red_demotion_hdr_off_2.mp4"}
-
-
 @requires_video_fixtures
 def test_confirmed_banner_matches_filename_across_real_clips(videos_dir):
     videos = _discover_result_videos(videos_dir)
     assert videos, "命名規則に沿った動画がfixtures/videos/に見つからない"
 
     for path, expected in videos:
-        if path.name in _KNOWN_SHORT_BANNER_VIDEOS:
-            continue
         confirmed = _confirmed_banner_result(path)
         assert confirmed == expected, f"{path.name}: 期待={expected} 実際={confirmed}"
-
-
-@requires_video_fixtures
-@pytest.mark.xfail(
-    reason="結果バナーの表示区間が26フレーム(0.87秒)しかなく、MIN_CONFIRM_SECONDS"
-    "(1.0秒)にわずかに届かないため確定しない(モジュール内のコメント参照。"
-    "classify_banner自体の誤検知ではない)",
-    strict=False,
-)
-def test_confirmed_banner_matches_filename_for_short_banner_video(videos_dir):
-    video_name = "43_lose_red_demotion_hdr_off_2.mp4"
-    video_path = videos_dir / video_name
-    if not video_path.is_file():
-        pytest.skip(f"{video_name} が見つからない")
-
-    confirmed = _confirmed_banner_result(video_path)
-    assert confirmed == "lose", f"{video_name}: 期待=lose 実際={confirmed}"
 
 
 # 実際の試合を1件も含まない、マッチング待機画面のみの動画(Issue #45)。
