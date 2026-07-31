@@ -187,7 +187,9 @@ def _record_match_result(conn: sqlite3.Connection, session_id: Optional[int], re
         result.opponent_team_color,
     )
     for goal in result.goals:
-        goal_id = db.save_goal(conn, match_id, goal.scorer_name, goal.assist_name, goal.detected_at)
+        goal_id = db.save_goal(
+            conn, match_id, goal.scorer_name, goal.assist_name, goal.detected_at, is_own_goal=goal.is_own_goal
+        )
         if goal_id is not None:
             logger.info(
                 "ゴールを記録しました: match_id=%d scorer=%s assist=%s", match_id, goal.scorer_name, goal.assist_name
