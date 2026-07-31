@@ -203,6 +203,20 @@ _infer_tier_from_gauge_continuity()では、この独立信号が得られてい
 ゲージ小数部の閾値判定より優先して降格と確定させ、得られていない場合は
 従来どおりの間接的な推測にフォールバックする(見逃しても既存の正しさは
 損なわれない、という他の2段構成の信号と同じ設計)。
+
+Issue #202: 上記の実装直後、降格ラベルを確認できていても帯番号OCRが
+「変化なし」(delta=0)を返した場合には独立信号が一切参照されず、降格が
+記録から漏れる穴が見つかった。_is_tier_change_plausible()はdelta=0を
+無条件に許容していたため、_infer_tier_from_gauge_continuity()への
+フォールバック自体が発生しなかったことが原因。負け試合かつ
+_demotion_confirmed_this_matchがTrueの場合はdelta=0も不自然とみなす
+よう修正し、他の帯番号急変ケースと同じ再スキャン経路に合流させることで、
+最終的にtier_before-1として記録できるようにした。降格の受理条件自体
+(delta=-1は`_pending_result == "lose"`のみで足りる、既存の緩い条件)は
+変更していない。同様の穴は昇格側(is_league_change_screenを確認できて
+いるのに帯番号OCRが変化無しに化けるケース)にも対称的に存在するが、
+今回のスコープには含めない(ユーザーと合意の上、必要になれば別issueで
+対応する)。
 """
 
 from dataclasses import dataclass, field
@@ -830,13 +844,21 @@ class MatchStateMachine:
         より、昇格(+1)は勝ちかつ昇格演出(is_league_change_screen)を確認できて
         いる場合のみ、降格(-1)は負けの場合のみ許容する。引き分けはゲージ自体が
         全く動かない仕様のため、変化無し(0)以外は常に不自然とみなす。
+
+        Issue #202: 変化無し(0)は上記に加えて、降格ラベル(is_demotion_label_candidate/
+        confirm_demotion_label_text、Issue #176)を確認できている負け試合では不自然と
+        みなす。降格ラベルという独立信号で降格の発生自体は確認できているにも
+        関わらず帯番号OCRが「変化なし」に化けてしまったケースを、他の帯番号急変
+        ケースと同じ再スキャン経路(_begin_finalize→_continue_rescan_wait→
+        _infer_tier_from_gauge_continuity)に合流させ、最終的にtier_before-1として
+        記録できるようにするため。
         """
         tier_before = self._pending_rank_before_tier
         if tier_before is None or tier_after is None:
             return True
         delta = tier_after - tier_before
         if delta == 0:
-            return True
+            return not (self._pending_result == "lose" and self._demotion_confirmed_this_match)
         if delta == 1:
             return self._pending_result == "win" and self._promotion_confirmed_this_match
         if delta == -1:
