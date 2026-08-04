@@ -257,8 +257,34 @@ _demotion_confirmed_this_matchがTrueの場合はdelta=0も不自然とみなす
 いるのに帯番号OCRが変化無しに化けるケース)にも対称的に存在するが、
 今回のスコープには含めない(ユーザーと合意の上、必要になれば別issueで
 対応する)。
+
+Issue #189: VS画面確定〜OBSシーン切替(in_match=True)までが実配信で10〜17秒
+遅れる不具合を調査したところ、色閾値のズレ(Issue #68/#116で一度あった前例)
+ではなく、`_check_for_vs_screen()`がVS画面確定のたびに同期的に呼んでいた
+`read_vs_screen_ranks()`(両チーム最大4人×アイコン判定+数値OCRで最大16回の
+PaddleOCR推論)が原因と判明した。実測でCPU上9〜16秒かかり、この間
+`process_frame()`全体がブロックされるため、次のフレームが読めないだけでなく、
+`main.py`の実行ループが`machine.in_match`の変化(OBSシーン切替のトリガー)に
+気付くタイミングもOCR完了まで遅延していた。単に`self._in_match = True`の
+代入位置をOCR呼び出しより前に移動するだけでは解決しない(`process_frame()`
+自体が同期呼び出しである以上、関数全体がOCR完了まで戻らないため)。
+
+対策として、VS画面確定を検知した瞬間(`_vs_screen_confirm_frames`のデバウンス
+成立時)に`self._in_match = True`・`self._session_match_no`のインクリメント・
+「試合開始」ログを即座に行い、`read_vs_screen_ranks()`/`read_team_colors()`は
+`_run_vs_ocr()`としてバックグラウンドスレッドに切り出した。OCR完了後に
+`_pending_vs_mine_ranks`等のpendingフィールドと`VsScreenEvent`
+(`pop_vs_screen_event()`、Issue #145)をスレッド側から書き込む。この試合が
+完全に終わる(`_finalize()`)までは`_vs_recorded_this_match`がTrueのままなので、
+同じ試合中に次のVS画面OCRが重ねて走ることはない。`_finalize()`はpendingフィールドを
+`MatchResult`に積む前にこのスレッドの完了を`join()`で待つ(通常はOCR自体が
+最大16秒・試合は数分続くため待たされることはないが、念のための安全策)。
+`_vs_screen_event`はpoll側(`pop_vs_screen_event()`、main.pyのループから毎フレーム
+呼ばれる)と書き込み側(バックグラウンドスレッド)が並行アクセスするため、
+`_vs_screen_event_lock`で保護する。
 """
 
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
@@ -478,6 +504,11 @@ class MatchStateMachine:
         # Issue #145: VS画面確定を検知した直後の1フレームだけpop_vs_screen_event()が
         # 返す値。取得されると(popされると)Noneに戻る「取得したら消費される」設計
         self._vs_screen_event: Optional[VsScreenEvent] = None
+        # Issue #189: 上記_vs_screen_eventおよび_pending_vs_*系フィールドは
+        # バックグラウンドスレッド(_run_vs_ocr)からも書き込まれるため、
+        # pop_vs_screen_event()側の読み取り+クリアと衝突しないよう保護する
+        self._vs_screen_event_lock = threading.Lock()
+        self._vs_ocr_thread: Optional[threading.Thread] = None
         self._match_end_streak = 0
         self._match_end_recorded_this_event = False
         self._match_end_seen = False
@@ -514,8 +545,9 @@ class MatchStateMachine:
         保持値はNoneに戻るため、main.py側はprocess_frame()を呼ぶたびに毎回
         これも呼び、Noneでなければその場でDBへ即時反映すること。
         """
-        event = self._vs_screen_event
-        self._vs_screen_event = None
+        with self._vs_screen_event_lock:
+            event = self._vs_screen_event
+            self._vs_screen_event = None
         return event
 
     def process_frame(self, frame: np.ndarray) -> Optional[MatchResult]:
@@ -551,35 +583,58 @@ class MatchStateMachine:
 
         self._vs_streak += 1
         if self._vs_streak >= self._vs_screen_confirm_frames and not self._vs_recorded_this_match:
-            self._pending_vs_mine_ranks, self._pending_vs_opponent_ranks = read_vs_screen_ranks(frame)
-            self._pending_mine_team_color, self._pending_opponent_team_color = read_team_colors(frame)
             self._vs_recorded_this_match = True
             self._in_match = True
             self._session_match_no += 1
-            # Issue #145: 試合結果確定(MatchResult)を待たず、main.py側が
-            # このフレームですぐDBへ反映できるようにする(pop_vs_screen_event参照)
-            self._vs_screen_event = VsScreenEvent(
-                mine_ranks=self._pending_vs_mine_ranks,
-                opponent_ranks=self._pending_vs_opponent_ranks,
-                mine_team_color=self._pending_mine_team_color,
-                opponent_team_color=self._pending_opponent_team_color,
-            )
             logger.info("%d試合目開始", self._session_match_no)
-            # Issue #121: ゴール検知(_check_for_goal)と同じく、DBへの記録タイミング
-            # (main.py側のsave_vs_slot_ranks時)を待たず、VS画面確定を検知した瞬間に
-            # 読み取ったランクをそのまま報告する
-            logger.info(
-                "%d試合目 VS画面ランク: mine=%s opponent=%s",
-                self._session_match_no,
-                self._pending_vs_mine_ranks,
-                self._pending_vs_opponent_ranks,
+            # Issue #189: read_vs_screen_ranks()は最大16回のPaddleOCR推論を伴い
+            # 9〜16秒かかる。process_frame()から同期的に呼ぶとこの間フレーム処理
+            # ループ全体がブロックされ、上記のin_match=True(OBSシーン切替の
+            # トリガー)がmain.py側に伝わるのもOCR完了まで遅延してしまう
+            # (実配信で確認済み、詳細はモジュールdocstring・Issue #189参照)。
+            # in_matchの確定は上記で即座に終わらせ、OCR自体は別スレッドに逃がし、
+            # 完了後にpending値・VsScreenEventを反映する。この試合が完全に終わる
+            # (_finalize())まではvs_recorded_this_matchがTrueのままなので、次の
+            # VS画面OCRが重ねて走ることはない(_finalize()側でスレッド完了を待つ)
+            match_no = self._session_match_no
+            self._vs_ocr_thread = threading.Thread(
+                target=self._run_vs_ocr, args=(frame, match_no), daemon=True
             )
-            logger.info(
-                "%d試合目 チームカラー: mine=%s opponent=%s",
-                self._session_match_no,
-                self._pending_mine_team_color,
-                self._pending_opponent_team_color,
-            )
+            self._vs_ocr_thread.start()
+
+    def _run_vs_ocr(self, frame: np.ndarray, match_no: int) -> None:
+        mine_ranks, opponent_ranks = read_vs_screen_ranks(frame)
+        mine_team_color, opponent_team_color = read_team_colors(frame)
+        self._pending_vs_mine_ranks = mine_ranks
+        self._pending_vs_opponent_ranks = opponent_ranks
+        self._pending_mine_team_color = mine_team_color
+        self._pending_opponent_team_color = opponent_team_color
+        # Issue #145: 試合結果確定(MatchResult)を待たず、main.py側が
+        # 次にprocess_frame()を呼んだタイミングですぐDBへ反映できるようにする
+        # (pop_vs_screen_event参照)
+        event = VsScreenEvent(
+            mine_ranks=mine_ranks,
+            opponent_ranks=opponent_ranks,
+            mine_team_color=mine_team_color,
+            opponent_team_color=opponent_team_color,
+        )
+        with self._vs_screen_event_lock:
+            self._vs_screen_event = event
+        # Issue #121: ゴール検知(_check_for_goal)と同じく、DBへの記録タイミング
+        # (main.py側のsave_vs_slot_ranks時)を待たず、OCRが完了した時点で
+        # 読み取ったランクをそのまま報告する
+        logger.info(
+            "%d試合目 VS画面ランク: mine=%s opponent=%s",
+            match_no,
+            mine_ranks,
+            opponent_ranks,
+        )
+        logger.info(
+            "%d試合目 チームカラー: mine=%s opponent=%s",
+            match_no,
+            mine_team_color,
+            opponent_team_color,
+        )
 
     def _check_for_match_end(self, frame: np.ndarray) -> None:
         if not is_match_end_screen(frame):
@@ -997,6 +1052,13 @@ class MatchStateMachine:
         return tier_before, tier_before + frac_after
 
     def _finalize(self, rank_after_tier: Optional[int], rank_after: Optional[float]) -> MatchResult:
+        # Issue #189: VS画面OCR(_run_vs_ocr)はバックグラウンドスレッドで実行される。
+        # 通常は試合が終わる頃には完了しているはずだが(OCR自体は最大16秒、試合は
+        # 数分続く)、念のためここで完了を待ってから_pending_vs_*系フィールドを
+        # 読み取る(未完了のままMatchResultを組むと空リストのまま記録されてしまう)
+        if self._vs_ocr_thread is not None:
+            self._vs_ocr_thread.join()
+            self._vs_ocr_thread = None
         if rank_after is None:
             logger.info(
                 "試合終了時点でもランクバッジを読み取れませんでした"
