@@ -300,7 +300,16 @@ def run(
                 _record_vs_screen_event(conn, session_id, vs_screen_event)
 
             if machine.current_state != prev_state:
-                logger.info("状態遷移: %s -> %s", prev_state, machine.current_state)
+                # 処理落ち(フレーム抜け)の実測用。この累計値を状態遷移のたびに出すことで、
+                # 例えばtracking_rank突入〜離脱の間の差分から、ランク確定処理中に
+                # どれだけフレームを読み捨てたかを事後に追えるようにする
+                logger.info(
+                    "状態遷移: %s -> %s (frames_produced=%d frames_consumed=%d)",
+                    prev_state,
+                    machine.current_state,
+                    reader.frames_produced,
+                    reader.frames_consumed,
+                )
                 prev_state = machine.current_state
 
             if machine.in_match != prev_in_match:

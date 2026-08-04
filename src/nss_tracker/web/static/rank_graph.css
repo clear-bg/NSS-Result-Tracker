@@ -19,18 +19,6 @@
     stroke-width: 3;
 }
 
-/* Issue #180: 隣り合う試合同士が連続しているとみなせない区間だけをつなぐ点線。
-   グラフ全体を貫く縦線ではなく折れ線の中で完結させることで、該当箇所が複数
-   あってもグラフがうるさくならないようにした(モックアップで比較の上、
-   ユーザーと決定)。実線(rank-graph-line)と見分けが付くよう、既存の白・シアン
-   とは系統の異なる琥珀色にする */
-.rank-graph-line-gap {
-    fill: none;
-    stroke: #e2a15f;
-    stroke-width: 3;
-    stroke-dasharray: 6 5;
-}
-
 .rank-graph-point {
     fill: #fff;
 }
