@@ -597,8 +597,14 @@ def test_tier_jump_recovers_via_rescan(monkeypatch):
     実装の出力を転記したものではない。
     """
     read_calls = {"n": 0}
+    raw_calls = {"n": 0}
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        raw_calls["n"] += 1
+        if raw_calls["n"] == 2:
+            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
+            return None
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # 結果バナー時点(before)
@@ -647,8 +653,14 @@ def test_tier_jump_falls_back_to_gauge_continuity_when_rescan_still_implausible_
     帯番号は変えずゲージ小数部の連続性だけを採用することを確認する(Issue #136)。
     """
     read_calls = {"n": 0}
+    raw_calls = {"n": 0}
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        raw_calls["n"] += 1
+        if raw_calls["n"] == 2:
+            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
+            return None
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # before(小数部0.2)
@@ -692,8 +704,14 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
     帯番号を1つ下げて記録することを確認する(Issue #136)。
     """
     read_calls = {"n": 0}
+    raw_calls = {"n": 0}
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        raw_calls["n"] += 1
+        if raw_calls["n"] == 2:
+            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
+            return None
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # before(小数部0.2)
@@ -736,8 +754,14 @@ def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
     不自然なままの場合は常に試合前の帯番号を据え置くことを確認する(Issue #136)。
     """
     read_calls = {"n": 0}
+    raw_calls = {"n": 0}
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        raw_calls["n"] += 1
+        if raw_calls["n"] == 2:
+            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
+            return None
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # before(小数部0.2)
@@ -781,8 +805,14 @@ def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magni
     判断できない)であっても、帯番号を1つ下げて記録することを確認する。
     """
     read_calls = {"n": 0}
+    raw_calls = {"n": 0}
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        raw_calls["n"] += 1
+        if raw_calls["n"] == 2:
+            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
+            return None
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # before(小数部0.2)
@@ -830,8 +860,14 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
     バグの回帰テスト)。
     """
     read_calls = {"n": 0}
+    raw_calls = {"n": 0}
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        raw_calls["n"] += 1
+        if raw_calls["n"] == 2:
+            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
+            return None
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # before(小数部0.2)
@@ -877,8 +913,14 @@ def test_unchanged_tier_stays_plausible_without_demotion_confirmation(monkeypatc
     再スキャンを挟まず素直に確定することを確認する。
     """
     read_calls = {"n": 0}
+    raw_calls = {"n": 0}
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        raw_calls["n"] += 1
+        if raw_calls["n"] == 2:
+            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
+            return None
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)
@@ -920,8 +962,14 @@ def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(mo
     確認する(小数部の増加幅が閾値未満のため、帯番号は据え置かれるはず)。
     """
     read_calls = {"n": 0}
+    raw_calls = {"n": 0}
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        raw_calls["n"] += 1
+        if raw_calls["n"] == 2:
+            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
+            return None
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)
@@ -979,10 +1027,11 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         rois_used.append(gauge_roi)
-        # 結果バナー確定直後(コンパクト表示)・GRACE突入直後(拡大表示)の読み取りは
-        # いずれも失敗させ、候補が一度も埋まらない状況を再現する。
+        # 結果バナー確定直後(コンパクト表示、Issue #222対応で拡大側への
+        # フォールバックも試みるが失敗させる)・GRACE突入直後(拡大表示)の
+        # 読み取りはいずれも失敗させ、候補が一度も埋まらない状況を再現する。
         # _fill_grace_candidate_if_missingによる最後のリトライだけ成功させる
-        if len(rois_used) <= 2:
+        if len(rois_used) <= 3:
             return None
         return (40, 40.5)
 
@@ -1039,15 +1088,17 @@ def test_near_tier_cap_gauge_skips_early_finalize_and_catches_promotion(monkeypa
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         precise_calls["n"] += 1
-        # 呼び出し1回目はbanner確定時の(before)読み取り、2回目はGRACE突入時
-        # (昇格演出が始まる前)の読み取りで、いずれも帯の上限付近の値を返す。
-        # 3回目以降(演出後の再度のGRACE突入時)から昇格後の値を返す
-        if precise_calls["n"] <= 2:
+        # 呼び出し1・2回目はbanner確定時の(before、Issue #222対応でコンパクト/
+        # 拡大両方を試すため2回になる。同じ値を返すため食い違いは起きない)、
+        # 3回目はGRACE突入時(昇格演出が始まる前)の読み取りで、いずれも
+        # 帯の上限付近の値を返す。4回目以降(演出後の再度のGRACE突入時)から
+        # 昇格後の値を返す
+        if precise_calls["n"] <= 3:
             return (37, 37.98)  # 昇格直前、帯の上限付近で踊り場になっている状態
         return (38, 38.06)  # 昇格後
 
     def fake_read_rank_gauge_fill(frame, roi):
-        return 0.98 if precise_calls["n"] <= 2 else 0.06
+        return 0.98 if precise_calls["n"] <= 3 else 0.06
 
     banner_call_count = {"n": 0}
 

@@ -348,6 +348,34 @@ Trueになるのは`process_frame()`呼び出しの途中(状態振り分け先�
 あり、OBSシーン切替が意図したタイミングより遅れる(または全く違うタイミング
 になる)。ユーザーと相談の上、今回は主要な経路(暗転即時確定パス)のみ対応
 することとし、この弱点への対応は見送った。
+
+Issue #222: 結果バナー確定直後の`rank_before`読み取り(`_watch_for_banner()`)が、
+負け試合を中心に`None`(読み取り失敗)になる不具合を調査した。バナー確定直後は
+「まだコンパクト表示のはず」という前提で`GAUGE_ROI_COMPACT`/`RANK_NUMBER_ROI_COMPACT`
+のみを使っていたが、実データ(2026-07-31の実機テストセッション)を確認したところ、
+ランクバッジがコンパクト→拡大表示へアニメーションで切り替わるタイミングと、
+バナー色判定の確定タイミングが競合し、確定した頃には既に拡大表示へ切り替わって
+いるケースがあった。
+
+当初「勝ちバナーより負けバナーの方が色判定の確定に時間がかかる」という仮説を
+立てたが、fixtures/videosのクリーンな動画(win 9本・lose 6本)と実機録画の
+両方で検証したところ、**バナーが実際に画面へ出てから確定するまでの時間は
+勝ち負けで差が無い(いずれも約0.97〜0.98秒)ことが分かり、この仮説は否定された**。
+確定処理自体の速度ではなく、バッジ自体がコンパクト表示に留まる時間(あるいは
+バッジがいつ画面に現れるか)が試合ごとに変動しており、それが確定タイミングとの
+競合を引き起こしていると考えられるが、根本的な原因(ゲーム側の演出タイミングの
+性質)はライブキャプチャのフレーム抜け等のノイズもあり完全には特定できていない。
+
+原因の完全特定を待たず、`_read_rank_before()`で対策した: `GAUGE_ROI_COMPACT`/
+`RANK_NUMBER_ROI_COMPACT`と`GAUGE_ROI_ENLARGED`/`RANK_NUMBER_ROI_ENLARGED`の
+両方で`read_precise_rank()`を試し、読み取れた方(`None`でない方)を採用する。
+間違ったROI(コンパクト表示にENLARGED、拡大表示にCOMPACT)を当てた場合は常に
+`None`を返すことをfixtures/screenshots 4件の実データで確認済みのため、通常は
+どちらか一方だけが成功し、「両方成功して異なる値を返す」リスクは低いと判断した
+(遷移アニメーション中の中間状態のフレームでは未検証のため、その場合に限り
+コンパクト側を優先しWARNINGログに残す)。この対策は原因(なぜコンパクト/拡大の
+どちらになるか)を問わず両方のケースに対応できるため、根本原因の特定より先に
+着手した。実機での効果検証は別途行う。
 """
 
 import threading
@@ -837,6 +865,39 @@ class MatchStateMachine:
                 )
             )
 
+    def _read_rank_before(self, frame: np.ndarray) -> Optional[tuple[int, float]]:
+        """結果バナー確定時点でランクバッジを読み取る(Issue #222)。
+
+        バナー確定直後は「まだコンパクト表示のはず」という前提が大半のケースで
+        成り立つが、「試合終了」バナー消灯からバナー色判定の確定までにかかる
+        時間が長引くと、確定した頃には既にバッジがコンパクト→拡大のアニメーション
+        を終えている(またはアニメーション中の)ことが実データで確認されている
+        (モジュールdocstring・Issue #222参照)。どちらのサイズになっているかを
+        事前に判定する手段が無いため、両方のROIで`read_precise_rank`を試し、
+        読み取れた方を採用する。
+
+        間違ったROI(コンパクト表示にENLARGED、拡大表示にCOMPACT)を当てた場合は
+        常にNoneを返すことをfixtures/screenshots 4件の実データで確認済み
+        (Issue #222の調査コメント参照)のため、通常はどちらか一方だけが
+        成功する。遷移アニメーション中の中間状態のフレームでごくまれに両方
+        成功してしまった場合は、値が食い違うかどうかに関わらずコンパクト側を
+        優先する(バナー確定直後は本来コンパクト表示のはず、という設計上の
+        期待に合わせるため)。食い違い自体はWARNINGログに残し、実際に発生する
+        頻度・どちらの値が正しいことが多いかは今後のデータで判断する。
+        """
+        compact_result = read_precise_rank(frame, GAUGE_ROI_COMPACT, RANK_NUMBER_ROI_COMPACT)
+        enlarged_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
+        if compact_result is not None and enlarged_result is not None and compact_result != enlarged_result:
+            logger.warning(
+                "結果バナー確定時点でコンパクト/拡大どちらのROIでもランクバッジが読み取れ、"
+                "値が食い違っています(compact=%s enlarged=%s)。コンパクト側を採用します",
+                compact_result,
+                enlarged_result,
+            )
+        if compact_result is not None:
+            return compact_result
+        return enlarged_result
+
     def _watch_for_banner(self, frame: np.ndarray) -> Optional[MatchResult]:
         result = classify_banner(frame)
         if result is not None and result == self._banner_candidate:
@@ -855,8 +916,10 @@ class MatchStateMachine:
         )
         if self._banner_streak >= required_streak:
             self._pending_result = self._banner_candidate
-            # バナー確定直後 = ランク変動アニメーションが始まる前 = 常にコンパクト表示
-            precise_result = read_precise_rank(frame, GAUGE_ROI_COMPACT, RANK_NUMBER_ROI_COMPACT)
+            # Issue #222: バナー確定直後は本来コンパクト表示のはずだが、確定までの
+            # 時間が長引くとバッジが既に拡大表示へ遷移していることがあるため、
+            # 両方のROIで試す(_read_rank_before参照)
+            precise_result = self._read_rank_before(frame)
             if precise_result is not None:
                 self._pending_rank_before_tier, self._pending_rank_before = precise_result
             else:
