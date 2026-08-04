@@ -1737,6 +1737,91 @@ def test_obs_switch_waits_for_blackout_after_finalize(monkeypatch):
     assert machine.in_match is False, "暗転検知からdelay分経過後にFalseへ戻るはず"
 
 
+def test_obs_switch_uses_first_blackout_when_finalize_itself_triggered_by_blackout(monkeypatch):
+    """Issue #224(追加調査): このゲームは試合終了後「ランク変更→暗転1→別画面→
+    暗転2→マッチング画面」の順で暗転が2回現れる。_finalize()がIssue #209の
+    「暗転を検知したら即確定」パス自身によって呼ばれた場合(=暗転1のフレーム
+    そのものがfinalizeのトリガー)でも、in_matchはこの暗転1を起点に
+    delay分待ってからFalseに戻ることを確認する(誤って暗転2を起点にしてしまう
+    と、別画面を挟んだ分だけ切替が遅れる・タイミングがずれる回帰を防ぐ)。
+    """
+    frame_idx = {"n": 0}
+
+    def fake_is_vs_screen(frame):
+        return frame_idx["n"] < 2
+
+    def fake_is_match_end_screen(frame):
+        return 2 <= frame_idx["n"] < 4
+
+    def fake_classify_banner(frame):
+        return "win" if 5 <= frame_idx["n"] < 8 else None
+
+    BLACKOUT1_FRAME = 10
+    BLACKOUT2_FRAME = 40  # 別画面を挟んだ十分後ろ(暗転1を正しく捕まえていれば無関係のはず)
+
+    def fake_is_full_blackout(frame):
+        n = frame_idx["n"]
+        return n == BLACKOUT1_FRAME or n >= BLACKOUT2_FRAME
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", fake_is_match_end_screen)
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
+
+    machine = MatchStateMachine(
+        vs_screen_confirm_frames=2,
+        banner_confirm_frames=2,
+        banner_confirm_frames_after_match_end=2,
+        match_end_confirm_frames=1,
+        # grace期間満了・periodic recheckいずれの経路でも確定させず、暗転即時確定
+        # パスのみで確定させるため、これらのフレーム数閾値を到底届かない大きさにする
+        league_change_grace_frames=10_000,
+        rank_recheck_interval_frames=10_000,
+        obs_switch_delay_after_blackout_frames=5,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    result = None
+    finalize_frame = None
+    for _ in range(BLACKOUT1_FRAME + 5):
+        result = machine.process_frame(frame)
+        if result is not None and finalize_frame is None:
+            finalize_frame = frame_idx["n"]
+        frame_idx["n"] += 1
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert finalize_frame == BLACKOUT1_FRAME, "暗転1のフレーム自体がfinalizeのトリガーになっているはず"
+    assert machine.in_match is True, "確定直後、delay未経過ではまだTrueのはず"
+
+    in_match_became_false_frame = None
+    for _ in range(20):
+        machine.process_frame(frame)
+        if in_match_became_false_frame is None and machine.in_match is False:
+            in_match_became_false_frame = frame_idx["n"]
+            break
+        frame_idx["n"] += 1
+
+    assert in_match_became_false_frame is not None, "in_matchがFalseに戻らなかった"
+    assert in_match_became_false_frame < BLACKOUT2_FRAME, (
+        "暗転2(別画面を挟んだ2回目)を待たず、暗転1を起点にFalseへ戻っているはず"
+    )
+    # 暗転1のフレーム自体が1カウント目のため、delay(=5)到達は暗転1からdelay-1フレーム後
+    assert in_match_became_false_frame == BLACKOUT1_FRAME + 5 - 1, (
+        "暗転1からobs_switch_delay_after_blackout_frames(=5)分経過後にFalseへ戻るはず"
+    )
+
+
 def test_in_match_stays_true_after_finalize_without_match_end_confirmation(monkeypatch):
     """Issue #190: 「試合終了」バナーをOCR確認できないまま試合結果が確定した場合
     (実プレイ中の背景誤検知がbanner_confirm_framesを突破した可能性を否定できない

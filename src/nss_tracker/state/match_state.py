@@ -311,6 +311,43 @@ Issue #224: 試合終了時のOBSシーン切替(in_match=False)が、結果画�
 同じ性質の劣化パターン)。次の試合のVS画面確定が先に来た場合(暗転待ちの
 間に次の試合が始まる、実際にはほぼ起きないはずのレアケース)は、in_match=True
 を優先し`_pending_obs_switch`を破棄する(`_check_for_vs_screen()`参照)。
+
+上記の対応後、ユーザーから追加の仕様確認があった: このゲームでは試合終了後、
+「ランク変更→暗転1→別画面→暗転2→マッチング画面」の順で**暗転が2回**現れる
+(試合開始前にも別途1回現れるが、これは`_pending_obs_switch`がFalseの間は
+`_check_pending_obs_switch()`が素通りするため無関係)。切替のトリガーに
+使うべきは常に暗転1のみで、暗転2(別画面を挟んだ2回目)は無視したい、という
+要件だった。
+
+`_check_pending_obs_switch(frame)`の呼び出し位置が`process_frame()`の先頭
+だと、この要件を満たせないケースがあった。`_finalize()`は複数の経路から
+呼ばれるが、そのうちIssue #209の「暗転を検知したら即確定」パスでは、確定の
+トリガーそのものが暗転1のフレームである。この経路で`_pending_obs_switch`が
+Trueになるのは`process_frame()`呼び出しの途中(状態振り分け先の`_track_rank()`
+内)のため、状態振り分けより前で`_check_pending_obs_switch()`を呼ぶと、まだ
+`_pending_obs_switch`がFalseのまま素通りしてしまい、「このフレーム自体が
+暗転1だ」と気づけない。次のフレームで改めて`is_full_blackout()`を待つ形に
+なるが、暗転1は既に終わっている(実測0.3〜0.5秒)ため、次に検知するのは
+別画面を挟んだ暗転2になってしまう。
+
+対策として、`_check_pending_obs_switch(frame)`の呼び出し位置を状態振り分けの
+**後**に移動した。これにより、`_finalize()`が暗転1のフレームそのものを
+トリガーに呼ばれた場合でも、同じフレームで`is_full_blackout(frame)`を
+再チェックしてすぐカウンターを開始できる。一度カウンターが始まったら、
+その後は`is_full_blackout()`を再チェックせず単純に経過フレーム数だけを
+数えて発火するため、途中で暗転2が来ても(あるいは来なくても)無視される。
+「暗転1と暗転2の間に試合終了系の検知を一切行っていない暗転は無視する」
+という要件は、この「暗転1を正しく捕まえたら、以降は数えるだけ」という
+設計で自然に満たされる。
+
+なお、`_finalize()`がgrace期間満了(league_change_grace_frames、既定5秒)
+経由で暗転1より後に呼ばれてしまう極端なケース(ゲージの緩やかな変動で
+スタビリティ判定が長引く等)は、この修正の範囲外の既知の弱点として残って
+いる。この場合`_check_pending_obs_switch()`が次に検知する暗転は暗転2(場合
+によってはさらに後の、次の試合の試合開始前の暗転)になってしまう可能性が
+あり、OBSシーン切替が意図したタイミングより遅れる(または全く違うタイミング
+になる)。ユーザーと相談の上、今回は主要な経路(暗転即時確定パス)のみ対応
+することとし、この弱点への対応は見送った。
 """
 
 import threading
@@ -597,15 +634,22 @@ class MatchStateMachine:
         return event
 
     def process_frame(self, frame: np.ndarray) -> Optional[MatchResult]:
-        self._check_pending_obs_switch(frame)
         if self._state is _State.WATCHING:
             self._check_for_vs_screen(frame)
             self._check_for_goal(frame)
             self._check_for_match_end(frame)
-            return self._watch_for_banner(frame)
-        if self._state is _State.TRACKING_RANK:
-            return self._track_rank(frame)
-        return self._watch_for_banner_absence(frame)
+            result = self._watch_for_banner(frame)
+        elif self._state is _State.TRACKING_RANK:
+            result = self._track_rank(frame)
+        else:
+            result = self._watch_for_banner_absence(frame)
+        # Issue #224: 状態振り分けの「後」で呼ぶこと。_finalize()がis_full_blackout()
+        # 自体をトリガーに呼ばれるケース(Issue #209の暗転即時確定パス)では、
+        # _pending_obs_switchがTrueになるのはこのprocess_frame()呼び出しの
+        # 途中(_track_rank内)のため、先頭で呼ぶとまだFalseのまま素通りしてしまい、
+        # 同じフレームが暗転そのものであることに気づけない(モジュールdocstring参照)
+        self._check_pending_obs_switch(frame)
+        return result
 
     def _check_pending_obs_switch(self, frame: np.ndarray) -> None:
         """Issue #224: 「試合終了」確認済みで暗転待ちの間、毎フレーム暗転を監視する。
