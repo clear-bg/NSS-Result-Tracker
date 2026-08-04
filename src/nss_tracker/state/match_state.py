@@ -282,6 +282,72 @@ PaddleOCR推論)が原因と判明した。実測でCPU上9〜16秒かかり、�
 `_vs_screen_event`はpoll側(`pop_vs_screen_event()`、main.pyのループから毎フレーム
 呼ばれる)と書き込み側(バックグラウンドスレッド)が並行アクセスするため、
 `_vs_screen_event_lock`で保護する。
+
+Issue #224: 試合終了時のOBSシーン切替(in_match=False)が、結果画面から離脱する
+フェード演出とタイミングが重なり、体感上早すぎるタイミングで発生する事象が
+実配信で確認された(Issue #223の調査中に発見)。実測(is_full_blackoutの
+輝度チェック)では、この時点で画面全体はまだ暗転(輝度平均≤15かつ標準偏差≤15)
+していない(バッジ周辺が局所的に暗くなっているだけで、全画面平均では
+輝度40前後)ことが分かっており、暗転誤検知が原因ではなく、「試合終了」バナー
+消灯+ゲージ変化なし0.5秒の早期確定パス(Issue #178)が、このフェード演出と
+たまたま重なっていることが原因と判明した。
+
+対策として、OBSシーン切替のタイミングを、ランク値(rank_after)の確定タイミング
+(これまでどおり: バナー消灯+ゲージ変化なし0.5秒、通常のgrace期間満了、または
+暗転による即時確定のいずれか)から切り離した。`_finalize()`は「試合終了」確認済み
+なら`_pending_obs_switch`フラグを立てるだけにとどめ、実際に`in_match`をFalseに
+戻すのは`_check_pending_obs_switch()`が毎フレーム(状態に関わらず)監視し、
+`is_full_blackout()`を最初に検知してから`obs_switch_delay_after_blackout_frames`
+(既定30フレーム=1秒相当)経過した時点で行う。暗転自体の実測継続時間は
+0.3〜0.5秒程度(detection.motion.is_full_blackoutのモジュールdocstring参照)と
+1秒より短いため、「暗転が続いている間だけ数える」のではなく、最初に検知した
+瞬間からの単純な経過フレーム数で数える(暗転が終わってマッチング画面に戻っても
+タイマーはリセットしない)。ランク値の記録タイミング自体は変更していない。
+
+`is_full_blackout()`が何らかの理由で一度も発火しなかった場合、in_matchが
+切り替わらないまま次の試合に持ち越される。fixtures/videos全24本の実測では
+暗転は必ず現れることを確認済み(モジュールdocstring内Issue #209参照)なため
+許容する(Issue #190の「「試合終了」を確認できなかった場合の持ち越し」と
+同じ性質の劣化パターン)。次の試合のVS画面確定が先に来た場合(暗転待ちの
+間に次の試合が始まる、実際にはほぼ起きないはずのレアケース)は、in_match=True
+を優先し`_pending_obs_switch`を破棄する(`_check_for_vs_screen()`参照)。
+
+上記の対応後、ユーザーから追加の仕様確認があった: このゲームでは試合終了後、
+「ランク変更→暗転1→別画面→暗転2→マッチング画面」の順で**暗転が2回**現れる
+(試合開始前にも別途1回現れるが、これは`_pending_obs_switch`がFalseの間は
+`_check_pending_obs_switch()`が素通りするため無関係)。切替のトリガーに
+使うべきは常に暗転1のみで、暗転2(別画面を挟んだ2回目)は無視したい、という
+要件だった。
+
+`_check_pending_obs_switch(frame)`の呼び出し位置が`process_frame()`の先頭
+だと、この要件を満たせないケースがあった。`_finalize()`は複数の経路から
+呼ばれるが、そのうちIssue #209の「暗転を検知したら即確定」パスでは、確定の
+トリガーそのものが暗転1のフレームである。この経路で`_pending_obs_switch`が
+Trueになるのは`process_frame()`呼び出しの途中(状態振り分け先の`_track_rank()`
+内)のため、状態振り分けより前で`_check_pending_obs_switch()`を呼ぶと、まだ
+`_pending_obs_switch`がFalseのまま素通りしてしまい、「このフレーム自体が
+暗転1だ」と気づけない。次のフレームで改めて`is_full_blackout()`を待つ形に
+なるが、暗転1は既に終わっている(実測0.3〜0.5秒)ため、次に検知するのは
+別画面を挟んだ暗転2になってしまう。
+
+対策として、`_check_pending_obs_switch(frame)`の呼び出し位置を状態振り分けの
+**後**に移動した。これにより、`_finalize()`が暗転1のフレームそのものを
+トリガーに呼ばれた場合でも、同じフレームで`is_full_blackout(frame)`を
+再チェックしてすぐカウンターを開始できる。一度カウンターが始まったら、
+その後は`is_full_blackout()`を再チェックせず単純に経過フレーム数だけを
+数えて発火するため、途中で暗転2が来ても(あるいは来なくても)無視される。
+「暗転1と暗転2の間に試合終了系の検知を一切行っていない暗転は無視する」
+という要件は、この「暗転1を正しく捕まえたら、以降は数えるだけ」という
+設計で自然に満たされる。
+
+なお、`_finalize()`がgrace期間満了(league_change_grace_frames、既定5秒)
+経由で暗転1より後に呼ばれてしまう極端なケース(ゲージの緩やかな変動で
+スタビリティ判定が長引く等)は、この修正の範囲外の既知の弱点として残って
+いる。この場合`_check_pending_obs_switch()`が次に検知する暗転は暗転2(場合
+によってはさらに後の、次の試合の試合開始前の暗転)になってしまう可能性が
+あり、OBSシーン切替が意図したタイミングより遅れる(または全く違うタイミング
+になる)。ユーザーと相談の上、今回は主要な経路(暗転即時確定パス)のみ対応
+することとし、この弱点への対応は見送った。
 """
 
 import threading
@@ -377,6 +443,14 @@ RANK_TIER_WRAP_MIN_MAGNITUDE = get_detection_value("match_state", "RANK_TIER_WRA
 # 時点のゲージ小数部が0.993〜1.0だったため、十分マージンを取った値にしている
 LEAGUE_CHANGE_IMMINENT_FILL_THRESHOLD = get_detection_value("match_state", "LEAGUE_CHANGE_IMMINENT_FILL_THRESHOLD", 0.95)
 
+# Issue #224: 試合終了時のOBSシーン切替(in_match=False)は、ランク値の確定
+# タイミングとは切り離し、「暗転(is_full_blackout)を最初に検知してから
+# この値(フレーム数、30fps想定)経過後」に統一する。暗転自体の実測継続時間は
+# 0.3〜0.5秒程度(detection.motion.is_full_blackoutのモジュールdocstring参照)と
+# 1秒より短いため、暗転が続いている間だけ数えるのではなく、最初に検知した
+# 瞬間からの単純な経過フレーム数で数える(モジュールdocstring参照)
+DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_FRAMES = 30
+
 
 class _State(Enum):
     WATCHING = auto()
@@ -451,6 +525,7 @@ class MatchStateMachine:
         match_end_confirm_frames: int = DEFAULT_MATCH_END_CONFIRM_FRAMES,
         rank_tier_rescan_wait_frames: int = DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES,
         demotion_label_confirm_frames: int = DEFAULT_DEMOTION_LABEL_CONFIRM_FRAMES,
+        obs_switch_delay_after_blackout_frames: int = DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_FRAMES,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
     ) -> None:
         self._banner_confirm_frames = banner_confirm_frames
@@ -463,6 +538,7 @@ class MatchStateMachine:
         self._match_end_confirm_frames = match_end_confirm_frames
         self._rank_tier_rescan_wait_frames = rank_tier_rescan_wait_frames
         self._demotion_label_confirm_frames = demotion_label_confirm_frames
+        self._obs_switch_delay_after_blackout_frames = obs_switch_delay_after_blackout_frames
         self._rank_monitor = rank_stability_monitor or StabilityMonitor(roi=rank_roi)
 
         self._state = _State.WATCHING
@@ -517,8 +593,15 @@ class MatchStateMachine:
         # 別フラグ。OBSシーン切替(in_match)の必須条件にのみ使う
         # (MatchResultの記録自体は従来どおり、このフラグの有無に関わらず行う)
         self._match_end_confirmed_this_match = False
-        # Issue #83: OBSシーン切替のトリガー用。VS画面確定でTrue、_finalize()でFalseに戻す
+        # Issue #83: OBSシーン切替のトリガー用。VS画面確定でTrue、暗転検知から
+        # obs_switch_delay_after_blackout_frames経過後にFalseに戻す(Issue #224)
         self._in_match = False
+        # Issue #224: 「試合終了」確認済みで_finalize()に到達した(=Falseに戻す
+        # 予定がある)が、まだ暗転を検知できていない間True。_check_pending_obs_switch()
+        # がこのフラグを見て毎フレーム暗転をチェックする
+        self._pending_obs_switch = False
+        # 暗転を最初に検知してからの経過フレーム数。Noneはまだ暗転未検知
+        self._blackout_switch_counter: Optional[int] = None
         # Issue #71: セッション内の試合数カウンタ。「試合開始」ログ(VS画面確定時)
         # でのみ増加する。VS画面を見逃した試合では増加しないため、その場合の
         # 「試合終了」「結果」ログは直前に増加させた番号を使い回す(ユーザーと
@@ -555,10 +638,38 @@ class MatchStateMachine:
             self._check_for_vs_screen(frame)
             self._check_for_goal(frame)
             self._check_for_match_end(frame)
-            return self._watch_for_banner(frame)
-        if self._state is _State.TRACKING_RANK:
-            return self._track_rank(frame)
-        return self._watch_for_banner_absence(frame)
+            result = self._watch_for_banner(frame)
+        elif self._state is _State.TRACKING_RANK:
+            result = self._track_rank(frame)
+        else:
+            result = self._watch_for_banner_absence(frame)
+        # Issue #224: 状態振り分けの「後」で呼ぶこと。_finalize()がis_full_blackout()
+        # 自体をトリガーに呼ばれるケース(Issue #209の暗転即時確定パス)では、
+        # _pending_obs_switchがTrueになるのはこのprocess_frame()呼び出しの
+        # 途中(_track_rank内)のため、先頭で呼ぶとまだFalseのまま素通りしてしまい、
+        # 同じフレームが暗転そのものであることに気づけない(モジュールdocstring参照)
+        self._check_pending_obs_switch(frame)
+        return result
+
+    def _check_pending_obs_switch(self, frame: np.ndarray) -> None:
+        """Issue #224: 「試合終了」確認済みで暗転待ちの間、毎フレーム暗転を監視する。
+
+        暗転を最初に検知した瞬間からobs_switch_delay_after_blackout_frames分の
+        単純なタイマーを開始し(暗転自体の継続時間は0.3〜0.5秒程度とこの既定値
+        より短いため、その後暗転が終わってもタイマーはリセットしない)、
+        経過したらin_matchをFalseに戻す(モジュールdocstring参照)。
+        """
+        if not self._pending_obs_switch:
+            return
+        if self._blackout_switch_counter is None:
+            if not is_full_blackout(frame):
+                return
+            self._blackout_switch_counter = 0
+        self._blackout_switch_counter += 1
+        if self._blackout_switch_counter >= self._obs_switch_delay_after_blackout_frames:
+            self._in_match = False
+            self._pending_obs_switch = False
+            self._blackout_switch_counter = None
 
     def _check_for_vs_screen(self, frame: np.ndarray) -> None:
         # デバッグ用: DEBUGレベル時のみVS_ROIの生HSV値を毎フレームログに残す
@@ -585,6 +696,12 @@ class MatchStateMachine:
         if self._vs_streak >= self._vs_screen_confirm_frames and not self._vs_recorded_this_match:
             self._vs_recorded_this_match = True
             self._in_match = True
+            # Issue #224: 前の試合の暗転待ち(_pending_obs_switch)が何らかの理由で
+            # 完了しないまま次の試合のVS画面が先に確定した場合(実際にはほぼ
+            # 起きないはずのレアケース)、in_match=Trueが優先されるべきなので
+            # 古い切替待ちは破棄する
+            self._pending_obs_switch = False
+            self._blackout_switch_counter = None
             self._session_match_no += 1
             logger.info("%d試合目開始", self._session_match_no)
             # Issue #189: read_vs_screen_ranks()は最大16回のPaddleOCR推論を伴い
@@ -1106,9 +1223,12 @@ class MatchStateMachine:
         # (in_match=False)を行う。確認できなかった試合(実プレイ中の背景誤検知が
         # banner_confirm_framesを突破した可能性を否定できない)はin_matchをTrueの
         # ままにし、試合中シーンに留める。MatchResultの記録自体はこの確認結果に
-        # 関わらず常に行う(モジュールdocstring参照)
+        # 関わらず常に行う(モジュールdocstring参照)。
+        # Issue #224: ここでin_matchを即座にFalseにはせず、_pending_obs_switchを
+        # 立てるだけにする。実際の切替は暗転検知から一定時間後
+        # (_check_pending_obs_switch参照)。ランク値の記録タイミング自体は変更しない
         if self._match_end_confirmed_this_match:
-            self._in_match = False
+            self._pending_obs_switch = True
         else:
             logger.info(
                 "%d試合目: 「試合終了」バナーを確認できなかったためOBSシーン切替を見送ります"
