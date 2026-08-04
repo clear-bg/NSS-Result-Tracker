@@ -75,7 +75,6 @@ from nss_tracker.config import (
     update_editable_settings,
 )
 from nss_tracker.database.db import (
-    RANK_CONTINUITY_CORRECTION_MAX_DELTA,
     fetch_all_goals,
     fetch_all_matches,
     fetch_current_session_id,
@@ -287,20 +286,6 @@ def _rank_graph_x_tick_values(axis_max: int) -> list[int]:
     return sorted(values)
 
 
-def _is_continuous_transition(previous_rank_after: Optional[float], current_rank_before: Optional[float]) -> bool:
-    """隣り合う2試合が実際に連続していたとみなせるかを判定する(Issue #180)。
-
-    Issue #179の保存時補正(_maybe_correct_previous_match_rank_after)と同じ
-    閾値・考え方を使う。差がRANK_CONTINUITY_CORRECTION_MAX_DELTA以内なら連続、
-    それを超える、またはcurrent_rank_beforeが読み取れていない(None、連続性を
-    確認しようがない)場合は非連続として扱う(データを捏造せず、正直に「未確認」
-    と示す方針。Issue #180のissue本文参照)。
-    """
-    if current_rank_before is None:
-        return False
-    return abs(previous_rank_after - current_rank_before) <= RANK_CONTINUITY_CORRECTION_MAX_DELTA
-
-
 def _render_rank_graph_svg(history: list[dict]) -> str:
     """ランク推移を、枠・縦横の目盛り付きの折れ線グラフとしてSVG文字列で描画する。
 
@@ -309,10 +294,8 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     相談で決定)。昇格/降格(league_changed)による点の色分けはしない(全て白、
     ユーザーとの相談で決定)。
 
-    Issue #180: 隣り合う試合同士が連続しているとみなせない箇所(_is_continuous_transition
-    参照)は、その区間だけ`rank-graph-line-gap`(点線)でつなぐ。縦線などグラフ全体を
-    貫く要素は使わない(該当箇所が複数あると縦線の本数分だけグラフがうるさくなり、
-    折れ線本体より目立ってしまうことをモックアップで確認した上でユーザーと決定)。
+    Issue #180で「隣り合う試合同士が連続しているとみなせない箇所は点線でつなぐ」
+    仕組みを一度導入したが、ユーザーとの相談で常に実線表示に戻した(2026-08-04)。
     """
     width, height = _RANK_GRAPH_VIEWBOX_WIDTH, _RANK_GRAPH_VIEWBOX_HEIGHT
     svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
@@ -405,25 +388,8 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
 
     coords = [(x_at(i), y_at(point["rank_after"])) for i, point in enumerate(history)]
 
-    # Issue #180: 連続しているとみなせない箇所で折れ線を分割し、その区間だけ
-    # 別途点線でつなぐ。1試合目には比較対象となる「前の試合」が無いため常に連続扱い
-    line_svg = []
-    segment: list[tuple[float, float]] = [coords[0]]
-    for i in range(1, len(history)):
-        if _is_continuous_transition(history[i - 1]["rank_after"], history[i]["rank_before"]):
-            segment.append(coords[i])
-            continue
-        polyline_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in segment)
-        line_svg.append(f'<polyline points="{polyline_points}" class="rank-graph-line" />')
-        prev_x, prev_y = coords[i - 1]
-        cur_x, cur_y = coords[i]
-        line_svg.append(
-            f'<line x1="{prev_x:.1f}" y1="{prev_y:.1f}" x2="{cur_x:.1f}" y2="{cur_y:.1f}" class="rank-graph-line-gap">'
-            f"<title>{i}試合目と{i + 1}試合目の間は連続性未確認</title></line>"
-        )
-        segment = [coords[i]]
-    polyline_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in segment)
-    line_svg.append(f'<polyline points="{polyline_points}" class="rank-graph-line" />')
+    polyline_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+    line_svg = [f'<polyline points="{polyline_points}" class="rank-graph-line" />']
 
     markers = [f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" class="rank-graph-point" />' for x, y in coords]
 

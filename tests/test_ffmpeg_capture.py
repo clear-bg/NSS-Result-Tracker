@@ -48,6 +48,24 @@ def test_consecutive_reads_return_different_frames(videos_dir):
 
 
 @requires_video_fixtures
+def test_frame_counters_track_produced_and_consumed(videos_dir):
+    """処理落ち(フレーム抜け)の実測用カウンタを確認する。frames_consumedは
+    read()の呼び出し回数(成功分)と一致し、frames_producedはそれ以上に
+    なるはず(処理が追いつかない間に生成されたが読み捨てられたフレームの分)。
+    """
+    reader = _make_reader(videos_dir)
+    reader.start()
+    try:
+        for expected_consumed in range(1, 6):
+            frame = reader.read(timeout=10)
+            assert frame is not None
+            assert reader.frames_consumed == expected_consumed
+        assert reader.frames_produced >= reader.frames_consumed
+    finally:
+        reader.stop()
+
+
+@requires_video_fixtures
 def test_read_returns_none_after_input_ends(videos_dir):
     reader = _make_reader(videos_dir)
     reader.start()

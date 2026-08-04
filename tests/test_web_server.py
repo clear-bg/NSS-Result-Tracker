@@ -6,7 +6,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nss_tracker.database import db
-from nss_tracker.database.db import RANK_CONTINUITY_CORRECTION_MAX_DELTA
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchResult
 from nss_tracker.timeutil import now_jst
@@ -25,7 +24,6 @@ from nss_tracker.web.server import (
     _convert_rank_tier_to_unified_scale,
     _fetch_goal_assist_totals,
     _format_vs_rank_value,
-    _is_continuous_transition,
     _percentile,
     _rank_delta_axis_max,
     _rank_graph_x_axis_max,
@@ -374,10 +372,7 @@ def test_rank_history_respects_limit_env_value(tmp_path: Path, monkeypatch):
 
 
 def _continuous_history(values: list[float], league_changed: list = None) -> list[dict]:
-    """全区間が連続しているとみなされる(Issue #180のrank-graph-line-gapが
-    発生しない)history。rank_beforeを直前のrank_afterと同じ値にすることで
-    連続性判定(_is_continuous_transition)を必ず満たすようにする。
-    """
+    """rank_beforeを直前のrank_afterと同じ値にした、単純なhistoryのテストデータ。"""
     league_changed_values = league_changed if league_changed is not None else [None] * len(values)
     return [
         {
@@ -566,64 +561,23 @@ def test_render_rank_graph_svg_flat_values_widens_y_axis_around_the_value():
     assert ">43<" in svg
 
 
-def test_is_continuous_transition_within_threshold_is_continuous():
-    assert _is_continuous_transition(38.5, 38.5 + RANK_CONTINUITY_CORRECTION_MAX_DELTA) is True
-    assert _is_continuous_transition(38.5, 38.5) is True
-
-
-def test_is_continuous_transition_beyond_threshold_is_not_continuous():
-    assert _is_continuous_transition(38.5, 38.5 + RANK_CONTINUITY_CORRECTION_MAX_DELTA + 0.01) is False
-
-
-def test_is_continuous_transition_unreadable_rank_before_is_not_continuous():
-    """rank_beforeが読み取れていない(None)場合、連続しているかどうか確認しようが
-    ないため非連続として扱う(データを捏造せず正直に示す方針、Issue #180)。
-    """
-    assert _is_continuous_transition(38.5, None) is False
-
-
-def test_render_rank_graph_svg_draws_single_solid_line_when_all_continuous():
-    """全区間が連続しているとみなせる場合、rank-graph-line-gap(点線)は描画されない。"""
-    history = _continuous_history([38.1, 38.4, 38.7, 39.0])
-
-    svg = _render_rank_graph_svg(history)
-
-    assert svg.count("<polyline") == 1
-    assert "rank-graph-line-gap" not in svg
-
-
-def test_render_rank_graph_svg_draws_dashed_gap_for_discontinuous_transition():
-    """Issue #180: 前の試合のrank_afterと次の試合のrank_beforeの差が閾値を超える
-    箇所は、縦線ではなくその区間だけを点線(rank-graph-line-gap)でつなぐ。
+def test_render_rank_graph_svg_always_draws_single_solid_line():
+    """Issue #180で導入した「連続していない区間は点線」の区別は、ユーザーとの
+    相談で廃止した(2026-08-04)。rank_beforeが前の試合のrank_afterと大きく
+    異なる場合やNULLの場合でも、常に1本の実線(rank-graph-line)のみで描画する。
     """
     history = [
         {"rank_after": 38.1, "rank_before": 38.1, "league_changed": None},
         {"rank_after": 39.0, "rank_before": 38.1, "league_changed": None},
-        # 39.0との差が閾値を超えるため、ここだけ非連続
-        {"rank_after": 37.6, "rank_before": 37.0, "league_changed": None},
+        # 39.0との差が大きい・rank_beforeがNULLでも、以前のように区切らない
+        {"rank_after": 37.6, "rank_before": None, "league_changed": None},
         {"rank_after": 37.9, "rank_before": 37.6, "league_changed": None},
     ]
 
     svg = _render_rank_graph_svg(history)
 
-    assert svg.count('class="rank-graph-line-gap"') == 1
-    # 連続している2区間(1-2試合目、3-4試合目)がそれぞれ独立したpolylineとして描画される
-    assert svg.count("<polyline") == 2
-
-
-def test_render_rank_graph_svg_treats_unreadable_rank_before_as_discontinuous():
-    """rank_beforeがNULL(ランク読み取り失敗)の試合との間も、連続性を確認しようが
-    ないため非連続(点線)として扱う。
-    """
-    history = [
-        {"rank_after": 38.1, "rank_before": 38.1, "league_changed": None},
-        {"rank_after": 38.4, "rank_before": None, "league_changed": None},
-    ]
-
-    svg = _render_rank_graph_svg(history)
-
-    assert "rank-graph-line-gap" in svg
-    assert svg.count("<polyline") == 2
+    assert svg.count("<polyline") == 1
+    assert "rank-graph-line-gap" not in svg
 
 
 def test_overlay_rank_graph_page_links_transparent_background_stylesheet(tmp_path: Path, monkeypatch):

@@ -63,6 +63,12 @@ class FfmpegFrameReader:
         self._new_frame_event = threading.Event()
         self._stopped = threading.Event()
         self.error: Optional[Exception] = None
+        # 処理落ち(フレーム抜け)の実測用カウンタ。_read_loopがffmpegからフレームを
+        # デコードするたびにframes_producedを、read()が呼び出し側に実際にフレームを
+        # 返すたびにframes_consumedを増やす。差分(produced - consumed)が、
+        # 呼び出し側の処理が追いつかず読み捨てられたフレーム数のおおよその目安になる
+        self._frames_produced = 0
+        self._frames_consumed = 0
 
     @property
     def is_running(self) -> bool:
@@ -91,6 +97,7 @@ class FfmpegFrameReader:
                 frame = np.frombuffer(raw, dtype=np.uint8).reshape((self._height, self._width, 3))
                 with self._lock:
                     self._latest_frame = frame
+                    self._frames_produced += 1
                 self._new_frame_event.set()
         except Exception as exc:  # noqa: BLE001 - スレッド内例外を呼び出し側に伝える
             self.error = exc
@@ -109,7 +116,25 @@ class FfmpegFrameReader:
         with self._lock:
             frame = self._latest_frame
             self._new_frame_event.clear()
+            if frame is not None:
+                self._frames_consumed += 1
         return frame
+
+    @property
+    def frames_produced(self) -> int:
+        """_read_loopがこれまでにffmpegからデコードしたフレームの累計数。"""
+        with self._lock:
+            return self._frames_produced
+
+    @property
+    def frames_consumed(self) -> int:
+        """read()がこれまでに呼び出し側へ実際に返したフレームの累計数。
+
+        frames_produced - frames_consumedが、呼び出し側の処理が追いつかず
+        読み捨てられたフレーム数のおおよその目安になる(モジュールdocstring参照)。
+        """
+        with self._lock:
+            return self._frames_consumed
 
     def stop(self) -> None:
         self._stopped.set()
