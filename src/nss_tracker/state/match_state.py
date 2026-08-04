@@ -165,9 +165,11 @@ VS画面(マッチング完了、Issue #39)もWATCHING中にのみ起こりう�
 連続)で確定させ、確定した瞬間に1回だけdetection.vs_rank.read_vs_screen_ranks()
 を呼び出してMatchResult.vs_mine_ranks/vs_opponent_ranksとして払い出す
 (detection.vs_rank側のOCRは重い処理のため、CLAUDE.mdのサンプリング戦略どおり
-毎フレームは呼ばない)。VS画面を見逃した試合ではどちらも空リストのままになる
-(Issue #39で「VS画面検知は任意のエンリッチとし、見逃しても既存の結果バナー
-起点フローは従来通り動作させる」と定めたとおり、必須の前提にしない)。
+毎フレームは呼ばない)。当初Issue #39では「VS画面検知は任意のエンリッチとし、
+見逃しても既存の結果バナー起点フローは従来通り動作させる」と定めていたが、
+Issue #229でこの方針を転換した(下記Issue #229参照)。現在はVS画面を確認
+できない試合は結果バナー自体を誤検知とみなして記録しないため、
+vs_mine_ranks/vs_opponent_ranksが空になるケースは基本的に発生しない。
 
 MatchResult/GoalEventのdetected_atはJST(timeutil.now_jst参照)で記録する。
 また、結果バナー確定時・試合終了確定時にランクバッジのOCRが失敗した場合
@@ -180,9 +182,11 @@ _finalize()(ランク確定・league_changed判定を含む試合結果の確定
 「試合終了検知(match_end)の時点で即座に試合間シーンへ切り替える」案も検討したが、
 ランクを賭けた試合ではランク変動アニメーションもフルスクリーンの試合画面側で
 見せたいというユーザーの意向により不採用とし、_finalize()完了(ランク確定後)を
-唯一の切り替えタイミングとした。VS画面を見逃した試合ではin_matchがTrueにならず
-試合中シーンへ切り替わらないが、Issue #39の「VS画面検知は任意のエンリッチ」という
-既存方針と同じ考え方で許容する(見逃しても以降のフローに影響しない)。
+唯一の切り替えタイミングとした。Issue #229でVS画面確定を試合の区切りの必須条件に
+したため、VS画面を見逃した場合はそもそも結果バナー自体が記録されず_finalize()にも
+到達しないので、in_matchはTrueにならず試合中シーンへ切り替わらない(この点は
+Issue #39時代からの帰結としては変わらないが、理由が「見逃しても許容する」から
+「記録自体が起きない」に変わった)。
 
 Issue #145: 対戦相手ランク比較ウィジェット(web/server.py)は、試合結果確定
 (MatchResult、試合終了後にまとめて払い出される)を待たず、VS画面を確定した
@@ -376,6 +380,41 @@ Issue #222: 結果バナー確定直後の`rank_before`読み取り(`_watch_for_
 コンパクト側を優先しWARNINGログに残す)。この対策は原因(なぜコンパクト/拡大の
 どちらになるか)を問わず両方のケースに対応できるため、根本原因の特定より先に
 着手した。実機での効果検証は別途行う。
+
+Issue #229: 2026-08-04の実機テストセッションで、3試合目終了直後に、ランク変動が
+わずか0.03しか無い「勝ち」の結果バナーが再度誤検知され、実際には存在しない
+4試合目としてDBに記録される不具合が確認された。VS画面・チームカラーはどちらも
+検知できておらず、直前の3試合目の残像(暗転〜マッチング画面手前のどこかの画面)を
+誤って結果バナーとして拾ったとみられる。
+
+当時のIssue #39は「VS画面検知は任意のエンリッチであり、見逃しても既存の結果
+バナー起点フローには影響させない」という方針だったが、VS画面検知の精度は
+その後の実データで99%程度信頼できる水準まで改善しているとユーザーから確認が
+取れたため、この方針を転換し、**試合の区切りをVS画面確定に一本化する**ことにした。
+
+`_watch_for_banner()`の結果バナー確定処理に、`_vs_confirmed_this_match`(この
+試合でVS画面を一度でも確認できたか)のチェックを追加した。これがFalseの状態で
+結果バナーが確定した場合、新しい試合としては記録せず(MatchResultを作らない、
+`_session_match_no`も増やさない)、直前の試合番号のままINFOログに「誤検知として
+スキップした」ことを出す。このバナーに紐づいてバッファされている可能性のある
+ゴール検知(`_pending_goals`)も、次の本物の試合に誤って持ち越さないよう
+あわせて破棄する。
+
+`_vs_confirmed_this_match`は、既存の`_vs_recorded_this_match`(VS画面OCRの
+重複発火を防ぐための短命なフラグ。`_check_for_vs_screen()`でis_vs_screenが
+Falseに戻った瞬間、つまりVS画面が視覚的に消えて数フレーム後には早々にFalseへ
+戻ってしまう)とは別の、新設したフラグである。VS画面確定でTrueにし、
+`_finalize()`でのみFalseに戻す(試合の終わりまで確認結果を覚えておく必要が
+あるため、既存のvs_recorded_this_matchを再利用すると、結果バナー確定時点
+(試合開始から数分後)には既にFalseに戻ってしまっていて使えない)。
+
+この変更はIssue #39の既存方針を正面から覆すものであり、既知のトレードオフとして
+以下を許容する(ユーザー確認済み):
+
+- VS画面を本当に見逃した試合(検知精度が上がったとはいえ、残り僅かなケースで
+  見逃す可能性はゼロではない)は、勝敗・ランクを含め試合結果ごと記録されなくなる
+- アプリを試合の途中から起動した場合(その試合のVS画面を確実に見逃す)も、
+  その試合は記録されなくなる
 """
 
 import threading
@@ -601,6 +640,12 @@ class MatchStateMachine:
         self._pending_goals: list[GoalEvent] = []
         self._vs_streak = 0
         self._vs_recorded_this_match = False
+        # Issue #229: _vs_recorded_this_matchはVS画面が視覚的に消えた(is_vs_screenが
+        # Falseに戻った)瞬間にFalseへ戻ってしまう(_check_for_vs_screen参照。VS画面
+        # OCRの重複発火を防ぐための「今まさにVS画面が出ていて記録済みか」という
+        # 短命なフラグのため)。「この試合でVS画面を一度でも確認できたか」を試合の
+        # 終わりまで覚えておく別フラグとして用意する(_finalize()でのみFalseに戻す)
+        self._vs_confirmed_this_match = False
         self._pending_vs_mine_ranks: list[SlotRank] = []
         self._pending_vs_opponent_ranks: list[SlotRank] = []
         self._pending_mine_team_color: Optional[str] = None
@@ -723,6 +768,7 @@ class MatchStateMachine:
         self._vs_streak += 1
         if self._vs_streak >= self._vs_screen_confirm_frames and not self._vs_recorded_this_match:
             self._vs_recorded_this_match = True
+            self._vs_confirmed_this_match = True
             self._in_match = True
             # Issue #224: 前の試合の暗転待ち(_pending_obs_switch)が何らかの理由で
             # 完了しないまま次の試合のVS画面が先に確定した場合(実際にはほぼ
@@ -915,6 +961,27 @@ class MatchStateMachine:
             self._banner_confirm_frames_after_match_end if self._match_end_seen else self._banner_confirm_frames
         )
         if self._banner_streak >= required_streak:
+            # Issue #229: 試合の区切りをVS画面確定に一本化する。この試合でVS画面を
+            # 一度も確認できていない状態で結果バナーが確定した場合、直前の試合の
+            # 残像(暗転〜マッチング画面手前のどこかの画面)を誤って結果バナーとして
+            # 拾った可能性が高いとみなし、新しい試合としては記録しない
+            # (モジュールdocstring参照)
+            if not self._vs_confirmed_this_match:
+                logger.info(
+                    "%d試合目: VS画面を確認できないまま結果バナー(%s)を検知しました。"
+                    "直前の試合の誤検知とみなし記録をスキップします",
+                    self._session_match_no,
+                    _BANNER_RESULT_LABELS[self._banner_candidate],
+                )
+                self._banner_candidate = None
+                self._banner_streak = 0
+                self._match_end_seen = False
+                # このバナーに紐づいてバッファされている可能性のあるゴール検知も、
+                # 次の本物の試合に誤って持ち越さないよう破棄する
+                self._pending_goals = []
+                self._goal_streak = 0
+                self._goal_recorded_this_event = False
+                return None
             self._pending_result = self._banner_candidate
             # Issue #222: バナー確定直後は本来コンパクト表示のはずだが、確定までの
             # 時間が長引くとバッジが既に拡大表示へ遷移していることがあるため、
@@ -1282,6 +1349,7 @@ class MatchStateMachine:
         self._pending_opponent_team_color = None
         self._vs_streak = 0
         self._vs_recorded_this_match = False
+        self._vs_confirmed_this_match = False
         # Issue #190: 「試合終了」バナーをOCRで確認できた試合に限りOBSシーン切替
         # (in_match=False)を行う。確認できなかった試合(実プレイ中の背景誤検知が
         # banner_confirm_framesを突破した可能性を否定できない)はin_matchをTrueの
