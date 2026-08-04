@@ -1507,6 +1507,9 @@ def test_vs_screen_confirmation_logs_ranks_at_info_level(monkeypatch, caplog):
     with caplog.at_level("INFO", logger="nss_tracker.state"):
         for _ in range(3):
             machine.process_frame(frame)
+        # Issue #189: VS画面ランクOCRはバックグラウンドスレッドで実行されるため、
+        # ログ出力を待ってから検証する
+        machine._vs_ocr_thread.join()
 
     assert "1試合目 VS画面ランク: mine=[∞39, -] opponent=[S9, -]" in caplog.text
 
@@ -1537,6 +1540,9 @@ def test_pop_vs_screen_event_fires_once_at_confirmation(monkeypatch):
     assert machine.pop_vs_screen_event() is None
 
     machine.process_frame(frame)  # 2フレーム目でconfirm_frames(=2)に到達し確定
+    # Issue #189: VS画面ランクOCRはバックグラウンドスレッドで実行されるため、
+    # VsScreenEventが書き込まれるのを待ってからpopする
+    machine._vs_ocr_thread.join()
     event = machine.pop_vs_screen_event()
 
     assert event is not None
@@ -1714,5 +1720,8 @@ def test_vs_screen_shown_continuously_reads_ranks_only_once(monkeypatch):
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     for _ in range(10):
         machine.process_frame(frame)
+    # Issue #189: VS画面ランクOCRはバックグラウンドスレッドで実行されるため、
+    # 呼び出し回数を確認する前に完了を待つ
+    machine._vs_ocr_thread.join()
 
     assert read_calls["n"] == 1
