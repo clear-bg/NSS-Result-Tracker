@@ -1599,10 +1599,12 @@ def test_vs_screen_not_detected_results_in_empty_vs_ranks(monkeypatch):
 
 def test_in_match_true_after_vs_screen_confirmed_and_false_after_finalize(monkeypatch):
     """Issue #83: OBSシーン自動切替のトリガーであるin_matchが、VS画面確定でTrueになり、
-    試合結果確定(ランク確定含む_finalize())でFalseに戻ることを確認する。
+    試合結果確定(ランク確定含む_finalize())後、暗転検知から一定時間後にFalseに戻る
+    ことを確認する(Issue #224で、Falseに戻るタイミングを暗転検知基準に変更した)。
     Issue #190対応後は「試合終了」バナーをOCR確認できた試合のみFalseに戻るため、
     ここでは確認できたケースとしてis_match_end_screen/confirm_match_end_textを
-    Trueにする。
+    Trueにする。テスト用フレームは全黒(np.zeros)のため、is_full_blackout()は
+    毎フレームTrueを返す(暗転検知のタイミング自体はこのテストの関心事ではない)。
     """
     frame_idx = {"n": 0}
 
@@ -1632,6 +1634,7 @@ def test_in_match_true_after_vs_screen_confirmed_and_false_after_finalize(monkey
         banner_confirm_frames_after_match_end=2,
         match_end_confirm_frames=1,
         league_change_grace_frames=1,
+        obs_switch_delay_after_blackout_frames=2,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -1650,7 +1653,88 @@ def test_in_match_true_after_vs_screen_confirmed_and_false_after_finalize(monkey
 
     assert in_match_became_true_frame is not None, "VS画面確定後にin_matchがTrueにならなかった"
     assert result is not None, "MatchResultが確定しなかった"
-    assert machine.in_match is False, "「試合終了」を確認できた試合結果確定後はin_matchがFalseに戻るはず"
+    assert machine.in_match is True, "確定直後はまだ暗転検知からの遅延待ちでTrueのはず"
+
+    # Issue #224: 暗転検知(全黒フレームのため即座にTrue)からobs_switch_delay_after_blackout_frames
+    # (=2)経過後にFalseへ戻る
+    for _ in range(3):
+        machine.process_frame(frame)
+        if machine.in_match is False:
+            break
+
+    assert machine.in_match is False, "「試合終了」を確認できた試合は、暗転検知から一定時間後にin_matchがFalseに戻るはず"
+
+
+def test_obs_switch_waits_for_blackout_after_finalize(monkeypatch):
+    """Issue #224: 試合結果が確定(_finalize())した直後はまだ暗転を検知していない場合、
+    in_matchはTrueのまま維持され、暗転を検知してからobs_switch_delay_after_blackout_frames
+    経過して初めてFalseに戻ることを確認する。ランク値の確定タイミングとOBSシーン
+    切替タイミングが分離されたことの検証(#223: 結果画面から離脱するフェード演出と
+    確定タイミングが重なる問題の対策として、切替を暗転基準に統一した)。
+    """
+    frame_idx = {"n": 0}
+    blackout = {"active": False}
+
+    def fake_is_vs_screen(frame):
+        return frame_idx["n"] < 2
+
+    def fake_is_match_end_screen(frame):
+        return 2 <= frame_idx["n"] < 4
+
+    def fake_classify_banner(frame):
+        return "win" if frame_idx["n"] >= 5 else None
+
+    def fake_is_full_blackout(frame):
+        return blackout["active"]
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", fake_is_match_end_screen)
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
+
+    machine = MatchStateMachine(
+        vs_screen_confirm_frames=2,
+        banner_confirm_frames=2,
+        banner_confirm_frames_after_match_end=2,
+        match_end_confirm_frames=1,
+        league_change_grace_frames=1,
+        obs_switch_delay_after_blackout_frames=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    result = None
+    for _ in range(30):
+        result = machine.process_frame(frame)
+        frame_idx["n"] += 1
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert machine.in_match is True, "確定直後はまだ暗転未検知のためTrueのはず"
+
+    # 暗転がまだ来ていない間は、何フレーム進めてもTrueのまま維持される
+    # (フェード演出等でrank確定と暗転検知のタイミングがずれても誤って早く
+    # 切り替わらないことの検証)
+    for _ in range(10):
+        machine.process_frame(frame)
+    assert machine.in_match is True, "暗転を検知するまではin_matchがTrueのまま維持されるはず"
+
+    blackout["active"] = True
+    machine.process_frame(frame)  # 暗転検知1フレーム目
+    assert machine.in_match is True, "暗転検知直後、delay未経過ではまだTrueのはず"
+    machine.process_frame(frame)  # 2フレーム目
+    assert machine.in_match is True, "delay(=3)未経過ではまだTrueのはず"
+    machine.process_frame(frame)  # 3フレーム目でdelay到達
+    assert machine.in_match is False, "暗転検知からdelay分経過後にFalseへ戻るはず"
 
 
 def test_in_match_stays_true_after_finalize_without_match_end_confirmation(monkeypatch):
