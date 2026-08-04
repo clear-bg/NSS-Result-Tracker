@@ -172,6 +172,9 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(15):
@@ -473,6 +476,9 @@ def test_rank_read_failure_is_logged(monkeypatch, caplog):
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     with caplog.at_level("INFO", logger="nss_tracker.state"):
@@ -527,6 +533,9 @@ def test_track_rank_grace_tracks_slow_drift_every_frame(monkeypatch):
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -576,6 +585,9 @@ def test_track_rank_periodic_recheck_catches_tier_change(monkeypatch):
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -636,6 +648,9 @@ def test_tier_jump_recovers_via_rescan(monkeypatch):
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -686,6 +701,9 @@ def test_tier_jump_falls_back_to_gauge_continuity_when_rescan_still_implausible_
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -737,6 +755,9 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -787,6 +808,9 @@ def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -840,6 +864,9 @@ def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magni
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -895,6 +922,9 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -944,6 +974,9 @@ def test_unchanged_tier_stays_plausible_without_demotion_confirmation(monkeypatc
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -997,6 +1030,9 @@ def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(mo
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -1053,6 +1089,9 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -1126,6 +1165,9 @@ def test_near_tier_cap_gauge_skips_early_finalize_and_catches_promotion(monkeypa
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(300):
@@ -1170,6 +1212,9 @@ def test_near_tier_cap_gauge_without_promotion_still_finalizes_after_full_grace_
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -1215,6 +1260,9 @@ def test_full_blackout_triggers_immediate_finalize_bypassing_grace_timeout(monke
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(100):
@@ -1292,6 +1340,9 @@ def test_match_end_confirmed_enables_fast_banner_confirm(monkeypatch):
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for i in range(10):
@@ -1327,6 +1378,9 @@ def test_match_end_candidate_rejected_by_ocr_keeps_slow_banner_confirm(monkeypat
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
+    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
+    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
+    machine._vs_confirmed_this_match = True
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for i in range(10):
@@ -1494,9 +1548,12 @@ def test_team_colors_attached_to_match_result(monkeypatch):
     assert result.opponent_team_color == "#f87abe"
 
 
-def test_vs_screen_not_detected_results_in_none_team_colors(monkeypatch):
-    """VS画面を一度も検知しなかった試合では、mine_team_color/opponent_team_colorが
-    Noneのままになることを確認する(vs_mine_ranks等と同じ「任意のエンリッチ」の考え方)。
+def test_vs_screen_not_confirmed_causes_result_banner_to_be_rejected(monkeypatch, caplog):
+    """Issue #229: 試合の区切りをVS画面確定に一本化したため、VS画面を一度も
+    確認できていない状態で結果バナーが確定しても、新しい試合としては記録
+    しない(MatchResultを返さずWATCHING状態のまま留まる)ことを確認する。
+    直前の試合の残像を誤って結果バナーとして拾ったとみなし、INFOログに
+    残すだけで済ませる。
     """
     calls = {"n": 0}
 
@@ -1523,14 +1580,58 @@ def test_vs_screen_not_detected_results_in_none_team_colors(monkeypatch):
 
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
-    for _ in range(15):
-        result = machine.process_frame(frame)
-        if result is not None:
-            break
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(15):
+            result = machine.process_frame(frame)
 
-    assert result is not None, "MatchResultが確定しなかった"
-    assert result.mine_team_color is None
-    assert result.opponent_team_color is None
+    assert result is None, "VS画面未確認の結果バナーはMatchResultを作らないはず"
+    assert "VS画面を確認できないまま結果バナー" in caplog.text
+    assert machine.current_state == "watching", "WATCHING状態のまま留まるはず"
+
+
+def test_vs_screen_not_confirmed_discards_buffered_goals(monkeypatch):
+    """Issue #229: VS画面未確認で結果バナーを棄却する際、その誤検知バナーに
+    紐づいてバッファされていた可能性のあるゴール検知も、次の本物の試合に
+    誤って持ち越さないよう破棄することを確認する。
+
+    is_goal_event/classify_bannerとも最初の数フレームだけ真になるようにし
+    (現実の検知に近い単発イベント)、結果バナーが棄却されるちょうどその
+    フレームでループを止めることで、その後の挙動(次のバナー確定サイクル)
+    と混ざらないようにする。
+    """
+
+    def fake_is_goal_event(frame):
+        return frame_idx["n"] < 1
+
+    def fake_classify_banner(frame):
+        return "win" if frame_idx["n"] >= 10 else None
+
+    frame_idx = {"n": 0}
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", fake_is_goal_event)
+    monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_own_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+
+    machine = MatchStateMachine(banner_confirm_frames=2, goal_confirm_frames=1)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    # frame_idx 0〜9: ゴールが1件バッファされるが、バナーはまだ確定しない
+    for _ in range(10):
+        machine.process_frame(frame)
+        frame_idx["n"] += 1
+    assert len(machine._pending_goals) == 1, "テスト前提: 棄却前にゴールが1件バッファされているはず"
+
+    # frame_idx 10〜11: バナー("win")のストリークが2に達し、VS未確認のため棄却される
+    machine.process_frame(frame)
+    frame_idx["n"] += 1
+    machine.process_frame(frame)
+
+    assert machine._pending_goals == [], "棄却された結果バナーに紐づくゴールは破棄されるはず"
 
 
 def test_vs_screen_confirmation_logs_ranks_at_info_level(monkeypatch, caplog):
@@ -1606,46 +1707,6 @@ def test_pop_vs_screen_event_fires_once_at_confirmation(monkeypatch):
 
     machine.process_frame(frame)  # 同じVS画面がまだ表示され続けている3フレーム目
     assert machine.pop_vs_screen_event() is None, "同じVS画面が続いている間は再度発火しない"
-
-
-def test_vs_screen_not_detected_results_in_empty_vs_ranks(monkeypatch):
-    """VS画面を一度も検知しなかった試合では、vs_mine_ranks/vs_opponent_ranksが
-    空リストのままになることを確認する(Issue #39: VS画面検知は任意のエンリッチ
-    であり、見逃しても既存の結果バナー起点フローは従来通り動作させる)。
-    """
-    calls = {"n": 0}
-
-    def fake_classify_banner(frame):
-        n = calls["n"]
-        calls["n"] += 1
-        return None if n < 5 else "win"
-
-    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
-    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
-    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
-
-    machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=1,
-        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
-    )
-
-    frame = np.zeros((10, 10, 3), dtype=np.uint8)
-    result = None
-    for _ in range(15):
-        result = machine.process_frame(frame)
-        if result is not None:
-            break
-
-    assert result is not None, "MatchResultが確定しなかった"
-    assert result.vs_mine_ranks == []
-    assert result.vs_opponent_ranks == []
 
 
 def test_in_match_true_after_vs_screen_confirmed_and_false_after_finalize(monkeypatch):
