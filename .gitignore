@@ -39,6 +39,9 @@ desktop.ini
 .vscode/
 .idea/
 
+# Claude Codeのローカル設定(許可コマンド等、開発者ごとに異なるため共有しない)
+.claude/settings.local.json
+
 # ログ
 *.log
 
