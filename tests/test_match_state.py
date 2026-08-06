@@ -1440,7 +1440,7 @@ def test_lifecycle_logs_reuse_session_match_number(monkeypatch, caplog):
     assert result is not None, "MatchResultが確定しなかった"
     assert "1試合目開始" in caplog.text
     assert "1試合目 試合終了" in caplog.text
-    assert "1試合目の結果: 勝ち (ランク: 10.5)" in caplog.text
+    assert "1試合目の結果: 勝ち (ランク(試合前): 10.5)" in caplog.text
 
 
 def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
