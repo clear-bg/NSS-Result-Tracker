@@ -802,6 +802,20 @@ class MatchStateMachine:
 
         self._vs_streak += 1
         if self._vs_streak >= self._vs_screen_confirm_frames and not self._vs_recorded_this_match:
+            # Issue #243: 前の試合が結果画面確定(_finalize())前にVS画面が
+            # 再確定した場合、前の試合の_pending_goals等は_finalize()での
+            # クリアを経ないままこの新しい試合に持ち越されてしまう(検証で
+            # 実際に発生を確認、詳細はモジュールdocstring参照)。挙動は変えず、
+            # 気づけるようにログだけ出す。通信切断等によるゲーム強制終了でも
+            # 起こりうる正常な状態遷移のため、必ずしも不具合とは限らない
+            if self._vs_confirmed_this_match:
+                logger.info(
+                    "%d試合目: 前の試合が結果画面確定前に次のVS画面を検知しました。"
+                    "前の試合のゴール(%d件)は今回の試合の記録に持ち越されます"
+                    "(通信切断等によるゲーム強制終了でも起こりうるため、必ずしも不具合とは限りません)",
+                    self._session_match_no,
+                    len(self._pending_goals),
+                )
             self._vs_recorded_this_match = True
             self._vs_confirmed_this_match = True
             self._in_match = True
