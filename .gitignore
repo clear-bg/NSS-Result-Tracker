@@ -42,6 +42,9 @@ desktop.ini
 # Claude Codeのローカル設定(許可コマンド等、開発者ごとに異なるため共有しない)
 .claude/settings.local.json
 
+# Claude Codeの実行時生成物(プロセスIDを含むロックファイル)
+.claude/scheduled_tasks.lock
+
 # ログ
 *.log
 
