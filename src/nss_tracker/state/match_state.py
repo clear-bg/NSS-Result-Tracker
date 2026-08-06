@@ -1038,6 +1038,26 @@ class MatchStateMachine:
             )
             self._banner_candidate = None
             self._banner_streak = 0
+            # 「試合終了」の確認は今回の結果バナー確定にのみ使うため、ここでリセットする
+            self._match_end_seen = False
+
+            # Issue #235: VS画面のスロット0(自チーム側、自分自身)のランクバッジを
+            # 検知できていない試合は「ランクを賭けない対戦」とみなし、ランク変動
+            # アニメーションの安定待ち(TRACKING_RANK)を経由せず結果バナー確定時点で
+            # 直ちに確定する。ランクを賭けた試合でランク変動アニメーション中に
+            # 昇格演出等を挟んで早期確定してしまう不具合(#235本体)とは独立に、
+            # 「そもそもランクが無い試合はランクの安定待ち自体が不要」という
+            # 前提を先に切り分ける対応(B/C/D/E帯は現状tier=None(未識別)になり
+            # 区別できないため、この判定でもランク無しと扱われる。実プレイでは
+            # 常に∞帯のためユーザー確認の上、許容する既知の制限)
+            if not (self._pending_vs_mine_ranks and self._pending_vs_mine_ranks[0].tier is not None):
+                logger.info(
+                    "%d試合目: VS画面で自分のランクを検知できなかったため、"
+                    "ランクを賭けない試合とみなし結果バナー確定時点で確定します",
+                    self._session_match_no,
+                )
+                return self._finalize(None, None)
+
             self._rank_phase = _RankPhase.WAITING_STABLE
             self._grace_counter = 0
             self._grace_candidate_rank_tier = None
@@ -1049,8 +1069,6 @@ class MatchStateMachine:
             self._rank_monitor.reset()
             self._rank_monitor.update(frame)
             self._state = _State.TRACKING_RANK
-            # 「試合終了」の確認は今回の結果バナー確定にのみ使うため、ここでリセットする
-            self._match_end_seen = False
         return None
 
     def _track_rank(self, frame: np.ndarray) -> Optional[MatchResult]:
