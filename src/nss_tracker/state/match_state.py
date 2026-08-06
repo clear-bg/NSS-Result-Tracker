@@ -127,12 +127,32 @@ near_tier_capガード)を挟んでもなお、Issue #235で別系統の不具�
 
 Issue #235でこの早期確定パス自体を廃止した。GRACE中の確定手段は「本当の
 暗転(is_full_blackout)を検知した瞬間の即時確定」と「league_change_grace_frames
-(既定5秒)満了による確定」の2つのみになった。実データでは上記の遷移演出ノイズは
-暗転の数秒前には収まって正しい値に落ち着いていたため、暗転まで待てば正しい
-値を掴める。バナー消灯後すぐには確定せず常に暗転または猶予満了まで待つ形に
-なるため、昇格演出が無い普通の試合でも確定までの待ち時間が数秒(最大5秒)
-伸びるが、バックグラウンドで動くロガーでありこの程度の遅延の実害は薄いと
-判断した(ユーザー確認済み)。
+(既定5秒)満了による確定」の2つのみになった。バナー消灯後すぐには確定せず
+常に暗転または猶予満了まで待つ形になるため、昇格演出が無い普通の試合でも
+確定までの待ち時間が数秒(最大5秒)伸びるが、バックグラウンドで動くロガー
+でありこの程度の遅延の実害は薄いと判断した(ユーザー確認済み)。
+
+ただし「暗転まで待てば必ず正しい値が掴める」わけではないことも実データで
+判明した。上記のワイプ演出による急騰ノイズが収まった後、ランクバッジ自体が
+画面外へ消え、シーン全体が暗転へ向けて徐々にフェードしていく区間が続くことが
+分かった(2026-08-05実機テストセッション・3試合目の実測: 急騰が収まった
+0.65秒後には、バッジが写っていない芝生だけの画面が徐々に暗くなっていく
+様子を確認)。この間もread_rank_gauge_fillは毎フレーム呼ばれ続けるため、
+「バッジが無い(≒塗りつぶし0%に見える)」フレームを暗転検知の直前まで
+_latest_gauge_fillへ反映してしまい、本当の最終値(実測0.10前後、ワイプ演出が
+始まる前の0.55秒間は完全に一定だった)ではなく0.0に近い値で確定してしまう
+別の不具合があった。
+
+Issue #235(追加対応)で、_latest_gauge_fillの更新自体にもデバウンスを
+導入した。生値を直接反映するのではなく、_pending_gauge_fill/
+_pending_gauge_streakで直近rank_recheck_interval_frames分連続して同じ値
+(RANK_RECHECK_CHANGE_TOLERANCE許容)が続いて初めて_latest_gauge_fillを
+更新する(banner_confirm_frames等、他の検知と同じデバウンスの考え方)。
+ワイプ演出の急騰・フェードによる急落とも、値が一方向に動き続けるため
+連続一致の条件を満たさず、直前の確定値(上記の例では0.10)が保持され
+続けたまま暗転を迎える。本当にゲージが緩やかに動き続けているケース
+(Issue #178)は、動きが止まって安定すればそのぶん遅れて正しく確定値に
+反映されるため、既存の挙動を壊さない。
 
 ただし上記のleague_change_grace_frames満了待ちには依然として上限時間が
 あるため、理論上はそれより長く昇格演出の開始が遅れた場合(例: 何らかの理由で
@@ -421,7 +441,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
-from logging import DEBUG, getLogger
+from logging import getLogger
 from typing import NamedTuple, Optional
 
 import numpy as np
@@ -441,7 +461,7 @@ from nss_tracker.detection.league_change import (
     is_league_change_screen,
 )
 from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end_screen
-from nss_tracker.detection.matchmaking import is_vs_screen, read_letterbox_brightness, read_vs_roi_hsv
+from nss_tracker.detection.matchmaking import is_vs_screen
 from nss_tracker.detection.motion import StabilityMonitor, is_full_blackout
 from nss_tracker.detection.rank_ocr import (
     GAUGE_ROI_COMPACT,
@@ -632,9 +652,16 @@ class MatchStateMachine:
         self._pending_rank_before_tier: Optional[int] = None
         self._pending_rank_before: Optional[float] = None
         self._grace_candidate_rank_tier: Optional[int] = None
-        # Issue #178: ゲージの塗りつぶし(小数部)の最新値。GRACE中は毎フレーム
-        # 上書きし続け、確定時にはスナップショットではなくこの最新値を使う
+        # Issue #178: ゲージの塗りつぶし(小数部)の確定値。確定時にはスナップショット
+        # ではなくこの値を使う。Issue #235: 生値をそのまま信頼せず、下記
+        # _pending_gauge_fill/_pending_gauge_streakによるデバウンスを経て
+        # 直近rank_recheck_interval_frames分連続で一致して初めて更新される
         self._latest_gauge_fill: Optional[float] = None
+        # Issue #235: 確定候補中のゲージ値と、その値が何フレーム連続しているか。
+        # 遷移演出(ワイプ演出による急騰・バッジ消失によるフェード後の急落)由来の
+        # 一時的なノイズが_latest_gauge_fillへ混入するのを防ぐためのデバウンス用
+        self._pending_gauge_fill: Optional[float] = None
+        self._pending_gauge_streak = 0
         # Issue #136: 昇格演出(is_league_change_screen)がこの試合中に一度でも
         # 観測されたか。帯番号の急変を検証する際、昇格側はこの独立信号で
         # 確認できていない限り認めない
@@ -768,21 +795,6 @@ class MatchStateMachine:
         if self._vs_lockout_counter > 0:
             self._vs_lockout_counter -= 1
             return
-        # デバッグ用: DEBUGレベル時のみVS_ROIの生HSV値を毎フレームログに残す
-        # (通常運用のINFOレベルでは出ないため影響なし)。Issue #68で実機の閾値
-        # 調整に使用、閾値自体はIssue #116の実測で確定済み(detection.matchmaking参照)
-        if logger.isEnabledFor(DEBUG):
-            h, s, v = read_vs_roi_hsv(frame)
-            top, bottom, middle = read_letterbox_brightness(frame)
-            logger.debug(
-                "VS_ROI HSV: H=%.2f S=%.2f V=%.2f letterbox(top=%.2f bottom=%.2f middle=%.2f)",
-                h,
-                s,
-                v,
-                top,
-                bottom,
-                middle,
-            )
         if not is_vs_screen(frame):
             self._vs_streak = 0
             self._vs_recorded_this_match = False
@@ -1056,6 +1068,8 @@ class MatchStateMachine:
             self._grace_counter = 0
             self._grace_candidate_rank_tier = None
             self._latest_gauge_fill = None
+            self._pending_gauge_fill = None
+            self._pending_gauge_streak = 0
             self._promotion_confirmed_this_match = False
             self._demotion_confirmed_this_match = False
             self._demotion_label_streak = 0
@@ -1115,6 +1129,10 @@ class MatchStateMachine:
                 if precise_result is not None:
                     self._grace_candidate_rank_tier, precise = precise_result
                     self._latest_gauge_fill = precise - self._grace_candidate_rank_tier
+                    # Issue #235: 以降の毎フレームデバウンス(_pending_gauge_fill)の
+                    # 起点をこの初回スナップショットに揃えておく
+                    self._pending_gauge_fill = self._latest_gauge_fill
+                    self._pending_gauge_streak = 1
             return None
 
         # _RankPhase.GRACE: 安定はしたが、直後に昇格/降格演出が始まらないか
@@ -1126,21 +1144,45 @@ class MatchStateMachine:
             return None
 
         # Issue #178: ゲージの塗りつぶし(HSVベースの軽量な色判定)は毎フレーム
-        # 読み取り、常に最新値で上書きし続ける。安定判定(StabilityMonitor)の
-        # タイミングは、--video実行時の実時間再生+FfmpegFrameReaderのフレーム
-        # 間引きの影響でずれることがあり、確定した瞬間のスナップショットを
-        # 1回だけ使う方式だと、実際にはまだ動いている途中の値を掴んでしまう
-        # ことが実データ(本番DBで誤検知が見つかったmatches.id=19/20の元動画)で
-        # 確認された。帯番号は数値OCR(重い処理)のため頻度は変えない。
-        # Issue #235: 以前は_grace_counterを「バナー消灯+ゲージ変化なし」の
-        # 早期確定判定にも使っていたが、その早期確定パス自体を廃止したため、
-        # 現在は下記の暗転即確定パス・league_change_grace_frames満了判定にのみ使う
+        # 読み取る。安定判定(StabilityMonitor)のタイミングは、--video実行時の
+        # 実時間再生+FfmpegFrameReaderのフレーム間引きの影響でずれることがあり、
+        # 確定した瞬間のスナップショットを1回だけ使う方式だと、実際にはまだ
+        # 動いている途中の値を掴んでしまうことが実データ(本番DBで誤検知が
+        # 見つかったmatches.id=19/20の元動画)で確認された。帯番号は数値OCR
+        # (重い処理)のため頻度は変えない。
+        #
+        # Issue #235: 生値をそのまま_latest_gauge_fillへ反映すると、結果バナー
+        # 消灯直後のワイプ演出による一瞬の急騰や、ランクバッジが画面外へ消えて
+        # 暗転へフェードしていく過程での急落など、遷移演出由来のノイズも
+        # そのまま確定値に混入してしまうことが実データ(2026-08-05実機テスト
+        # セッション、3試合目: 負けているのにrank_afterが上昇して記録された)で
+        # 判明した。そのため生値を直接は反映せず、banner_confirm_frames等の
+        # 他の検知と同じデバウンスの考え方で、直近rank_recheck_interval_frames分
+        # 連続して同じ値(RANK_RECHECK_CHANGE_TOLERANCE許容)が続いて初めて
+        # _latest_gauge_fillを更新する。遷移演出中の値は連続一致しないため
+        # _latest_gauge_fillへは反映されず、直前の確定値が保持され続ける
         fill = read_rank_gauge_fill(frame, GAUGE_ROI_ENLARGED)
         if fill is not None:
-            if self._latest_gauge_fill is not None and abs(fill - self._latest_gauge_fill) > RANK_RECHECK_CHANGE_TOLERANCE:
-                # まだゲージが動いている途中とみなし、猶予期間をやり直す
+            logger.debug(
+                "%d試合目 ランクゲージ: tier=%s fill=%.3f",
+                self._session_match_no,
+                self._grace_candidate_rank_tier,
+                fill,
+            )
+            if self._pending_gauge_fill is not None and abs(fill - self._pending_gauge_fill) <= RANK_RECHECK_CHANGE_TOLERANCE:
+                self._pending_gauge_streak += 1
+            else:
+                self._pending_gauge_fill = fill
+                self._pending_gauge_streak = 1
+            if self._pending_gauge_streak >= self._rank_recheck_interval_frames and (
+                self._latest_gauge_fill is None
+                or abs(self._pending_gauge_fill - self._latest_gauge_fill) > RANK_RECHECK_CHANGE_TOLERANCE
+            ):
+                # 確定値が実際に変わった(=まだゲージが動いている途中だった)
+                # とみなし、猶予期間をやり直す
                 self._grace_counter = 0
-            self._latest_gauge_fill = fill
+            if self._pending_gauge_streak >= self._rank_recheck_interval_frames:
+                self._latest_gauge_fill = self._pending_gauge_fill
 
         self._grace_counter += 1
 
