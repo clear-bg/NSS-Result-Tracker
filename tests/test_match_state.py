@@ -2349,6 +2349,7 @@ def test_vs_screen_confirmed_again_before_previous_match_finalized_logs_info(mon
         return frame_idx["n"] == 3
 
     frame_idx = {"n": 0}
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
     monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
     monkeypatch.setattr(match_state_module, "read_team_colors", lambda frame: (None, None))
