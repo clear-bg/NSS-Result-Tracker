@@ -8,7 +8,8 @@
 ため、他の設定項目と異なりフォールバック値を持つ。
 
 `ALLOWED_PLAYERS`以外の設定項目(`CAPTURE_DEVICE_NAME`・`CAPTURE_WIDTH`・
-`CAPTURE_HEIGHT`・`DB_PATH`・`FRAME_READ_TIMEOUT_SECONDS`・`NSS_TRACKER_LOG_LEVEL`
+`CAPTURE_HEIGHT`・`CAPTURE_FPS`・`DB_PATH`・`FRAME_READ_TIMEOUT_SECONDS`・
+`NSS_TRACKER_LOG_LEVEL`
 ・`WEB_HOST`・`WEB_PORT`・`GOAL_RECORD_MODE`・`RANK_DELTA_DISTRIBUTION_SCOPE`・
 `GOAL_ASSIST_TOTALS_SCOPE`・`RANK_GRAPH_MATCH_LIMIT`・`OBS_WEBSOCKET_HOST`・
 `OBS_WEBSOCKET_PORT`・`OBS_WEBSOCKET_PASSWORD`・`OBS_SCENE_IN_MATCH`・
@@ -124,6 +125,18 @@ def get_capture_resolution() -> tuple[int, int]:
     width_raw = _require_env("CAPTURE_WIDTH")
     height_raw = _require_env("CAPTURE_HEIGHT")
     return int(width_raw), int(height_raw)
+
+
+def get_capture_fps() -> float:
+    """実キャプチャのfps(状態機械の閾値スケーリングに使用)を取得する。
+
+    未設定時はConfigErrorを送出する(Issue #255)。OBS Virtual Cameraの実際の
+    出力fpsは環境ごとに異なりうる(30fps想定で運用していたが実測60fpsだった
+    ケースがあり、フレーム数ベースの各種デバウンス閾値が想定の半分の実時間で
+    条件を満たしてしまう不具合の原因になった)ため、.envで明示させる。
+    main.py側で`--fps`未指定時のみこの値を使う(`--fps`指定時はそちらを優先)。
+    """
+    return float(_require_env("CAPTURE_FPS"))
 
 
 def get_db_path() -> Path:
