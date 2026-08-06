@@ -42,6 +42,7 @@ from nss_tracker.config import (
     get_obs_browser_source_names,
     get_obs_scene_between_matches,
     get_obs_scene_in_match,
+    get_obs_scene_switching_enabled,
     get_obs_websocket_host,
     get_obs_websocket_password,
     get_obs_websocket_port,
@@ -399,6 +400,7 @@ def main() -> None:
         get_goal_record_mode()  # 値自体はdb.py/match_state.pyが都度参照するため、ここでは早期に検証するだけ
         get_rank_graph_match_limit()  # 値自体はweb/server.pyが都度参照するため、ここでは早期に検証するだけ
         get_rank_delta_distribution_scope()  # 値自体はweb/server.pyが都度参照するため、ここでは早期に検証するだけ
+        get_obs_scene_switching_enabled()  # 値自体はobs_control.pyが都度参照するため、ここでは早期に検証するだけ
     except ConfigError as exc:
         logger.error("設定エラー: %s", exc)
         sys.exit(1)

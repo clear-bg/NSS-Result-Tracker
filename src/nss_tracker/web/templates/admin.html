@@ -37,6 +37,13 @@
       <option value="all" {% if settings.RANK_DELTA_DISTRIBUTION_SCOPE == "all" %}selected{% endif %}>all(累計・全期間)</option>
     </select>
   </div>
+  <div class="admin-field">
+    <label for="obs_scene_switching_enabled">OBSシーン自動切替</label>
+    <select id="obs_scene_switching_enabled" name="obs_scene_switching_enabled">
+      <option value="true" {% if settings.OBS_SCENE_SWITCHING_ENABLED == "true" %}selected{% endif %}>true(試合状態に応じて自動切替する)</option>
+      <option value="false" {% if settings.OBS_SCENE_SWITCHING_ENABLED == "false" %}selected{% endif %}>false(自動切替しない、手動でシーンを操作する)</option>
+    </select>
+  </div>
   <button type="submit">更新</button>
 </form>
 </body>

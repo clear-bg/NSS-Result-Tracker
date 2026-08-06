@@ -12,7 +12,8 @@
 ・`WEB_HOST`・`WEB_PORT`・`GOAL_RECORD_MODE`・`RANK_DELTA_DISTRIBUTION_SCOPE`・
 `GOAL_ASSIST_TOTALS_SCOPE`・`RANK_GRAPH_MATCH_LIMIT`・`OBS_WEBSOCKET_HOST`・
 `OBS_WEBSOCKET_PORT`・`OBS_WEBSOCKET_PASSWORD`・`OBS_SCENE_IN_MATCH`・
-`OBS_SCENE_BETWEEN_MATCHES`・`OBS_BROWSER_SOURCE_NAMES`)は、
+`OBS_SCENE_BETWEEN_MATCHES`・`OBS_BROWSER_SOURCE_NAMES`・
+`OBS_SCENE_SWITCHING_ENABLED`)は、
 Python側にフォールバック用のデフォルト値を一切持たない。`.env`に値が設定されて
 いることを前提に動作し、未設定または不正な値の場合は起動時に`ConfigError`を
 送出して明示的に失敗する(暗黙のデフォルトに気づかないまま運用してしまうことを
@@ -39,17 +40,25 @@ Python側にフォールバック用のデフォルト値を一切持たない�
 (空リストとして扱われる)。それ以外はカンマ区切りのソース名一覧として解釈する
 (`ALLOWED_PLAYERS`と同じ形式)。
 
+`OBS_SCENE_SWITCHING_ENABLED`(Issue #248)は`"true"`/`"false"`の文字列で、
+OBSシーン自動切替(`obs_control.ObsSceneController.set_in_match`)を実際に
+行うかどうかを制御する。無効化してもOBSへの接続自体(Issue #247のブラウザ
+ソース再読み込み等)は維持したまま、シーン切替の呼び出しだけをスキップする
+(配信によっては手動でシーンを操作したい場合があるための切り替え手段。
+既定値は`"true"`で、これまでの「常に自動切替」という挙動を変えない)。
+
 `ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・
-`RANK_DELTA_DISTRIBUTION_SCOPE`の4項目のみ、Webダッシュボードの管理画面
-(`/admin`、`web/server.py`参照)からGUIで更新できる(Issue #129)。この4項目は
+`RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`の5項目のみ、
+Webダッシュボードの管理画面(`/admin`、`web/server.py`参照)からGUIで更新できる
+(Issue #129、`OBS_SCENE_SWITCHING_ENABLED`はIssue #248で追加)。この5項目は
 検知ループを再起動しなくても次に参照されたタイミングから即座に反映される
 (get_allowed_players/get_goal_record_mode/get_rank_graph_match_limit/
-get_rank_delta_distribution_scopeがいずれも呼び出しのたびにos.environを
-読み直す実装のため)。`update_editable_settings`はos.environと`.env`ファイルの
-両方を更新する(`.env`側も更新するのは、次回起動時にも同じ値を引き継ぐため)。
-この4項目を選んだ理由は、配信中に調整したくなり得る値(出演者・記録方針・
-グラフの表示範囲)に絞ったため。キャプチャ設定やOBS接続情報等は配信開始前に
-一度決めれば十分なため対象外とした。
+get_rank_delta_distribution_scope/get_obs_scene_switching_enabledがいずれも
+呼び出しのたびにos.environを読み直す実装のため)。`update_editable_settings`は
+os.environと`.env`ファイルの両方を更新する(`.env`側も更新するのは、次回起動時
+にも同じ値を引き継ぐため)。この5項目を選んだ理由は、配信中に調整したくなり得る値
+(出演者・記録方針・グラフの表示範囲・シーン自動切替の要否)に絞ったため。
+キャプチャ設定やOBS接続情報等は配信開始前に一度決めれば十分なため対象外とした。
 
 `GOAL_ASSIST_TOTALS_SCOPE`(勝率ウィジェット右側に表示する許可リストプレイヤーの
 得点・アシスト合計の集計対象、Issue #132)は`RANK_DELTA_DISTRIBUTION_SCOPE`と
@@ -71,6 +80,7 @@ _VALID_LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR")
 _VALID_GOAL_RECORD_MODES = ("all", "allowlist", "allowlist_redact")
 _VALID_RANK_DELTA_DISTRIBUTION_SCOPES = ("session", "all")
 _VALID_GOAL_ASSIST_TOTALS_SCOPES = ("session", "all")
+_VALID_BOOL_STRINGS = ("true", "false")
 
 
 class ConfigError(RuntimeError):
@@ -263,6 +273,25 @@ def get_obs_browser_source_names() -> tuple[str, ...]:
     return tuple(name.strip() for name in raw.split(",") if name.strip())
 
 
+def _validate_obs_scene_switching_enabled(value: str) -> str:
+    if value not in _VALID_BOOL_STRINGS:
+        raise ConfigError(
+            f"OBS_SCENE_SWITCHING_ENABLEDの値が不正です: {value}({'/'.join(_VALID_BOOL_STRINGS)}のいずれかを指定してください)"
+        )
+    return value
+
+
+def get_obs_scene_switching_enabled() -> bool:
+    """OBSシーン自動切替(ObsSceneController.set_in_match)を実際に行うかどうかを取得する(Issue #248)。
+
+    無効化してもOBSへの接続自体(ブラウザソース再読み込み等)は維持したまま、
+    シーン切替の呼び出しだけをスキップする。呼び出しのたびに.envから
+    再読み込みする(ALLOWED_PLAYERS等と同じ、/adminからの変更を検知ループの
+    再起動なしに反映するため)。未設定・不正な値の場合はConfigErrorを送出する。
+    """
+    return _validate_obs_scene_switching_enabled(_require_env("OBS_SCENE_SWITCHING_ENABLED")) == "true"
+
+
 def _validate_goal_record_mode(value: str) -> str:
     if value not in _VALID_GOAL_RECORD_MODES:
         raise ConfigError(
@@ -287,18 +316,19 @@ _EDITABLE_ENV_KEYS = (
     "GOAL_RECORD_MODE",
     "RANK_GRAPH_MATCH_LIMIT",
     "RANK_DELTA_DISTRIBUTION_SCOPE",
+    "OBS_SCENE_SWITCHING_ENABLED",
 )
 
 
 def get_editable_settings() -> dict[str, str]:
-    """管理画面(/admin)で表示・編集する対象4項目の現在値を返す。"""
+    """管理画面(/admin)で表示・編集する対象5項目の現在値を返す。"""
     return {key: os.environ.get(key, "") for key in _EDITABLE_ENV_KEYS}
 
 
 def update_editable_settings(values: dict[str, str]) -> None:
     """管理画面(/admin)からの更新をos.environ・.envの両方に反映する。
 
-    キーは_EDITABLE_ENV_KEYSの4つ全てが必須。ALLOWED_PLAYERS以外は各get_xxx()と
+    キーは_EDITABLE_ENV_KEYSの5つ全てが必須。ALLOWED_PLAYERS以外は各get_xxx()と
     同じバリデーション関数を通し、いずれか1つでも不正ならConfigErrorを送出して
     何も更新しない(部分適用を避けるため、書き込み前に全項目を検証する)。
     ALLOWED_PLAYERSはカンマ区切りの自由記述でフォーマット上の制約が無いため
@@ -307,6 +337,7 @@ def update_editable_settings(values: dict[str, str]) -> None:
     _validate_goal_record_mode(values["GOAL_RECORD_MODE"])
     _validate_rank_graph_match_limit(values["RANK_GRAPH_MATCH_LIMIT"])
     _validate_rank_delta_distribution_scope(values["RANK_DELTA_DISTRIBUTION_SCOPE"])
+    _validate_obs_scene_switching_enabled(values["OBS_SCENE_SWITCHING_ENABLED"])
 
     dotenv_path = find_dotenv()
     for key in _EDITABLE_ENV_KEYS:

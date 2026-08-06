@@ -26,10 +26,11 @@ html/bodyの背景を明示的に`transparent`にする。CSSで背景色を何�
 背後の他の部品を隠してしまう)。値確認用の`/`ページはOBSへの配置を想定していない
 (通常のブラウザで見る用)ため、この透過スタイルは適用しない。
 
-Issue #129: `/admin`は配信中に調整したくなり得る4項目(ALLOWED_PLAYERS・
-GOAL_RECORD_MODE・RANK_GRAPH_MATCH_LIMIT・RANK_DELTA_DISTRIBUTION_SCOPE、
-`config.py`の`_EDITABLE_ENV_KEYS`参照)をブラウザから編集する管理画面。`/`と
-同様にOBSへの配置を想定しないため`overlay.css`の透過スタイルは使わない。
+Issue #129: `/admin`は配信中に調整したくなり得る5項目(ALLOWED_PLAYERS・
+GOAL_RECORD_MODE・RANK_GRAPH_MATCH_LIMIT・RANK_DELTA_DISTRIBUTION_SCOPE・
+OBS_SCENE_SWITCHING_ENABLED(Issue #248)、`config.py`の`_EDITABLE_ENV_KEYS`参照)
+をブラウザから編集する管理画面。`/`と同様にOBSへの配置を想定しないため
+`overlay.css`の透過スタイルは使わない。
 POST後は同じ`/admin`へのリダイレクト(PRGパターン)で結果(成功/エラー文言)を
 クエリパラメータ経由で表示し、ブラウザの再読み込みで二重送信されないようにする。
 
@@ -825,6 +826,7 @@ def create_app(db_path: Path) -> FastAPI:
         goal_record_mode: str = Form(...),
         rank_graph_match_limit: str = Form(...),
         rank_delta_distribution_scope: str = Form(...),
+        obs_scene_switching_enabled: str = Form(...),
     ):
         old_values = get_editable_settings()
         new_values = {
@@ -832,6 +834,7 @@ def create_app(db_path: Path) -> FastAPI:
             "GOAL_RECORD_MODE": goal_record_mode,
             "RANK_GRAPH_MATCH_LIMIT": rank_graph_match_limit,
             "RANK_DELTA_DISTRIBUTION_SCOPE": rank_delta_distribution_scope,
+            "OBS_SCENE_SWITCHING_ENABLED": obs_scene_switching_enabled,
         }
         try:
             update_editable_settings(new_values)

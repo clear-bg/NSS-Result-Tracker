@@ -19,6 +19,7 @@ from nss_tracker.config import (
     get_obs_browser_source_names,
     get_obs_scene_between_matches,
     get_obs_scene_in_match,
+    get_obs_scene_switching_enabled,
     get_obs_websocket_host,
     get_obs_websocket_password,
     get_obs_websocket_port,
@@ -327,17 +328,37 @@ def test_get_obs_browser_source_names_parses_comma_separated_value(monkeypatch):
     assert get_obs_browser_source_names() == ("rank_graph", "vs_rank_comparison", "goal_stats")
 
 
+def test_get_obs_scene_switching_enabled_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("OBS_SCENE_SWITCHING_ENABLED", raising=False)
+    with pytest.raises(ConfigError, match="OBS_SCENE_SWITCHING_ENABLED"):
+        get_obs_scene_switching_enabled()
+
+
+def test_get_obs_scene_switching_enabled_raises_for_invalid_value(monkeypatch):
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "yes")
+    with pytest.raises(ConfigError, match="OBS_SCENE_SWITCHING_ENABLED"):
+        get_obs_scene_switching_enabled()
+
+
+@pytest.mark.parametrize("raw,expected", [("true", True), ("false", False)])
+def test_get_obs_scene_switching_enabled_parses_bool_string(monkeypatch, raw, expected):
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", raw)
+    assert get_obs_scene_switching_enabled() is expected
+
+
 def test_get_editable_settings_returns_current_env_values(monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "30")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
 
     assert get_editable_settings() == {
         "ALLOWED_PLAYERS": "Alice,Bob",
         "GOAL_RECORD_MODE": "allowlist",
         "RANK_GRAPH_MATCH_LIMIT": "30",
         "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
+        "OBS_SCENE_SWITCHING_ENABLED": "true",
     }
 
 
@@ -346,7 +367,8 @@ def _write_env_file(path: Path) -> None:
         "ALLOWED_PLAYERS=OldName\n"
         "GOAL_RECORD_MODE=all\n"
         "RANK_GRAPH_MATCH_LIMIT=all\n"
-        "RANK_DELTA_DISTRIBUTION_SCOPE=all\n",
+        "RANK_DELTA_DISTRIBUTION_SCOPE=all\n"
+        "OBS_SCENE_SWITCHING_ENABLED=true\n",
         encoding="utf-8",
     )
 
@@ -359,6 +381,7 @@ def test_update_editable_settings_updates_environ_and_env_file(tmp_path, monkeyp
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
 
     update_editable_settings(
         {
@@ -366,6 +389,7 @@ def test_update_editable_settings_updates_environ_and_env_file(tmp_path, monkeyp
             "GOAL_RECORD_MODE": "allowlist",
             "RANK_GRAPH_MATCH_LIMIT": "10",
             "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
+            "OBS_SCENE_SWITCHING_ENABLED": "false",
         }
     )
 
@@ -374,12 +398,14 @@ def test_update_editable_settings_updates_environ_and_env_file(tmp_path, monkeyp
         "GOAL_RECORD_MODE": "allowlist",
         "RANK_GRAPH_MATCH_LIMIT": "10",
         "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
+        "OBS_SCENE_SWITCHING_ENABLED": "false",
     }
     persisted = dotenv_values(env_path)
     assert persisted["ALLOWED_PLAYERS"] == "NewName,Second"
     assert persisted["GOAL_RECORD_MODE"] == "allowlist"
     assert persisted["RANK_GRAPH_MATCH_LIMIT"] == "10"
     assert persisted["RANK_DELTA_DISTRIBUTION_SCOPE"] == "session"
+    assert persisted["OBS_SCENE_SWITCHING_ENABLED"] == "false"
 
 
 def test_update_editable_settings_raises_and_applies_nothing_when_one_value_invalid(tmp_path, monkeypatch):
@@ -390,6 +416,7 @@ def test_update_editable_settings_raises_and_applies_nothing_when_one_value_inva
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
 
     with pytest.raises(ConfigError, match="GOAL_RECORD_MODE"):
         update_editable_settings(
@@ -398,6 +425,7 @@ def test_update_editable_settings_raises_and_applies_nothing_when_one_value_inva
                 "GOAL_RECORD_MODE": "not-a-real-mode",
                 "RANK_GRAPH_MATCH_LIMIT": "10",
                 "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
+                "OBS_SCENE_SWITCHING_ENABLED": "false",
             }
         )
 
@@ -407,6 +435,7 @@ def test_update_editable_settings_raises_and_applies_nothing_when_one_value_inva
         "GOAL_RECORD_MODE": "all",
         "RANK_GRAPH_MATCH_LIMIT": "all",
         "RANK_DELTA_DISTRIBUTION_SCOPE": "all",
+        "OBS_SCENE_SWITCHING_ENABLED": "true",
     }
     persisted = dotenv_values(env_path)
     assert persisted["ALLOWED_PLAYERS"] == "OldName"

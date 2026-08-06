@@ -95,9 +95,9 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 
 ### 配信中の設定変更GUI(`/admin`、Issue #129)
 
-`ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・`RANK_DELTA_DISTRIBUTION_SCOPE`の4項目(`config.py`の`_EDITABLE_ENV_KEYS`)のみ、配信中に調整したくなり得る値としてWebダッシュボードの管理画面(`/admin`)からGUIで編集できる。キャプチャ設定・OBS接続情報等、配信開始前に一度決めれば十分な値は対象外(`.env`の手動編集のまま)。対象項目の選定理由・バリデーション方式・`.env`同時更新の仕組みは`src/nss_tracker/config.py`のモジュールdocstring参照。
+`ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・`RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`の5項目(`config.py`の`_EDITABLE_ENV_KEYS`。5つ目はIssue #248で追加)のみ、配信中に調整したくなり得る値としてWebダッシュボードの管理画面(`/admin`)からGUIで編集できる。キャプチャ設定・OBS接続情報等、配信開始前に一度決めれば十分な値は対象外(`.env`の手動編集のまま)。対象項目の選定理由・バリデーション方式・`.env`同時更新の仕組みは`src/nss_tracker/config.py`のモジュールdocstring参照。
 
-- 別プロセスのネイティブGUI(tkinter等)は不採用とし、既存のFastAPI Webダッシュボード(同一プロセス内・別スレッド)に`/admin`ページを追加する方式にした(ユーザーとの相談で決定)。理由: 対象4項目は呼び出しのたびに`os.environ`を読み直す実装のため、同一プロセス内で直接書き換えれば検知ループの再起動なしに反映できる。別プロセスのGUIだとプロセス間で値を受け渡す仕組みが別途必要になる
+- 別プロセスのネイティブGUI(tkinter等)は不採用とし、既存のFastAPI Webダッシュボード(同一プロセス内・別スレッド)に`/admin`ページを追加する方式にした(ユーザーとの相談で決定)。理由: 対象5項目は呼び出しのたびに`os.environ`を読み直す実装のため、同一プロセス内で直接書き換えれば検知ループの再起動なしに反映できる。別プロセスのGUIだとプロセス間で値を受け渡す仕組みが別途必要になる
 - `main.py`起動時に`/admin`のURLを既定ブラウザで自動的に開く(`webbrowser.open()`、失敗してもWARNINGログのみでアプリ全体は継続する)。視聴者向けオーバーレイページ(`/overlay/xxx`、透過背景)とは別パスにし、`/admin`自体は`overlay.css`を使わず通常のブラウザ表示として組む(`static/admin.css`)
 - 更新結果は`nss_tracker.web`ロガーでログに残す(成功=INFO、拒否=WARNING)
 
@@ -111,6 +111,7 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 - Issue #190: 実プレイ中(ゴール演出とは無関係な通常プレイ中)の背景誤検知がbanner_confirm_frames(2秒デバウンス)を突破し、OBSシーンが誤って試合中→試合間(ワイプ)へ切り替わってしまう事象が実配信で確認された(Issue #45/#67/#150参照)。特にランクを賭けない試合はrank_before=Noneのため`_is_tier_change_plausible`等の数値ベースの安全装置が一切効かず、StabilityMonitorの「安定」判定が誤検知フレームで満たされてしまうと、あとはbanner_confirm_framesのデバウンスだけが最後の砦になる。「マッチング待機中に誤って試合中シーンのままになる」より「実プレイ中に誤ってワイプへ切り替わる」方がはるかに困るという優先順位から、`detection/match_end.py`の「試合終了」バナーOCR確認(`confirm_match_end_text`)を、OBSシーン切替(`in_match`をFalseに戻す)の**必須条件**にした。確認できなかった試合はMatchResultの記録自体(勝敗・ランク)は従来どおり行うが、`in_match`はTrueのまま維持し試合中シーンに留める(見逃した場合は次に確認できた試合の`_finalize()`まで持ち越す。ユーザーが許容すると明言した失敗方向であり、DB記録の正しさは損なわれない)。あわせて`match_end_confirm_frames`を1フレームに短縮した(このデバウンスは安全マージンとしては機能しておらず、真偽の判定はOCR文字一致そのものが担うため。詳細は`state/match_state.py`のモジュールdocstring参照)
 - OBSへの接続は配信演出のための付加機能であり、検知・DB記録という本来の機能とは独立している。OBS未起動・obs-websocket無効・パスワード不一致などで接続に失敗しても、アプリ全体を止める理由にはならないため、`obs_control.ObsSceneController`は接続・シーン切替のいずれの失敗もWARNINGログを出したうえで動作を継続する(以降のシーン切替は無効化されたまま)設計にした
 - Issue #247: 配信用ダッシュボードのウィジェットはOBSの「ブラウザ」ソースとして表示しているが、ブラウザソースは一度読み込んだきり保持されるため、本アプリ(Webサーバー)を再起動してもOBS側で手動更新しない限り表示が復帰しない問題があった。接続成功直後に1回だけ、`.env`の`OBS_BROWSER_SOURCE_NAMES`(カンマ区切り、使わない場合は`none`)で指定したソースそれぞれに対し、obs-websocketの`PressInputPropertiesButton`(`press_input_properties_button(name, "refreshnocache")`)を呼んで自動的に再読み込みする。1つのソースの更新失敗は他のソースの更新を妨げない(個別にWARNINGログ)
+- Issue #248: 配信によっては手動でシーンを操作したい場合があるため、`.env`の`OBS_SCENE_SWITCHING_ENABLED`(`true`/`false`、`/admin`から変更可能な5項目の1つ、上記「配信中の設定変更GUI」参照)でシーン自動切替のON/OFFを切り替えられる。`false`にしてもOBSへの接続自体(シーン名の事前確認・Issue #247のブラウザソース再読み込みを含む)は維持したまま、`set_in_match`呼び出し時の`set_current_program_scene`だけをスキップする(接続を切らないことで、無効化中もブラウザソースの表示は最新に保たれる)。値は呼び出しのたびに`.env`から再読み込みするため、配信中に切り替えても検知ループの再起動は不要
 
 ### 対戦相手ランク比較ウィジェットの見た目・更新タイミング(Issue #145)
 
