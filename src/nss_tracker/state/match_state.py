@@ -112,28 +112,27 @@ Issue #178: ゲージの塗りつぶし(小数部)側は、上記の間引き読
 1試合で1回しか変わらないため)。
 
 Issue #178で追加した、GRACE中に「バナー消灯+直近rank_recheck_interval_frames分
-ゲージが変化していない」ことを合図に早期確定するパスは、Issue #209で新たな
-不具合を引き起こしていたことが判明した。リーグ**昇格**が起きる試合では、
-昇格演出(is_league_change_screen)が実際に始まる前に、旧い帯のゲージが上限に
-到達して一時的に本当に動かなくなる「踊り場」が生じる。この踊り場のタイミングで
-結果バナーのテキストがたまたま一瞬(実データで最大49フレーム、0.8秒程度)
-消えると、上記の早期確定条件を満たしてしまい、昇格演出が始まるより前に
-確定してしまう(fixtures/videos/30・42番、いずれも実際に昇格が起きる試合で
-100%再現)。この時点では帯番号自体はまだ変化していない(delta=0)ため
-_is_tier_change_plausible()も無条件に許容してしまい、警告も再スキャンも
-一切トリガーされない。結果として`league_changed`が`None`のまま、`rank_after`
-だけが帯の上限にかなり近い値(実測0.993〜1.0)として記録される、という
-外からは気付きにくい形の見逃しになる。
+ゲージが変化していない」ことを合図に早期確定するパスは、Issue #209の対策
+(_latest_gauge_fillが帯上限付近のときはこの早期確定を使わない、という
+near_tier_capガード)を挟んでもなお、Issue #235で別系統の不具合を引き起こして
+いたことが実データ(2026-08-05の実機テストセッション)で判明した。結果バナー
+(勝敗テキスト)が消えて次の画面(試合間の豆知識画面等)へ切り替わる遷移演出
+(ワイプ/フラッシュ)の最中、ゲージ読み取りROI(GAUGE_ROI_ENLARGED)の明度が
+一瞬跳ね上がることが実測で分かった(fill値が0.097→0.862→0.000と、0.6秒程度で
+急騰・急落する)。この遷移演出は昇格演出の有無に関わらずどの試合でも起こり
+うるため、near_tier_capガードでは防げない。バナー消灯直後の数フレームで
+この遷移演出のノイズを「安定したゲージ値」と誤認し早期確定してしまうケースが
+実測で複数見つかった(負けているのにrank_afterが上昇して記録される、
+リーグ昇格演出が始まる前に確定してしまい昇格そのものを見逃す、等)。
 
-対策として、_latest_gauge_fillがLEAGUE_CHANGE_IMMINENT_FILL_THRESHOLD以上の
-場合はこの早期確定パスを使わないようにした。この場合は通常どおり
-league_change_grace_frames(既定5秒相当)の満了まで待つことになるが、
-実データ(30・42番)ではバナー確定から実際の昇格演出開始まで3.5秒前後だった
-ため、5秒の猶予期間内に収まる。昇格演出が始まれば_track_rank()冒頭の
-is_league_change_screen()分岐が先に捕捉するため、正しく昇格として扱われる。
-演出後にバッジが安定して読み取れることは実データで確認済み(30番は演出後
-約60フレーム、42番は約30フレームの安定した静止区間があり、いずれも既存の
-StabilityMonitorの安定待ち(30fps換算15フレーム相当)で問題なく間に合う)。
+Issue #235でこの早期確定パス自体を廃止した。GRACE中の確定手段は「本当の
+暗転(is_full_blackout)を検知した瞬間の即時確定」と「league_change_grace_frames
+(既定5秒)満了による確定」の2つのみになった。実データでは上記の遷移演出ノイズは
+暗転の数秒前には収まって正しい値に落ち着いていたため、暗転まで待てば正しい
+値を掴める。バナー消灯後すぐには確定せず常に暗転または猶予満了まで待つ形に
+なるため、昇格演出が無い普通の試合でも確定までの待ち時間が数秒(最大5秒)
+伸びるが、バックグラウンドで動くロガーでありこの程度の遅延の実害は薄いと
+判断した(ユーザー確認済み)。
 
 ただし上記のleague_change_grace_frames満了待ちには依然として上限時間が
 あるため、理論上はそれより長く昇格演出の開始が遅れた場合(例: 何らかの理由で
@@ -141,8 +140,9 @@ StabilityMonitorの安定待ち(30fps換算15フレーム相当)で問題なく�
 残存リスクに対する最終的な安全装置として、CLAUDE.md記載の「4. 暗転」
 (ランク確定〜昇格演出を含む一連の演出が完全に終わった直後、マッチング画面に
 戻る前に必ず一度全画面が真っ黒になる区間、detection.motion.is_full_blackout
-参照)を検知したら、grace_counter・near_tier_cap・バナー消灯確認の状態に
-一切関わらず直ちに確定するようにした(Issue #209)。暗転はランク確定と
+参照)を検知したら、grace_counterの状態に一切関わらず直ちに確定するように
+した(Issue #209、Issue #235で早期確定パス自体を廃止した後もこの安全装置は
+そのまま残している)。暗転はランク確定と
 無関係なタイミング(マッチング開始直後・対戦相手が集まらずゲーム再起動する際等)
 でも起こりうるが、この判定はGRACE以降(_grace_candidate_rank_tierが一度でも
 読み取れた後)でのみ使うため、他のタイミングでの暗転が誤って確定をトリガー
@@ -512,12 +512,6 @@ DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES = 5
 # 昇格しない」というゲーム仕様(ユーザー確認済み)を前提に、勝敗と矛盾する
 # 向きにこの割合を超えて動いて見える場合にのみ1帯またいだとみなす
 RANK_TIER_WRAP_MIN_MAGNITUDE = get_detection_value("match_state", "RANK_TIER_WRAP_MIN_MAGNITUDE", 0.5)
-
-# Issue #209: ゲージがこの値以上のとき、昇格演出が近い(帯の上限に到達し一時的に
-# 停止している)可能性があるとみなし、バナー消灯による早期確定パス(Issue #178)を
-# 使わない。実データ(fixtures/videos/30・42番)では、早期確定に誤って捕まった
-# 時点のゲージ小数部が0.993〜1.0だったため、十分マージンを取った値にしている
-LEAGUE_CHANGE_IMMINENT_FILL_THRESHOLD = get_detection_value("match_state", "LEAGUE_CHANGE_IMMINENT_FILL_THRESHOLD", 0.95)
 
 # Issue #224: 試合終了時のOBSシーン切替(in_match=False)は、ランク値の確定
 # タイミングとは切り離し、「暗転(is_full_blackout)を最初に検知してから
@@ -1089,8 +1083,8 @@ class MatchStateMachine:
             self._rank_phase = _RankPhase.WAITING_STABLE
             return None
 
-        # Issue #209: 暗転(画面全体が真っ黒)を検知したら、grace_counter・
-        # near_tier_cap・バナー消灯確認等の状態に関わらず直ちに確定する。
+        # Issue #209: 暗転(画面全体が真っ黒)を検知したら、grace_counterの
+        # 状態に関わらず直ちに確定する。
         # この暗転は試合結果〜ランク確定演出(昇格演出を含む)が完全に終わった
         # 直後にのみ現れるため、候補値を一度でも読み取れていればそれを採用して
         # よい(モジュールdocstring参照)。is_stable系のロジックより前で
@@ -1138,42 +1132,15 @@ class MatchStateMachine:
         # 1回だけ使う方式だと、実際にはまだ動いている途中の値を掴んでしまう
         # ことが実データ(本番DBで誤検知が見つかったmatches.id=19/20の元動画)で
         # 確認された。帯番号は数値OCR(重い処理)のため頻度は変えない。
-        # _grace_counterは「最後にゲージ変化を検知してから何フレーム経ったか」も
-        # 兼ねる(変化を検知した瞬間に0へリセットする)ため、下記の「バナー消灯
-        # 即確定」判定にもそのまま使う
+        # Issue #235: 以前は_grace_counterを「バナー消灯+ゲージ変化なし」の
+        # 早期確定判定にも使っていたが、その早期確定パス自体を廃止したため、
+        # 現在は下記の暗転即確定パス・league_change_grace_frames満了判定にのみ使う
         fill = read_rank_gauge_fill(frame, GAUGE_ROI_ENLARGED)
         if fill is not None:
             if self._latest_gauge_fill is not None and abs(fill - self._latest_gauge_fill) > RANK_RECHECK_CHANGE_TOLERANCE:
                 # まだゲージが動いている途中とみなし、猶予期間をやり直す
                 self._grace_counter = 0
             self._latest_gauge_fill = fill
-
-        # Issue #178: 結果バナー(勝敗テキスト)はランクゲージのアニメーションより
-        # 先に消えることがあるため、バナーが消えた瞬間に無条件で確定するのではなく、
-        # 直近rank_recheck_interval_frames分はゲージの変化が無かったことを確認して
-        # から確定する(まだ変化が続いている間はこの分岐を素通りしてgrace_counterの
-        # 通常のタイムアウト待ちに合流する)。
-        #
-        # Issue #209: ただしゲージが帯の上限付近(LEAGUE_CHANGE_IMMINENT_FILL_THRESHOLD
-        # 以上)のときはこの早期確定を使わない。昇格演出が始まる直前は、ゲージが
-        # 上限に到達して一時的に本当に動かなくなる「踊り場」ができ、この間に
-        # バナーのテキストがたまたま一瞬消えるとこの条件を満たしてしまい、
-        # 昇格演出(is_league_change_screen)が始まる前に確定してしまうことが
-        # 実データ(fixtures/videos/30・42番)で判明した。この場合は早期確定を
-        # 見送り、通常どおりleague_change_grace_frames(既定5秒相当)満了まで待つ
-        # ことで、昇格演出が始まればis_league_change_screen()の分岐(このメソッド
-        # 冒頭)が先に捕捉できるようにする
-        near_tier_cap = (
-            self._latest_gauge_fill is not None
-            and self._latest_gauge_fill >= LEAGUE_CHANGE_IMMINENT_FILL_THRESHOLD
-        )
-        if (
-            classify_banner(frame) is None
-            and self._grace_counter >= self._rank_recheck_interval_frames
-            and not near_tier_cap
-        ):
-            self._fill_grace_candidate_if_missing(frame)
-            return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank())
 
         self._grace_counter += 1
 
