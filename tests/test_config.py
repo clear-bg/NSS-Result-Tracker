@@ -16,6 +16,7 @@ from nss_tracker.config import (
     get_goal_record_mode,
     get_log_level,
     get_log_level_name,
+    get_obs_browser_source_names,
     get_obs_scene_between_matches,
     get_obs_scene_in_match,
     get_obs_websocket_host,
@@ -307,6 +308,23 @@ def test_get_obs_scene_between_matches_raises_when_unset(monkeypatch):
 def test_get_obs_scene_between_matches_uses_env_value(monkeypatch):
     monkeypatch.setenv("OBS_SCENE_BETWEEN_MATCHES", "BetweenMatches")
     assert get_obs_scene_between_matches() == "BetweenMatches"
+
+
+def test_get_obs_browser_source_names_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("OBS_BROWSER_SOURCE_NAMES", raising=False)
+    with pytest.raises(ConfigError, match="OBS_BROWSER_SOURCE_NAMES"):
+        get_obs_browser_source_names()
+
+
+def test_get_obs_browser_source_names_returns_empty_tuple_for_none(monkeypatch):
+    """この機能を使わない場合、noneを再読み込み対象なしとして扱う。"""
+    monkeypatch.setenv("OBS_BROWSER_SOURCE_NAMES", "none")
+    assert get_obs_browser_source_names() == ()
+
+
+def test_get_obs_browser_source_names_parses_comma_separated_value(monkeypatch):
+    monkeypatch.setenv("OBS_BROWSER_SOURCE_NAMES", "rank_graph, vs_rank_comparison ,goal_stats")
+    assert get_obs_browser_source_names() == ("rank_graph", "vs_rank_comparison", "goal_stats")
 
 
 def test_get_editable_settings_returns_current_env_values(monkeypatch):
