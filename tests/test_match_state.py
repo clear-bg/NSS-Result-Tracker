@@ -2006,3 +2006,65 @@ def test_vs_screen_shown_continuously_reads_ranks_only_once(monkeypatch):
     machine._vs_ocr_thread.join()
 
     assert read_calls["n"] == 1
+
+
+def test_vs_screen_flicker_after_confirm_does_not_double_count_match(monkeypatch):
+    """Issue #234: 同じVS画面が表示され続けている間に、演出等でis_vs_screenが
+    1フレームだけFalseを返しても、確定直後のロック期間中は再度の試合開始として
+    数えないことを確認する(実機で見つかった二重カウント不具合の再現)。
+    """
+    # frame_idx 3(確定に必要なstreakを満たした直後)だけFalseにして、
+    # 実データで見られたキック演出中の一瞬の判定揺れを再現する
+    flicker_frame_idx = 3
+
+    def fake_is_vs_screen(frame):
+        return frame_idx["n"] != flicker_frame_idx
+
+    frame_idx = {"n": 0}
+    monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+    monkeypatch.setattr(match_state_module, "read_team_colors", lambda frame: (None, None))
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+
+    # vs_screen_lockout_framesはテスト全体のフレーム数より大きくしておき、
+    # ロックが途中で切れて2回目の確定に成功してしまわないようにする
+    machine = MatchStateMachine(vs_screen_confirm_frames=2, vs_screen_lockout_frames=100)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    for _ in range(20):
+        machine.process_frame(frame)
+        frame_idx["n"] += 1
+
+    assert machine._session_match_no == 1, "同じVS画面表示中のフリッカーで試合開始が二重に数えられてはいけない"
+
+
+def test_vs_screen_lockout_expires_before_next_real_match(monkeypatch):
+    """Issue #234: ロック期間が終わった後に本当に新しいVS画面が表示された場合は、
+    正しく2試合目として数えられることを確認する(ロックが以降ずっと新しい試合の
+    検知を妨げ続けないことの確認)。
+    """
+
+    def fake_is_vs_screen(frame):
+        n = frame_idx["n"]
+        # 0-2: 1試合目のVS画面, 3-9: ロック期間+試合中(VS画面ではない),
+        # 10-: 2試合目の本物のVS画面
+        return n < 3 or n >= 10
+
+    frame_idx = {"n": 0}
+    monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+    monkeypatch.setattr(match_state_module, "read_team_colors", lambda frame: (None, None))
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+
+    machine = MatchStateMachine(vs_screen_confirm_frames=2, vs_screen_lockout_frames=5)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    for _ in range(20):
+        machine.process_frame(frame)
+        frame_idx["n"] += 1
+
+    assert machine._session_match_no == 2, "ロック解除後の本物のVS画面は2試合目として数えられるはず"

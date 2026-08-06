@@ -473,6 +473,15 @@ DEFAULT_BANNER_CONFIRM_FRAMES_AFTER_MATCH_END = 30
 DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES = 30
 DEFAULT_GOAL_CONFIRM_FRAMES = 30
 DEFAULT_VS_SCREEN_CONFIRM_FRAMES = 30
+# Issue #234: VS画面確定直後、演出中(キック演出のスウォッシュ等)の一瞬の
+# is_vs_screen判定揺れによって同じVS画面のまま試合開始が二重に発火する不具合が
+# 実データで見つかった。確定後はこの秒数、新規のVS画面検知自体を行わないことで
+# 対症療法的に防ぐ。他のDEFAULT_XXX_FRAMESと異なりfpsに依存しない実時間の長さ
+# そのものが意味を持つ値のため、config/detection.tomlの[match_state]で
+# 上書き可能にしている(30fps換算のフレーム数はDEFAULT_VS_SCREEN_LOCKOUT_FRAMES
+# 参照、main.py側が実際のfpsに応じて再計算する点は他のフレーム数系デフォルトと同じ)
+VS_SCREEN_LOCKOUT_SECONDS = get_detection_value("match_state", "VS_SCREEN_LOCKOUT_SECONDS", 30.0)
+DEFAULT_VS_SCREEN_LOCKOUT_FRAMES = round(VS_SCREEN_LOCKOUT_SECONDS * 30)
 # Issue #176: 降格ラベルは実測で2秒以上安定して表示され続けるため(detection/
 # league_change.pyのモジュールdocstring参照)、goal/vs_screenと同じ1秒相当で良い
 DEFAULT_DEMOTION_LABEL_CONFIRM_FRAMES = 30
@@ -595,6 +604,7 @@ class MatchStateMachine:
         goal_confirm_frames: int = DEFAULT_GOAL_CONFIRM_FRAMES,
         rank_recheck_interval_frames: int = DEFAULT_RANK_RECHECK_INTERVAL_FRAMES,
         vs_screen_confirm_frames: int = DEFAULT_VS_SCREEN_CONFIRM_FRAMES,
+        vs_screen_lockout_frames: int = DEFAULT_VS_SCREEN_LOCKOUT_FRAMES,
         match_end_confirm_frames: int = DEFAULT_MATCH_END_CONFIRM_FRAMES,
         rank_tier_rescan_wait_frames: int = DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES,
         demotion_label_confirm_frames: int = DEFAULT_DEMOTION_LABEL_CONFIRM_FRAMES,
@@ -608,6 +618,7 @@ class MatchStateMachine:
         self._goal_confirm_frames = goal_confirm_frames
         self._rank_recheck_interval_frames = rank_recheck_interval_frames
         self._vs_screen_confirm_frames = vs_screen_confirm_frames
+        self._vs_screen_lockout_frames = vs_screen_lockout_frames
         self._match_end_confirm_frames = match_end_confirm_frames
         self._rank_tier_rescan_wait_frames = rank_tier_rescan_wait_frames
         self._demotion_label_confirm_frames = demotion_label_confirm_frames
@@ -646,6 +657,9 @@ class MatchStateMachine:
         self._pending_goals: list[GoalEvent] = []
         self._vs_streak = 0
         self._vs_recorded_this_match = False
+        # Issue #234: VS画面確定直後からカウントダウンする残りロックフレーム数。
+        # 0の間は通常通りVS画面検知を行う(_check_for_vs_screen参照)
+        self._vs_lockout_counter = 0
         # Issue #229: _vs_recorded_this_matchはVS画面が視覚的に消えた(is_vs_screenが
         # Falseに戻った)瞬間にFalseへ戻ってしまう(_check_for_vs_screen参照。VS画面
         # OCRの重複発火を防ぐための「今まさにVS画面が出ていて記録済みか」という
@@ -751,6 +765,15 @@ class MatchStateMachine:
             self._blackout_switch_counter = None
 
     def _check_for_vs_screen(self, frame: np.ndarray) -> None:
+        # Issue #234: VS画面確定直後はロック中(この秒数は新規のVS画面検知自体を
+        # 行わない)。演出中の一瞬の判定揺れでis_vs_screenが1フレームだけFalseに
+        # なると_vs_streak/_vs_recorded_this_matchが即座にリセットされてしまい
+        # (下記参照)、その後streakが再度積み上がると同じVS画面のまま試合開始が
+        # 二重に発火する不具合の対症療法。ロック中はstreakの更新も含め本メソッドの
+        # 判定を丸ごとスキップする
+        if self._vs_lockout_counter > 0:
+            self._vs_lockout_counter -= 1
+            return
         # デバッグ用: DEBUGレベル時のみVS_ROIの生HSV値を毎フレームログに残す
         # (通常運用のINFOレベルでは出ないため影響なし)。Issue #68で実機の閾値
         # 調整に使用、閾値自体はIssue #116の実測で確定済み(detection.matchmaking参照)
@@ -776,6 +799,8 @@ class MatchStateMachine:
             self._vs_recorded_this_match = True
             self._vs_confirmed_this_match = True
             self._in_match = True
+            # Issue #234: 確定した瞬間からロックを開始する
+            self._vs_lockout_counter = self._vs_screen_lockout_frames
             # Issue #224: 前の試合の暗転待ち(_pending_obs_switch)が何らかの理由で
             # 完了しないまま次の試合のVS画面が先に確定した場合(実際にはほぼ
             # 起きないはずのレアケース)、in_match=Trueが優先されるべきなので
@@ -1363,6 +1388,10 @@ class MatchStateMachine:
         self._vs_streak = 0
         self._vs_recorded_this_match = False
         self._vs_confirmed_this_match = False
+        # Issue #234: 通常は試合の長さ(数分)に対しロック時間(既定30秒)は
+        # 十分短く自然に0まで減っているはずだが、念のため試合終了時点で
+        # 明示的に解除し、次の試合の本物のVS画面検知を妨げないようにする
+        self._vs_lockout_counter = 0
         # Issue #190: 「試合終了」バナーをOCRで確認できた試合に限りOBSシーン切替
         # (in_match=False)を行う。確認できなかった試合(実プレイ中の背景誤検知が
         # banner_confirm_framesを突破した可能性を否定できない)はin_matchをTrueの
