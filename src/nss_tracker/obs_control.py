@@ -20,6 +20,15 @@ Issue #218対応: 接続成功直後に1回だけ、`.env`で設定した`OBS_SC
 終わってシーン切替が必要になったタイミングで初めて気付けたが、起動時にログへ
 残すことで配信中に初めて気付く事態を避ける。シーン一覧の取得自体に失敗しても
 接続失敗時と同じ考え方でWARNINGログのみで動作を継続する。
+
+Issue #247対応: 配信用ダッシュボードのウィジェットはOBSの「ブラウザ」ソースとして
+表示しているが、ブラウザソースは一度読み込んだきり保持されるため、本アプリ
+(Webサーバー)を再起動すると、OBS側で手動で「更新」ボタンを押さない限り表示が
+復帰しない。接続成功直後に1回だけ、`.env`で設定した`OBS_BROWSER_SOURCE_NAMES`
+(カンマ区切り)それぞれに対してobs-websocketの`PressInputPropertiesButton`
+リクエスト(`press_input_properties_button`、プロパティ名`"refreshnocache"`)を
+送り、「現在のページのキャッシュを更新」ボタンを自動的に押す。1つのソースの
+更新に失敗しても他のソースの更新は試みる(個別にWARNINGログを出す)。
 """
 
 import logging
@@ -37,7 +46,15 @@ _CONNECT_TIMEOUT_SECONDS = 3
 class ObsSceneController:
     """MatchStateMachine.in_matchの変化に応じてOBSシーンを切り替える。"""
 
-    def __init__(self, host: str, port: int, password: str, scene_in_match: str, scene_between_matches: str) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        password: str,
+        scene_in_match: str,
+        scene_between_matches: str,
+        browser_source_names: tuple[str, ...] = (),
+    ) -> None:
         self._scene_in_match = scene_in_match
         self._scene_between_matches = scene_between_matches
         self._client: obs.ReqClient | None = None
@@ -50,6 +67,7 @@ class ObsSceneController:
             )
             return
         self._verify_scenes_exist()
+        self._refresh_browser_sources(browser_source_names)
 
     def _verify_scenes_exist(self) -> None:
         """OBS_SCENE_IN_MATCH/OBS_SCENE_BETWEEN_MATCHESが実際にOBS側に存在するかを
@@ -87,6 +105,19 @@ class ObsSceneController:
                 self._scene_in_match,
                 self._scene_between_matches,
             )
+
+    def _refresh_browser_sources(self, browser_source_names: tuple[str, ...]) -> None:
+        """OBS_BROWSER_SOURCE_NAMESで指定されたブラウザソースを起動時に1回だけ再読み込みする(Issue #247)。
+
+        1つのソースの更新に失敗しても、他のソースの更新は引き続き試みる
+        (どれか1つの設定ミスで全体が止まらないようにする)。
+        """
+        for name in browser_source_names:
+            try:
+                self._client.press_input_properties_button(name, "refreshnocache")
+                logger.info("OBSブラウザソースを再読み込みしました: %s", name)
+            except (OSError, OBSSDKError, websocket.WebSocketException) as exc:
+                logger.warning("OBSブラウザソースの再読み込みに失敗しました(source=%s): %s", name, exc)
 
     def set_in_match(self, in_match: bool) -> None:
         """試合中/試合間に応じたシーンへ切り替える。接続に失敗している場合は何もしない。"""

@@ -12,7 +12,7 @@
 ・`WEB_HOST`・`WEB_PORT`・`GOAL_RECORD_MODE`・`RANK_DELTA_DISTRIBUTION_SCOPE`・
 `GOAL_ASSIST_TOTALS_SCOPE`・`RANK_GRAPH_MATCH_LIMIT`・`OBS_WEBSOCKET_HOST`・
 `OBS_WEBSOCKET_PORT`・`OBS_WEBSOCKET_PASSWORD`・`OBS_SCENE_IN_MATCH`・
-`OBS_SCENE_BETWEEN_MATCHES`)は、
+`OBS_SCENE_BETWEEN_MATCHES`・`OBS_BROWSER_SOURCE_NAMES`)は、
 Python側にフォールバック用のデフォルト値を一切持たない。`.env`に値が設定されて
 いることを前提に動作し、未設定または不正な値の場合は起動時に`ConfigError`を
 送出して明示的に失敗する(暗黙のデフォルトに気づかないまま運用してしまうことを
@@ -33,6 +33,11 @@ Python側にフォールバック用のデフォルト値を一切持たない�
 `OBS_WEBSOCKET_PASSWORD`はobs-websocketの接続パスワード。OBS側で認証を無効化して
 いる場合は文字列`"none"`を指定する(空文字列のパスワードとして扱われる)。
 それ以外の値(空文字列含む)は実際のパスワードとしてそのまま使う。
+
+`OBS_BROWSER_SOURCE_NAMES`(Issue #247)は起動時に再読み込みするOBSブラウザ
+ソース名。使わない場合は`OBS_WEBSOCKET_PASSWORD`と同じく文字列`"none"`を指定する
+(空リストとして扱われる)。それ以外はカンマ区切りのソース名一覧として解釈する
+(`ALLOWED_PLAYERS`と同じ形式)。
 
 `ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・
 `RANK_DELTA_DISTRIBUTION_SCOPE`の4項目のみ、Webダッシュボードの管理画面
@@ -242,6 +247,20 @@ def get_obs_scene_in_match() -> str:
 def get_obs_scene_between_matches() -> str:
     """試合と試合の間に切り替えるOBSシーン名を取得する。未設定時はConfigErrorを送出する。"""
     return _require_env("OBS_SCENE_BETWEEN_MATCHES")
+
+
+def get_obs_browser_source_names() -> tuple[str, ...]:
+    """起動時(OBS接続成功直後)に再読み込みするOBSブラウザソース名を取得する(Issue #247)。
+
+    値が`"none"`の場合は再読み込み対象なし(空タプル)として扱う
+    (OBS_WEBSOCKET_PASSWORDと同じパターン)。それ以外はカンマ区切りのソース名一覧
+    として解釈する(ALLOWED_PLAYERSと同じ、前後の空白は除去し空要素は無視する)。
+    未設定・空文字列はConfigErrorを送出する。
+    """
+    raw = _require_env("OBS_BROWSER_SOURCE_NAMES")
+    if raw == "none":
+        return ()
+    return tuple(name.strip() for name in raw.split(",") if name.strip())
 
 
 def _validate_goal_record_mode(value: str) -> str:

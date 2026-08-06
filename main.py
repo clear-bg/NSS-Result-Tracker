@@ -39,6 +39,7 @@ from nss_tracker.config import (
     get_frame_read_timeout_seconds,
     get_goal_record_mode,
     get_log_level,
+    get_obs_browser_source_names,
     get_obs_scene_between_matches,
     get_obs_scene_in_match,
     get_obs_websocket_host,
@@ -394,6 +395,7 @@ def main() -> None:
         obs_password = get_obs_websocket_password()
         obs_scene_in_match = get_obs_scene_in_match()
         obs_scene_between_matches = get_obs_scene_between_matches()
+        obs_browser_source_names = get_obs_browser_source_names()
         get_goal_record_mode()  # 値自体はdb.py/match_state.pyが都度参照するため、ここでは早期に検証するだけ
         get_rank_graph_match_limit()  # 値自体はweb/server.pyが都度参照するため、ここでは早期に検証するだけ
         get_rank_delta_distribution_scope()  # 値自体はweb/server.pyが都度参照するため、ここでは早期に検証するだけ
@@ -428,6 +430,7 @@ def main() -> None:
         password=obs_password,
         scene_in_match=obs_scene_in_match,
         scene_between_matches=obs_scene_between_matches,
+        browser_source_names=obs_browser_source_names,
     )
     try:
         run(reader, machine, conn, session_id, obs_controller)
