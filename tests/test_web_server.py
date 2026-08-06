@@ -283,9 +283,9 @@ def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path, monkey
     assert response.status_code == 200
     assert response.json() == {
         "matches": [
-            {"rank_after": 1.0, "rank_before": 0.0, "league_changed": None},
-            {"rank_after": 2.0, "rank_before": 1.0, "league_changed": "up"},
-            {"rank_after": 3.0, "rank_before": 2.0, "league_changed": None},
+            {"rank_after": 1.0, "league_changed": None},
+            {"rank_after": 2.0, "league_changed": "up"},
+            {"rank_after": 3.0, "league_changed": None},
         ]
     }
 
@@ -372,12 +372,11 @@ def test_rank_history_respects_limit_env_value(tmp_path: Path, monkeypatch):
 
 
 def _continuous_history(values: list[float], league_changed: list = None) -> list[dict]:
-    """rank_beforeを直前のrank_afterと同じ値にした、単純なhistoryのテストデータ。"""
+    """_render_rank_graph_svgに渡す単純なhistoryのテストデータ。"""
     league_changed_values = league_changed if league_changed is not None else [None] * len(values)
     return [
         {
             "rank_after": value,
-            "rank_before": values[i - 1] if i > 0 else value,
             "league_changed": league_changed_values[i],
         }
         for i, value in enumerate(values)
@@ -563,15 +562,14 @@ def test_render_rank_graph_svg_flat_values_widens_y_axis_around_the_value():
 
 def test_render_rank_graph_svg_always_draws_single_solid_line():
     """Issue #180で導入した「連続していない区間は点線」の区別は、ユーザーとの
-    相談で廃止した(2026-08-04)。rank_beforeが前の試合のrank_afterと大きく
-    異なる場合やNULLの場合でも、常に1本の実線(rank-graph-line)のみで描画する。
+    相談で廃止した(2026-08-04)。試合間の値の差が大きくても、常に1本の
+    実線(rank-graph-line)のみで描画する。
     """
     history = [
-        {"rank_after": 38.1, "rank_before": 38.1, "league_changed": None},
-        {"rank_after": 39.0, "rank_before": 38.1, "league_changed": None},
-        # 39.0との差が大きい・rank_beforeがNULLでも、以前のように区切らない
-        {"rank_after": 37.6, "rank_before": None, "league_changed": None},
-        {"rank_after": 37.9, "rank_before": 37.6, "league_changed": None},
+        {"rank_after": 38.1, "league_changed": None},
+        {"rank_after": 39.0, "league_changed": None},
+        {"rank_after": 37.6, "league_changed": None},
+        {"rank_after": 37.9, "league_changed": None},
     ]
 
     svg = _render_rank_graph_svg(history)
