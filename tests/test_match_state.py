@@ -558,6 +558,116 @@ def test_track_rank_grace_tracks_slow_drift_every_frame(monkeypatch):
     )
 
 
+def test_track_rank_grace_debounces_transition_spike_and_fade_noise(monkeypatch):
+    """Issue #235: 結果バナー消灯直後のワイプ演出による一瞬の急騰や、ランクバッジが
+    画面外へ消えて暗転へフェードしていく過程での急落など、遷移演出由来のノイズが
+    _latest_gauge_fillへ混入しないことを確認する。
+
+    2026-08-05実機テストセッション・3試合目の回帰: 0.10前後で安定していた値が、
+    ワイプ演出で0.86まで急騰した後フェードで0.0まで急落し、暗転即確定パスが
+    その0.0(バッジが画面から消えただけの無意味な値)を誤って採用していた。
+    """
+    fill_sequence = [0.10] * 20 + [0.40, 0.75, 0.86, 0.70, 0.30, 0.0]
+    state = {"fill_idx": 0, "last_fill": None}
+
+    def fake_read_rank_gauge_fill(frame, gauge_roi):
+        idx = min(state["fill_idx"], len(fill_sequence) - 1)
+        state["fill_idx"] += 1
+        state["last_fill"] = fill_sequence[idx]
+        return state["last_fill"]
+
+    def fake_is_full_blackout(frame):
+        # ノイズの最後(0.0)が読まれた直後のフレームで暗転が来る想定。
+        # 0.0がrank_recheck_interval_frames分連続する前に確定させることで、
+        # このノイズ自体が確定値になってしまわないかを検証する
+        return state["last_fill"] == 0.0
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    monkeypatch.setattr(
+        match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (39, 39.10)
+    )
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", fake_read_rank_gauge_fill)
+    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: 39)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=1000,
+        rank_recheck_interval_frames=10,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+    machine._vs_confirmed_this_match = True
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_after == pytest.approx(39.10), (
+        f"遷移演出のノイズ(急騰・急落)を確定値として拾ってしまっている: {result.rank_after}"
+    )
+
+
+def test_track_rank_grace_logs_gauge_value_every_frame_at_debug_level(monkeypatch, caplog):
+    """Issue #235: GRACE中、ランクゲージの塗りつぶし値をDEBUGレベルで毎フレーム
+    ログに出すことを確認する(実機デバッグ時に確定ロジックの挙動を追えるようにする目的)。
+    """
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    monkeypatch.setattr(
+        match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (39, 39.10)
+    )
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.10)
+    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: 39)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        league_change_grace_frames=1000,
+        rank_recheck_interval_frames=10,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+    machine._vs_confirmed_this_match = True
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    with caplog.at_level("DEBUG", logger="nss_tracker.state"):
+        for _ in range(10):
+            machine.process_frame(frame)
+
+    assert "0試合目 ランクゲージ: tier=39 fill=0.100" in caplog.text
+
+
+def test_check_for_vs_screen_no_longer_logs_hsv_debug(monkeypatch, caplog):
+    """Issue #235: VS_ROIの生HSV値を毎フレームDEBUGログに出す処理は不要になった
+    ため削除した(実機デバッグでもう使っていなかったため)。DEBUGレベルでも
+    このログが出ないことを確認する。
+    """
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+
+    machine = MatchStateMachine()
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    with caplog.at_level("DEBUG", logger="nss_tracker.state"):
+        for _ in range(5):
+            machine.process_frame(frame)
+
+    assert "VS_ROI HSV" not in caplog.text
+
+
 def test_track_rank_periodic_recheck_catches_tier_change(monkeypatch):
     """GRACE突入直後の読み取りでは帯番号の変化(降格)がまだ反映されていない場合でも、
     定期的な再読み取りで正しい帯番号・league_changedにたどり着けることを確認する
