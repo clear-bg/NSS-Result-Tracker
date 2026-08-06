@@ -184,11 +184,6 @@ def _fetch_rank_history(db_path: Path) -> list[dict]:
     対象範囲はconfig.get_rank_graph_match_limit()に従う(Noneなら全期間、
     数値ならその件数分の直近の試合のみ)。rank_afterがNULL(ランク読み取り失敗)の
     試合はグラフに描画しようがないため除外する。
-
-    Issue #180: rank_beforeも合わせて返す。隣り合う試合同士が実際に連続して
-    いたか(前の試合のrank_afterと今回のrank_beforeが十分近いか)を
-    _render_rank_graph_svg側で判定するために使う(Issue #179の補正ロジックと
-    同じ閾値、詳細は_render_rank_graph_svgのdocstring参照)。
     """
     limit = get_rank_graph_match_limit()
     conn = _connect(db_path)
@@ -197,7 +192,7 @@ def _fetch_rank_history(db_path: Path) -> list[dict]:
     finally:
         conn.close()
     return [
-        {"rank_after": row["rank_after"], "rank_before": row["rank_before"], "league_changed": row["league_changed"]}
+        {"rank_after": row["rank_after"], "league_changed": row["league_changed"]}
         for row in rows
         if row["rank_after"] is not None
     ]
