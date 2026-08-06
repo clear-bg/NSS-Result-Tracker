@@ -1146,13 +1146,16 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
     )
 
 
-def test_near_tier_cap_gauge_skips_early_finalize_and_catches_promotion(monkeypatch):
-    """Issue #209: ゲージが帯の上限付近(near_tier_cap)のままバナーが消えても、
-    早期確定パス(Issue #178)を使わずに待ち続け、その後実際に昇格演出
-    (is_league_change_screen)が始まれば正しく帯を+1して記録することを確認する。
+def test_promotion_during_grace_period_is_caught(monkeypatch):
+    """Issue #209/#235: ゲージが帯の上限付近のままバナーが消えても早期確定せず
+    待ち続け、その後実際に昇格演出(is_league_change_screen)が始まれば正しく
+    帯を+1して記録することを確認する。
 
     fixtures/videos/30・42番の回帰(昇格演出が始まる前にゲージの踊り場+バナー消灯が
-    重なって誤って早期確定していた)を再現するテスト。
+    重なって誤って早期確定していた)を再現するテスト。Issue #178で追加された
+    「バナー消灯+ゲージ変化なし」による早期確定パス自体は、遷移演出のノイズを
+    誤って安定値と誤認する別の不具合(Issue #235)が実データで見つかったため
+    廃止済み(near_tier_capガード等の部分的な対策では防ぎきれなかった)。
     """
     league_change_calls = {"n": 0}
     # 昇格演出が始まる前の「踊り場」を十分な回数再現した後、1回だけ演出が来たことにする
@@ -1224,11 +1227,11 @@ def test_near_tier_cap_gauge_skips_early_finalize_and_catches_promotion(monkeypa
     )
 
 
-def test_near_tier_cap_gauge_without_promotion_still_finalizes_after_full_grace_period(monkeypatch):
-    """Issue #209: ゲージが帯の上限付近でバナーが消えても、実際には昇格演出が
-    一度も来ない場合は、早期確定パスを使わないぶん通常より遅くはなるが、
-    league_change_grace_frames(通常のタイムアウト)満了時点で正しく確定する
-    ことを確認する(帯番号は変化なしのまま)。
+def test_no_promotion_during_grace_period_still_finalizes_after_full_timeout(monkeypatch):
+    """Issue #209/#235: ゲージが帯の上限付近でバナーが消えても、実際には昇格演出が
+    一度も来ない場合は、league_change_grace_frames(通常のタイムアウト)満了時点で
+    正しく確定することを確認する(帯番号は変化なしのまま)。Issue #235で早期確定
+    パス自体を廃止したため、確定手段は暗転即確定かこの猶予満了のいずれかのみになった。
     """
     banner_call_count = {"n": 0}
 
@@ -1273,8 +1276,8 @@ def test_near_tier_cap_gauge_without_promotion_still_finalizes_after_full_grace_
 
 
 def test_full_blackout_triggers_immediate_finalize_bypassing_grace_timeout(monkeypatch):
-    """Issue #209: 暗転(is_full_blackout)を検知したら、grace_counter・near_tier_cap・
-    バナー消灯確認の状態に関わらず直ちに確定することを確認する。
+    """Issue #209: 暗転(is_full_blackout)を検知したら、grace_counterの状態に
+    関わらず直ちに確定することを確認する。
 
     league_change_grace_framesを通常のタイムアウトでは到底終わらない大きさにし、
     banner・ゲージとも通常どおり(帯の上限付近ではない)動いている想定でも、
