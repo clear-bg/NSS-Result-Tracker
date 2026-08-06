@@ -109,6 +109,9 @@ RANK_RECHECK_CHANGE_TOLERANCE = 0.05
 RANK_TIER_WRAP_MIN_MAGNITUDE = 0.5
 # Issue #209: 根拠はsrc/nss_tracker/state/match_state.pyのモジュールdocstring参照
 LEAGUE_CHANGE_IMMINENT_FILL_THRESHOLD = 0.95
+# Issue #234: VS画面確定後、この秒数は新規のVS画面検知自体を行わない
+# (同一VS画面表示中の演出による一瞬の判定揺れで二重に試合開始が発火するのを防ぐ)
+VS_SCREEN_LOCKOUT_SECONDS = 30.0
 
 [match_end]
 MATCH_END_LEFT_ROI = [638, 422, 719, 509]

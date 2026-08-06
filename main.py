@@ -55,7 +55,12 @@ from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import RANK_ROI, _get_reader
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
 from nss_tracker.obs_control import ObsSceneController
-from nss_tracker.state.match_state import MatchResult, MatchStateMachine, VsScreenEvent
+from nss_tracker.state.match_state import (
+    VS_SCREEN_LOCKOUT_SECONDS,
+    MatchResult,
+    MatchStateMachine,
+    VsScreenEvent,
+)
 from nss_tracker.timeutil import JST, now_jst
 from nss_tracker.web.runner import start_web_server_thread
 from nss_tracker.web.server import create_app
@@ -163,6 +168,9 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
         banner_absence_confirm_frames=confirm_frames,
         goal_confirm_frames=confirm_frames,
         vs_screen_confirm_frames=confirm_frames,
+        # Issue #234: VS_SCREEN_LOCKOUT_SECONDS(config/detection.tomlの
+        # [match_state]で上書き可能)をfpsに応じてフレーム数換算する
+        vs_screen_lockout_frames=round(fps * VS_SCREEN_LOCKOUT_SECONDS),
         match_end_confirm_frames=match_end_confirm_frames,
         demotion_label_confirm_frames=confirm_frames,
         league_change_grace_frames=round(fps * 5.0),
