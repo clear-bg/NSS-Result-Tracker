@@ -86,19 +86,22 @@ from nss_tracker.timeutil import now_jst
 
 logger = logging.getLogger("nss_tracker.database")
 
-# Issue #179: 試合と試合の間でランクは変動しない(勝敗が付いた試合でしか
+# Issue #179/#253: 試合と試合の間でランクは変動しない(勝敗が付いた試合でしか
 # 変わらない、ユーザー確認済み)ため、ある試合のrank_afterは次の試合のrank_before
-# と本来一致するはず。#178対応後もrank_afterには読み取りアニメーション由来の
-# 残差(実測: id19で0.209、id20で0.225の1試合分の通常変動幅に対し、残差は
-# 0.05〜0.08程度)が残りうるため、次の試合のrank_before(アニメーションに
-# 依存しない静的な値のため精度が高い)との差がこの残差の範囲内であれば、
-# 続いている試合とみなして直前の試合のrank_afterを補正する。差が1試合分の
-# 通常変動幅に近い/それを超える場合は、間に未記録の試合を挟んだ可能性が
-# あるとみなし補正しない。セッションや経過時間では区切らない(ユーザーとの
-# 相談で決定。セッション再起動を挟んでも試合自体は続いている場合があり、
-# 逆に長時間空いてもゲーム内の試合としては連続している場合があるため)。
-# 他の閾値と同様、実測+マージンで決めており、データが増えたら見直す
-RANK_CONTINUITY_CORRECTION_MAX_DELTA = 0.3
+# と本来一致するはず。rank_afterには読み取りアニメーション由来の残差が残りうる
+# ため、次の試合のrank_before(アニメーションに依存しない静的な値のため精度が
+# 高い)を使って直前の試合のrank_afterを常に補正する。セッションや経過時間では
+# 区切らない(ユーザーとの相談で決定。セッション再起動を挟んでも試合自体は
+# 続いている場合があり、逆に長時間空いてもゲーム内の試合としては連続している
+# 場合があるため)。
+#
+# 以前は差分が一定閾値を超える場合に「間に未記録の試合を挟んだ可能性がある」と
+# みなし補正をスキップしていたが、2026-08-07の実機テストでrank_after自体の
+# 読み取りが閾値を超えて大きくずれるケース(ライブキャプチャ固有の誤読、0.47程度)
+# が見つかり、閾値判定がその誤りをそのまま見逃してしまうことが判明した。
+# 「試合間でランクは変動しない」という前提はセッション・経過時間に関わらず常に
+# 成り立つため、差分の大小で補正要否を判断する閾値自体が不要と判断し撤廃した
+# (ユーザー確認済み)。
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -312,11 +315,12 @@ def fetch_current_session_id(conn: sqlite3.Connection) -> Optional[int]:
 
 
 def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_rank_before: Optional[float]) -> None:
-    """直前の試合のrank_afterを、今回の試合のrank_beforeを使って必要なら補正する(Issue #179)。
+    """直前の試合のrank_afterを、今回の試合のrank_beforeを使って必要なら補正する(Issue #179/#253)。
 
-    モジュールdocstring・RANK_CONTINUITY_CORRECTION_MAX_DELTAのコメント参照。
-    league_changedの再計算は行わない(閾値が1帯の幅(1.0)より十分小さいため、
-    この補正で帯を跨ぐことは無い想定)。
+    モジュールdocstring参照。試合間でランクは変動しない前提のため、差分の大小に
+    関わらず常に補正する(diffが0の場合のみ、更新の必要が無いためスキップする)。
+    league_changedの再計算は行わない(通常のrank_after読み取り誤差の範囲では
+    帯を跨ぐことは無い想定)。
     """
     if current_rank_before is None:
         return
@@ -325,7 +329,7 @@ def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_r
         return
     previous_rank_after = row["rank_after"]
     diff = abs(current_rank_before - previous_rank_after)
-    if diff == 0 or diff > RANK_CONTINUITY_CORRECTION_MAX_DELTA:
+    if diff == 0:
         return
     now = now_jst().isoformat()
     conn.execute(
