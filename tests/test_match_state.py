@@ -2330,3 +2330,46 @@ def test_vs_screen_lockout_expires_before_next_real_match(monkeypatch):
         frame_idx["n"] += 1
 
     assert machine._session_match_no == 2, "ロック解除後の本物のVS画面は2試合目として数えられるはず"
+
+
+def test_vs_screen_confirmed_again_before_previous_match_finalized_logs_info(monkeypatch, caplog):
+    """Issue #243: 前の試合が結果画面確定(_finalize())前に残ったまま次のVS画面が
+    確定した場合、前の試合のゴールが新しい試合に持ち越されることをINFOログで
+    可視化することを確認する。挙動(持ち越されること自体)は変更しない。
+    """
+
+    def fake_is_vs_screen(frame):
+        n = frame_idx["n"]
+        # 0-1: 1試合目のVS画面確定, 2-8: 結果画面が来ないまま試合中(ロック期間),
+        # 9-: 1試合目を確定させないまま2試合目の本物のVS画面が現れる
+        return n < 2 or n >= 9
+
+    def fake_is_goal_event(frame):
+        return frame_idx["n"] == 3
+
+    frame_idx = {"n": 0}
+    monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+    monkeypatch.setattr(match_state_module, "read_team_colors", lambda frame: (None, None))
+    monkeypatch.setattr(match_state_module, "is_goal_event", fake_is_goal_event)
+    monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_own_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
+    monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+
+    machine = MatchStateMachine(vs_screen_confirm_frames=2, goal_confirm_frames=1, vs_screen_lockout_frames=5)
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(20):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+
+    assert machine._session_match_no == 2
+    assert len(machine._pending_goals) == 1, "テスト前提: 1試合目のゴールが持ち越されているはず"
+    assert (
+        "1試合目: 前の試合が結果画面確定前に次のVS画面を検知しました。"
+        "前の試合のゴール(1件)は今回の試合の記録に持ち越されます" in caplog.text
+    )
