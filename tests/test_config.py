@@ -8,6 +8,7 @@ from nss_tracker.config import (
     ConfigError,
     get_allowed_players,
     get_capture_device_name,
+    get_capture_fps,
     get_capture_resolution,
     get_db_path,
     get_editable_settings,
@@ -93,6 +94,17 @@ def test_get_capture_resolution_uses_env_values(monkeypatch):
     monkeypatch.setenv("CAPTURE_WIDTH", "1280")
     monkeypatch.setenv("CAPTURE_HEIGHT", "720")
     assert get_capture_resolution() == (1280, 720)
+
+
+def test_get_capture_fps_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("CAPTURE_FPS", raising=False)
+    with pytest.raises(ConfigError, match="CAPTURE_FPS"):
+        get_capture_fps()
+
+
+def test_get_capture_fps_uses_env_value(monkeypatch):
+    monkeypatch.setenv("CAPTURE_FPS", "60")
+    assert get_capture_fps() == 60.0
 
 
 def test_get_db_path_raises_when_unset(monkeypatch):
