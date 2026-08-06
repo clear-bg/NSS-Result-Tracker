@@ -177,8 +177,9 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
 def _record_match_result(conn: sqlite3.Connection, session_id: Optional[int], result: MatchResult) -> None:
     match_id = db.save_match_result(conn, result, session_id=session_id)
     logger.info(
-        "試合結果を記録しました: id=%d result=%s rank=%s->%s league_changed=%s goals=%d "
+        "%d試合目 試合結果を記録しました: id=%d result=%s rank=%s->%s league_changed=%s goals=%d "
         "team_color=%s->%s",
+        result.session_match_no,
         match_id,
         result.result,
         result.rank_before,
@@ -194,19 +195,32 @@ def _record_match_result(conn: sqlite3.Connection, session_id: Optional[int], re
         )
         if goal_id is not None:
             logger.info(
-                "ゴールを記録しました: match_id=%d scorer=%s assist=%s", match_id, goal.scorer_name, goal.assist_name
+                "%d試合目 ゴールを記録しました: match_id=%d scorer=%s assist=%s",
+                result.session_match_no,
+                match_id,
+                goal.scorer_name,
+                goal.assist_name,
             )
 
     if result.vs_mine_ranks or result.vs_opponent_ranks:
         db.save_vs_slot_ranks(conn, match_id, result.vs_mine_ranks, result.vs_opponent_ranks)
+        # Issue #236: rankの移り変わりは「試合結果を記録しました」ログにも出ているが、
+        # VS画面のランク(mine/opponent)とあわせて見比べやすいようこちらにも出す
         logger.info(
-            "VS画面のランクを記録しました: match_id=%d mine=%s opponent=%s",
+            "%d試合目 VS画面のランクを記録しました: match_id=%d mine=%s opponent=%s rank=%s->%s",
+            result.session_match_no,
             match_id,
             result.vs_mine_ranks,
             result.vs_opponent_ranks,
+            result.rank_before,
+            result.rank_after,
         )
     else:
-        logger.info("VS画面を検知できなかったため、VSスロットランクは記録しません: match_id=%d", match_id)
+        logger.info(
+            "%d試合目 VS画面を検知できなかったため、VSスロットランクは記録しません: match_id=%d",
+            result.session_match_no,
+            match_id,
+        )
         # Issue #145: VS画面を見逃した試合が終わった際は、対戦相手ランク比較ウィジェットの
         # 表示を前の試合の値のまま残さず、none/noneにリセットする(db._recordの
         # モジュールdocstring参照)
@@ -234,7 +248,8 @@ def _record_vs_screen_event(conn: sqlite3.Connection, session_id: Optional[int],
         now_jst(),
     )
     logger.info(
-        "VS画面のランクを即時反映しました: mine=%s opponent=%s team_color=%s->%s",
+        "%d試合目 VS画面のランクを即時反映しました: mine=%s opponent=%s team_color=%s->%s",
+        event.session_match_no,
         event.mine_ranks,
         event.opponent_ranks,
         event.mine_team_color,

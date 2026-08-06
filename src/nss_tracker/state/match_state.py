@@ -556,6 +556,10 @@ class VsScreenEvent(NamedTuple):
     opponent_ranks: list[SlotRank]
     mine_team_color: Optional[str]
     opponent_team_color: Optional[str]
+    # Issue #236: main.py側のログを試合中のリアルタイムログ(nss_tracker.state)と
+    # 同じ「n試合目」表記に揃えるために追加。呼び出し元(main.py)はmatch_id
+    # (DBの生ID)しか知らないため、セッション内の試合番号を別途持ち回る必要がある
+    session_match_no: int = 0
 
 
 @dataclass
@@ -574,6 +578,8 @@ class MatchResult:
     # 両方Noneのまま(必須の前提にしない)
     mine_team_color: Optional[str] = None
     opponent_team_color: Optional[str] = None
+    # Issue #236: VsScreenEventと同じ理由でセッション内の試合番号を持ち回る
+    session_match_no: int = 0
 
 
 class MatchStateMachine:
@@ -808,6 +814,7 @@ class MatchStateMachine:
             opponent_ranks=opponent_ranks,
             mine_team_color=mine_team_color,
             opponent_team_color=opponent_team_color,
+            session_match_no=match_no,
         )
         with self._vs_screen_event_lock:
             self._vs_screen_event = event
@@ -896,7 +903,8 @@ class MatchStateMachine:
             else:
                 status = "記録対象"
             logger.info(
-                "ゴール検知: scorer=%s assist=%s (%s)",
+                "%d試合目 ゴール検知: scorer=%s assist=%s (%s)",
+                self._session_match_no,
                 scorer_name,
                 assist_name,
                 status,
@@ -993,11 +1001,12 @@ class MatchStateMachine:
                 self._pending_rank_before_tier = None
                 self._pending_rank_before = None
                 logger.info(
-                    "結果バナー確定時点でランクバッジを読み取れませんでした"
-                    "(バッジ非表示、または読み取り失敗の可能性)"
+                    "%d試合目: 結果バナー確定時点でランクバッジを読み取れませんでした"
+                    "(バッジ非表示、または読み取り失敗の可能性)",
+                    self._session_match_no,
                 )
             logger.info(
-                "%d試合目の結果: %s (ランク: %s)",
+                "%d試合目の結果: %s (ランク(試合前): %s)",
                 self._session_match_no,
                 _BANNER_RESULT_LABELS[self._pending_result],
                 self._pending_rank_before if self._pending_rank_before is not None else "なし",
@@ -1023,6 +1032,8 @@ class MatchStateMachine:
         self._check_for_demotion_label(frame)
 
         if is_league_change_screen(frame):
+            if self._rank_phase is not _RankPhase.IN_LEAGUE_CHANGE:
+                logger.info("%d試合目 リーグ昇格演出を検知しました", self._session_match_no)
             self._rank_phase = _RankPhase.IN_LEAGUE_CHANGE
             self._grace_counter = 0
             self._promotion_confirmed_this_match = True
@@ -1308,8 +1319,9 @@ class MatchStateMachine:
             self._vs_ocr_thread = None
         if rank_after is None:
             logger.info(
-                "試合終了時点でもランクバッジを読み取れませんでした"
-                "(バッジ非表示、または読み取り失敗の可能性)"
+                "%d試合目: 試合終了時点でもランクバッジを読み取れませんでした"
+                "(バッジ非表示、または読み取り失敗の可能性)",
+                self._session_match_no,
             )
         # league_changedはゲージの溜まり具合を含まない帯番号(整数)同士で判定する。
         # 小数のランク値同士で比較すると、帯は変わっていないのにゲージが
@@ -1332,6 +1344,7 @@ class MatchStateMachine:
             vs_opponent_ranks=self._pending_vs_opponent_ranks,
             mine_team_color=self._pending_mine_team_color,
             opponent_team_color=self._pending_opponent_team_color,
+            session_match_no=self._session_match_no,
         )
         self._pending_result = None
         self._pending_rank_before = None
