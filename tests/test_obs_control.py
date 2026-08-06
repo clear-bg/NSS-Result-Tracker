@@ -22,6 +22,7 @@ class _FakeReqClient:
         self.kwargs = kwargs
         self.scenes_set: list[str] = []
         self.disconnected = False
+        self.refreshed_sources: list[str] = []
         # 既存テストへの影響を避けるため、デフォルトではInMatch/BetweenMatchesの
         # 両方が存在するものとして振る舞う(Issue #218のシーン存在確認テストのみ、
         # このリストを差し替える)
@@ -32,6 +33,9 @@ class _FakeReqClient:
 
     def get_scene_list(self):
         return _FakeSceneListResponse(self._scene_list)
+
+    def press_input_properties_button(self, input_name, prop_name):
+        self.refreshed_sources.append((input_name, prop_name))
 
     def disconnect(self):
         self.disconnected = True
@@ -180,3 +184,76 @@ def test_connect_failure_skips_scene_verification(monkeypatch, caplog):
     # 接続自体に失敗した場合はシーン一覧取得を試みない(クライアントが無いため)
     assert "シーン一覧を取得できなかった" not in caplog.text
     assert "OBSに以下のシーンが見つかりません" not in caplog.text
+
+
+def test_refresh_browser_sources_presses_refresh_button_for_each_source(monkeypatch, caplog):
+    fake_client = _FakeReqClient()
+    monkeypatch.setattr(obs_control_module.obs, "ReqClient", lambda **kwargs: fake_client)
+
+    with caplog.at_level("INFO", logger="nss_tracker.obs_control"):
+        ObsSceneController(
+            host="127.0.0.1",
+            port=4455,
+            password="",
+            scene_in_match="InMatch",
+            scene_between_matches="BetweenMatches",
+            browser_source_names=("rank_graph", "vs_rank_comparison"),
+        )
+
+    assert fake_client.refreshed_sources == [
+        ("rank_graph", "refreshnocache"),
+        ("vs_rank_comparison", "refreshnocache"),
+    ]
+    assert "OBSブラウザソースを再読み込みしました: rank_graph" in caplog.text
+    assert "OBSブラウザソースを再読み込みしました: vs_rank_comparison" in caplog.text
+
+
+def test_refresh_browser_sources_defaults_to_no_sources(monkeypatch):
+    fake_client = _FakeReqClient()
+    monkeypatch.setattr(obs_control_module.obs, "ReqClient", lambda **kwargs: fake_client)
+
+    ObsSceneController(
+        host="127.0.0.1", port=4455, password="", scene_in_match="InMatch", scene_between_matches="BetweenMatches"
+    )
+
+    assert fake_client.refreshed_sources == []
+
+
+def test_refresh_browser_sources_continues_after_one_failure(monkeypatch, caplog):
+    class _PartiallyFailingClient(_FakeReqClient):
+        def press_input_properties_button(self, input_name, prop_name):
+            if input_name == "broken_source":
+                raise OBSSDKError("PressInputPropertiesButton", 600, "source not found")
+            super().press_input_properties_button(input_name, prop_name)
+
+    fake_client = _PartiallyFailingClient()
+    monkeypatch.setattr(obs_control_module.obs, "ReqClient", lambda **kwargs: fake_client)
+
+    with caplog.at_level("INFO", logger="nss_tracker.obs_control"):
+        ObsSceneController(
+            host="127.0.0.1",
+            port=4455,
+            password="",
+            scene_in_match="InMatch",
+            scene_between_matches="BetweenMatches",
+            browser_source_names=("broken_source", "rank_graph"),
+        )
+
+    assert "再読み込みに失敗しました(source=broken_source)" in caplog.text
+    assert fake_client.refreshed_sources == [("rank_graph", "refreshnocache")]
+
+
+def test_connect_failure_skips_browser_source_refresh(monkeypatch, caplog):
+    monkeypatch.setattr(obs_control_module.obs, "ReqClient", _RaisingReqClient)
+
+    with caplog.at_level("WARNING", logger="nss_tracker.obs_control"):
+        ObsSceneController(
+            host="127.0.0.1",
+            port=4455,
+            password="",
+            scene_in_match="InMatch",
+            scene_between_matches="BetweenMatches",
+            browser_source_names=("rank_graph",),
+        )
+
+    assert "再読み込みに失敗しました" not in caplog.text
