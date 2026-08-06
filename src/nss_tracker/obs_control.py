@@ -29,6 +29,12 @@ Issue #247対応: 配信用ダッシュボードのウィジェットはOBSの�
 リクエスト(`press_input_properties_button`、プロパティ名`"refreshnocache"`)を
 送り、「現在のページのキャッシュを更新」ボタンを自動的に押す。1つのソースの
 更新に失敗しても他のソースの更新は試みる(個別にWARNINGログを出す)。
+
+Issue #248対応: 配信によっては手動でシーンを操作したい場合があるため、
+`.env`の`OBS_SCENE_SWITCHING_ENABLED`(`/admin`からも変更可能、config.py参照)で
+シーン自動切替のON/OFFを切り替えられる。無効化してもOBSへの接続自体
+(上記のシーン名事前確認・ブラウザソース再読み込みを含む)は維持したまま、
+`set_in_match`呼び出し時のシーン切替だけをスキップする。
 """
 
 import logging
@@ -36,6 +42,8 @@ import logging
 import obsws_python as obs
 import websocket
 from obsws_python.error import OBSSDKError
+
+from nss_tracker.config import get_obs_scene_switching_enabled
 
 logger = logging.getLogger("nss_tracker.obs_control")
 
@@ -120,8 +128,16 @@ class ObsSceneController:
                 logger.warning("OBSブラウザソースの再読み込みに失敗しました(source=%s): %s", name, exc)
 
     def set_in_match(self, in_match: bool) -> None:
-        """試合中/試合間に応じたシーンへ切り替える。接続に失敗している場合は何もしない。"""
+        """試合中/試合間に応じたシーンへ切り替える。
+
+        接続に失敗している場合は何もしない。OBS_SCENE_SWITCHING_ENABLEDが
+        無効化されている場合も、OBSへの接続自体は維持したままシーン切替の
+        呼び出しだけをスキップする(Issue #248)。
+        """
         if self._client is None:
+            return
+        if not get_obs_scene_switching_enabled():
+            logger.debug("OBSシーン自動切替は無効化されているためスキップしました")
             return
         scene = self._scene_in_match if in_match else self._scene_between_matches
         try:
