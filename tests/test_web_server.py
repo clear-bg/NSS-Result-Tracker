@@ -1408,7 +1408,8 @@ def _write_admin_env_file(path: Path) -> None:
         "ALLOWED_PLAYERS=OldName\n"
         "GOAL_RECORD_MODE=all\n"
         "RANK_GRAPH_MATCH_LIMIT=all\n"
-        "RANK_DELTA_DISTRIBUTION_SCOPE=all\n",
+        "RANK_DELTA_DISTRIBUTION_SCOPE=all\n"
+        "OBS_SCENE_SWITCHING_ENABLED=true\n",
         encoding="utf-8",
     )
 
@@ -1418,6 +1419,7 @@ def test_admin_get_shows_current_settings(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "30")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "false")
     client = TestClient(create_app(tmp_path / "test.db"))
 
     response = client.get("/admin")
@@ -1425,6 +1427,7 @@ def test_admin_get_shows_current_settings(tmp_path: Path, monkeypatch):
     assert response.status_code == 200
     assert 'value="Alice,Bob"' in response.text
     assert 'value="30"' in response.text
+    assert '<option value="false" selected>' in response.text
 
 
 def test_admin_post_updates_settings_and_persists_to_env_file(tmp_path: Path, monkeypatch):
@@ -1435,6 +1438,7 @@ def test_admin_post_updates_settings_and_persists_to_env_file(tmp_path: Path, mo
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
     client = TestClient(create_app(tmp_path / "test.db"))
 
     response = client.post(
@@ -1444,6 +1448,7 @@ def test_admin_post_updates_settings_and_persists_to_env_file(tmp_path: Path, mo
             "goal_record_mode": "allowlist",
             "rank_graph_match_limit": "10",
             "rank_delta_distribution_scope": "session",
+            "obs_scene_switching_enabled": "false",
         },
     )
 
@@ -1452,6 +1457,7 @@ def test_admin_post_updates_settings_and_persists_to_env_file(tmp_path: Path, mo
     assert response.url.params["status"] == "updated"
     assert os.environ["ALLOWED_PLAYERS"] == "NewName"
     assert os.environ["RANK_GRAPH_MATCH_LIMIT"] == "10"
+    assert os.environ["OBS_SCENE_SWITCHING_ENABLED"] == "false"
 
 
 def test_admin_post_with_invalid_value_shows_error_and_does_not_update(tmp_path: Path, monkeypatch):
@@ -1462,6 +1468,7 @@ def test_admin_post_with_invalid_value_shows_error_and_does_not_update(tmp_path:
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
     client = TestClient(create_app(tmp_path / "test.db"))
 
     response = client.post(
@@ -1471,6 +1478,7 @@ def test_admin_post_with_invalid_value_shows_error_and_does_not_update(tmp_path:
             "goal_record_mode": "not-a-real-mode",
             "rank_graph_match_limit": "10",
             "rank_delta_distribution_scope": "session",
+            "obs_scene_switching_enabled": "true",
         },
     )
 
@@ -1478,6 +1486,36 @@ def test_admin_post_with_invalid_value_shows_error_and_does_not_update(tmp_path:
     assert response.url.params["error"]
     assert "GOAL_RECORD_MODE" in response.url.params["error"]
     assert os.environ["ALLOWED_PLAYERS"] == "OldName"
+
+
+def test_admin_post_with_invalid_obs_scene_switching_enabled_shows_error_and_does_not_update(
+    tmp_path: Path, monkeypatch
+):
+    env_path = tmp_path / ".env"
+    _write_admin_env_file(env_path)
+    monkeypatch.setattr("nss_tracker.config.find_dotenv", lambda: str(env_path))
+    monkeypatch.setenv("ALLOWED_PLAYERS", "OldName")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.post(
+        "/admin",
+        data={
+            "allowed_players": "NewName",
+            "goal_record_mode": "allowlist",
+            "rank_graph_match_limit": "10",
+            "rank_delta_distribution_scope": "session",
+            "obs_scene_switching_enabled": "yes",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.url.params["error"]
+    assert "OBS_SCENE_SWITCHING_ENABLED" in response.url.params["error"]
+    assert os.environ["OBS_SCENE_SWITCHING_ENABLED"] == "true"
 
 
 def test_admin_post_logs_info_message_on_success(tmp_path: Path, monkeypatch, caplog):
@@ -1489,6 +1527,7 @@ def test_admin_post_logs_info_message_on_success(tmp_path: Path, monkeypatch, ca
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
     client = TestClient(create_app(tmp_path / "test.db"))
 
     with caplog.at_level("INFO", logger="nss_tracker.web"):
@@ -1499,6 +1538,7 @@ def test_admin_post_logs_info_message_on_success(tmp_path: Path, monkeypatch, ca
                 "goal_record_mode": "allowlist",
                 "rank_graph_match_limit": "10",
                 "rank_delta_distribution_scope": "session",
+                "obs_scene_switching_enabled": "true",
             },
         )
 
@@ -1515,6 +1555,7 @@ def test_admin_post_logs_warning_message_on_invalid_value(tmp_path: Path, monkey
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
     client = TestClient(create_app(tmp_path / "test.db"))
 
     with caplog.at_level("WARNING", logger="nss_tracker.web"):
@@ -1525,6 +1566,7 @@ def test_admin_post_logs_warning_message_on_invalid_value(tmp_path: Path, monkey
                 "goal_record_mode": "not-a-real-mode",
                 "rank_graph_match_limit": "10",
                 "rank_delta_distribution_scope": "session",
+                "obs_scene_switching_enabled": "true",
             },
         )
 

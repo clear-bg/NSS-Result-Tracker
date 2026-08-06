@@ -72,6 +72,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     monkeypatch.setenv("OBS_SCENE_IN_MATCH", "InMatch")
     monkeypatch.setenv("OBS_SCENE_BETWEEN_MATCHES", "BetweenMatches")
     monkeypatch.setenv("OBS_BROWSER_SOURCE_NAMES", "none")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
     monkeypatch.setattr(sys, "argv", ["main.py", "--video", "dummy.mp4"])
 
     original_start = main.start_web_server_thread
@@ -117,6 +118,7 @@ def test_main_continues_when_browser_cannot_be_opened(monkeypatch, tmp_path):
     monkeypatch.setenv("OBS_SCENE_IN_MATCH", "InMatch")
     monkeypatch.setenv("OBS_SCENE_BETWEEN_MATCHES", "BetweenMatches")
     monkeypatch.setenv("OBS_BROWSER_SOURCE_NAMES", "none")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
     monkeypatch.setattr(sys, "argv", ["main.py", "--video", "dummy.mp4"])
 
     def raise_error(url):

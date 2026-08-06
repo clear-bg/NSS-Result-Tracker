@@ -4,6 +4,8 @@
 - in_matchの真偽に応じて正しいシーン名でset_current_program_sceneを呼ぶこと
 - OBSへの接続・切替失敗時にアプリを止めず、WARNINGログを出して継続すること
   (検知・DB記録という本来機能から独立した付加機能であるため)
+- OBS_SCENE_SWITCHING_ENABLED=falseの場合、接続は維持したままシーン切替の
+  呼び出しだけをスキップすること(Issue #248)
 """
 
 from obsws_python.error import OBSSDKError
@@ -47,6 +49,7 @@ class _RaisingReqClient:
 
 
 def test_set_in_match_true_switches_to_in_match_scene(monkeypatch):
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
     fake_client = _FakeReqClient()
     monkeypatch.setattr(obs_control_module.obs, "ReqClient", lambda **kwargs: fake_client)
 
@@ -59,6 +62,7 @@ def test_set_in_match_true_switches_to_in_match_scene(monkeypatch):
 
 
 def test_set_in_match_false_switches_to_between_matches_scene(monkeypatch):
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
     fake_client = _FakeReqClient()
     monkeypatch.setattr(obs_control_module.obs, "ReqClient", lambda **kwargs: fake_client)
 
@@ -68,6 +72,23 @@ def test_set_in_match_false_switches_to_between_matches_scene(monkeypatch):
     controller.set_in_match(False)
 
     assert fake_client.scenes_set == ["BetweenMatches"]
+
+
+def test_set_in_match_skips_scene_switch_when_disabled(monkeypatch):
+    """Issue #248: OBS_SCENE_SWITCHING_ENABLED=falseの場合、接続は維持したまま
+    set_current_program_sceneの呼び出し自体をスキップする。
+    """
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "false")
+    fake_client = _FakeReqClient()
+    monkeypatch.setattr(obs_control_module.obs, "ReqClient", lambda **kwargs: fake_client)
+
+    controller = ObsSceneController(
+        host="127.0.0.1", port=4455, password="", scene_in_match="InMatch", scene_between_matches="BetweenMatches"
+    )
+    controller.set_in_match(True)
+
+    assert fake_client.scenes_set == []
+    assert fake_client.disconnected is False
 
 
 def test_connect_failure_logs_warning_and_disables_switching(monkeypatch, caplog):
@@ -89,6 +110,8 @@ def test_connect_failure_logs_warning_and_disables_switching(monkeypatch, caplog
 
 
 def test_set_in_match_failure_logs_warning_without_raising(monkeypatch, caplog):
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
+
     class _FailingSetSceneClient(_FakeReqClient):
         def set_current_program_scene(self, name):
             raise OBSSDKError("SetCurrentProgramScene", 600, "scene not found")
