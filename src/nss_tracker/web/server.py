@@ -216,7 +216,12 @@ def _fetch_rank_history(db_path: Path) -> list[dict]:
 # 実際の表示サイズ(OBSブラウザソースの矩形)まで引き伸ばす。左右上下でマージンを
 # 分けているのは、左に縦軸のラベル・下に横軸のラベル分の余白が必要なため
 _RANK_GRAPH_VIEWBOX_WIDTH = 786
-_RANK_GRAPH_VIEWBOX_HEIGHT = 220
+# Issue #281: 縦軸の範囲(axis_range)が広いとき、目盛り間隔をいきなり広げるより先に
+# グラフ自体の縦幅を大きくしてほしいという要望を受け、220px(通常運用)〜350pxの
+# 範囲で動的に決める(_rank_graph_height参照)。350pxに達してもなお範囲が広い場合のみ、
+# 従来通り目盛り間隔を広げる(Issue #123の挙動を維持)
+_RANK_GRAPH_VIEWBOX_HEIGHT_MIN = 220
+_RANK_GRAPH_VIEWBOX_HEIGHT_MAX = 350
 _RANK_GRAPH_MARGIN_LEFT = 50
 _RANK_GRAPH_MARGIN_RIGHT = 20
 _RANK_GRAPH_MARGIN_TOP = 54  # タイトル分の余白を含む(_RANK_GRAPH_TITLE参照)
@@ -237,16 +242,48 @@ _RANK_GRAPH_X_TICK_STEP = 5
 # 間隔1のままだと目盛り線・ラベルが密集して描画自体が崩れる(実データで確認済み、
 # 縦軸が1〜412に広がり417本の目盛りが220の高さに詰め込まれた)。目盛りの本数が
 # この値を超えないよう、1・2・5・10・20...の「きりの良い」間隔から動的に選ぶ
-# (_rank_graph_y_tick_step参照)。通常運用の狭い範囲(数〜十数)では引き続き間隔1のまま
+# (_rank_graph_y_tick_step参照)。通常運用の狭い範囲(数〜十数)では引き続き間隔1のまま。
+# _RANK_GRAPH_Y_TICK_MAX_COUNTは_rank_graph_y_tick_stepのデフォルト値(単体では
+# 高さ220px時の本数上限)としても使うが、_render_rank_graph_svg内では実際に動的に
+# 決まった高さ(_rank_graph_height)から計算した本数を明示的に渡す(Issue #281)
 _RANK_GRAPH_Y_TICK_MAX_COUNT = 20
 _RANK_GRAPH_Y_TICK_STEPS = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
+# Issue #281: 縦軸の目盛り本数(間隔1のまま)が10本に達したところで、グラフの縦幅が
+# ちょうど上限の350pxになるよう密度を決める(ユーザーとの相談で決定)。本数が
+# 増えるほど間隔1を保つための必要な高さも増えるため、350px÷(10本-1間隔)を
+# 1目盛りあたりのpx数として使う。20本を上限にしていた高さ固定220px時代の基準
+# (_RANK_GRAPH_Y_TICK_MAX_COUNT、単体テスト・_rank_graph_y_tick_stepのデフォルト
+# 引数としては引き続き使用)とは別の基準になったため、専用の定数として分けている
+_RANK_GRAPH_Y_TICK_COUNT_AT_MAX_HEIGHT = 10
+_RANK_GRAPH_Y_PX_PER_UNIT = (
+    _RANK_GRAPH_VIEWBOX_HEIGHT_MAX - _RANK_GRAPH_MARGIN_TOP - _RANK_GRAPH_MARGIN_BOTTOM
+) / (_RANK_GRAPH_Y_TICK_COUNT_AT_MAX_HEIGHT - 1)
 
 
-def _rank_graph_y_tick_step(axis_range: int) -> int:
-    """縦軸の目盛り間隔を、本数が_RANK_GRAPH_Y_TICK_MAX_COUNTを超えないよう動的に決める。"""
+def _rank_graph_height(axis_range: int) -> int:
+    """縦軸の範囲(axis_range)に応じて、SVGの縦幅を220px〜350pxの範囲で動的に決める。
+
+    Issue #281: 範囲が広がったときに目盛り間隔をいきなり広げるより先に、グラフ自体を
+    大きくしてほしいという要望を受けて追加した。_RANK_GRAPH_Y_PX_PER_UNITの密度を
+    保てる高さを計算し、220px未満にはならず(通常運用時の見た目を変えない)、
+    350pxを超えては伸びないようにする(目盛り本数が_RANK_GRAPH_Y_TICK_COUNT_AT_MAX_HEIGHT
+    (10本)に達するあたりでちょうど350pxに到達する)。350pxで頭打ちになった後さらに
+    範囲が広がった場合は、_render_rank_graph_svg側で従来通り目盛り間隔を広げて対応する
+    (_rank_graph_y_tick_step参照)。
+    """
+    # 整数pxに丸める際round()だと切り捨て方向に丸まることがあり、_rank_graph_y_tick_step
+    # 側で丸め後の高さから逆算した本数上限が実際のaxis_rangeよりわずかに小さくなって
+    # 間隔が早まって広がってしまう境界ケースがあったため、必ず切り上げる
+    desired_plot_height = axis_range * _RANK_GRAPH_Y_PX_PER_UNIT
+    desired_height = desired_plot_height + _RANK_GRAPH_MARGIN_TOP + _RANK_GRAPH_MARGIN_BOTTOM
+    return math.ceil(min(max(desired_height, _RANK_GRAPH_VIEWBOX_HEIGHT_MIN), _RANK_GRAPH_VIEWBOX_HEIGHT_MAX))
+
+
+def _rank_graph_y_tick_step(axis_range: int, max_tick_count: float = _RANK_GRAPH_Y_TICK_MAX_COUNT) -> int:
+    """縦軸の目盛り間隔を、本数がmax_tick_countを超えないよう動的に決める。"""
     if axis_range <= 0:
         return 1
-    raw_step = axis_range / _RANK_GRAPH_Y_TICK_MAX_COUNT
+    raw_step = axis_range / max_tick_count
     for step in _RANK_GRAPH_Y_TICK_STEPS:
         if step >= raw_step:
             return step
@@ -306,19 +343,33 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     Issue #180で「隣り合う試合同士が連続しているとみなせない箇所は点線でつなぐ」
     仕組みを一度導入したが、ユーザーとの相談で常に実線表示に戻した(2026-08-04)。
     """
-    width, height = _RANK_GRAPH_VIEWBOX_WIDTH, _RANK_GRAPH_VIEWBOX_HEIGHT
-    svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
-    # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
-    # 一番背面に来るようにする
-    panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-graph-panel" />'
-    title_svg = f'<text x="{width / 2}" y="34" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
+    width = _RANK_GRAPH_VIEWBOX_WIDTH
 
     if not history:
+        height = _RANK_GRAPH_VIEWBOX_HEIGHT_MIN
+        svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+        panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-graph-panel" />'
+        title_svg = (
+            f'<text x="{width / 2}" y="34" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
+        )
         return (
             f"{svg_open}{panel_svg}{title_svg}"
             f'<text x="{width / 2}" y="{height / 2}" text-anchor="middle" class="rank-graph-empty">'
             "データがありません</text></svg>"
         )
+
+    values = [point["rank_after"] for point in history]
+    axis_min, axis_max = _rank_graph_y_bounds(min(values), max(values))
+    axis_range = axis_max - axis_min
+
+    # Issue #281: 縦幅は固定ではなく、axis_rangeに応じて220px〜350pxの範囲で動的に決める
+    # (_rank_graph_height参照)。それ以外の描画(パネル・タイトル等)はこの高さを前提に組む
+    height = _rank_graph_height(axis_range)
+    svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+    # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
+    # 一番背面に来るようにする
+    panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-graph-panel" />'
+    title_svg = f'<text x="{width / 2}" y="34" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
 
     plot_left, plot_right = _RANK_GRAPH_MARGIN_LEFT, width - _RANK_GRAPH_MARGIN_RIGHT
     plot_top, plot_bottom = _RANK_GRAPH_MARGIN_TOP, height - _RANK_GRAPH_MARGIN_BOTTOM
@@ -328,9 +379,6 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     # (枠・グリッド線自体はplot_leftのまま、軸自体の見た目は変えない)
     points_left = plot_left + _RANK_GRAPH_LEFT_PADDING
 
-    values = [point["rank_after"] for point in history]
-    axis_min, axis_max = _rank_graph_y_bounds(min(values), max(values))
-    axis_range = axis_max - axis_min
     x_axis_max = _rank_graph_x_axis_max(len(history))
     x_axis_max_index = x_axis_max - 1  # 試合番号(1始まり)を0始まりのインデックスに変換
 
@@ -343,8 +391,10 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     # 縦軸目盛り: 横向きのグリッド線+左側にランク値のラベル+横軸と同様の短い目盛り線。
     # ラベル・目盛り自体は整数のみ・間隔は_rank_graph_y_tick_stepで動的に決める
     # (Issue #123、通常運用の狭い範囲では間隔1のまま)。軸の下限・上限自体を実データより
-    # 広げてあるため(_rank_graph_y_bounds参照)、一番上・一番下の点は自然に軸の端から離れる
-    y_tick_step = _rank_graph_y_tick_step(axis_range)
+    # 広げてあるため(_rank_graph_y_bounds参照)、一番上・一番下の点は自然に軸の端から離れる。
+    # 高さが伸びた分(_rank_graph_height)だけ目盛りの本数上限も伸ばす(Issue #281)ため、
+    # デフォルトの_RANK_GRAPH_Y_TICK_MAX_COUNTではなく実際のplot_heightから逆算する
+    y_tick_step = _rank_graph_y_tick_step(axis_range, plot_height / _RANK_GRAPH_Y_PX_PER_UNIT)
     y_axis_svg = []
     for tick_value in range(axis_min, axis_max + 1, y_tick_step):
         y = y_at(tick_value)
