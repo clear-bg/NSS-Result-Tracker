@@ -59,6 +59,12 @@ OBSのブラウザソースは一度読み込むと明示的にリロードし�
 更新方式を統一するため)。更新間隔は`_OVERLAY_REFRESH_INTERVAL_MS`(既定5秒)だが、
 対戦相手ランク比較([#100](../issues/100))のみVS画面確定後できるだけ早く反映してほしい
 という要望から`_VS_RANK_COMPARISON_REFRESH_INTERVAL_MS`(1秒)を使う。
+
+Issue #259: 全`/overlay/xxx`ページは、クエリパラメータ`?debug_bg=1`(値は問わず有無のみ判定、
+`_overlay_debug_bg_style()`参照)が付いている場合だけ`<body>`の背景を黒にする。OBSの
+ブラウザソースが実際に使うURLにはこのパラメータを付けないため、配信時の見た目(透過)には
+影響しない。`/admin`のoverlayリンク一覧(#257)はこのパラメータ付きのURLにすることで、
+通常のブラウザで開いても白文字(overlay.cssのcolor: #fff)が読めるようにする。
 """
 
 import logging
@@ -839,6 +845,27 @@ def _overlay_widget_links(app: FastAPI) -> list[dict]:
     return links
 
 
+# Issue #259: /adminのリンク一覧など、通常のブラウザ(背景白)でoverlayページを開いた際に
+# 白文字(static/overlay.cssのcolor: #fff)が読めなくなる問題の暫定策。クエリパラメータの
+# 値そのものは受け取らず、有無だけを見て固定色に切り替える(任意の文字列をそのまま
+# HTML/CSSに埋め込むインジェクションを避けるため)。OBSのブラウザソースが実際に使う
+# URLにはこのパラメータを付けないため、配信時の見た目(透過)には一切影響しない
+_OVERLAY_DEBUG_BG_QUERY_PARAM = "debug_bg"
+_OVERLAY_DEBUG_BG_STYLE = ' style="background: #000;"'
+
+
+def _overlay_debug_bg_style(request: Request) -> str:
+    """クエリパラメータ(?debug_bg=1等、値は問わない)が付いている場合のみ、
+    <body>に埋め込む背景色のinline style文字列を返す(無ければ空文字列)。
+
+    overlay-refresh.js(Issue #104)は<body>のinnerHTMLしか差し替えないため、
+    ここで<body>タグ自体に設定したstyle属性は自動更新後も保持される。
+    """
+    if _OVERLAY_DEBUG_BG_QUERY_PARAM in request.query_params:
+        return _OVERLAY_DEBUG_BG_STYLE
+    return ""
+
+
 def create_app(db_path: Path) -> FastAPI:
     app = FastAPI()
     app.mount("/static", StaticFiles(directory=_WEB_DIR / "static"), name="static")
@@ -910,6 +937,7 @@ def create_app(db_path: Path) -> FastAPI:
             "goal_assist_totals": _fetch_goal_assist_totals(db_path, goal_assist_totals_scope),
             "goal_assist_totals_scope_label": "配信セッション" if goal_assist_totals_scope == "session" else "累計",
             "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
+            "debug_bg_style": _overlay_debug_bg_style(request),
         }
         return _TEMPLATES.TemplateResponse(request, "overlay_winrate.html", context)
 
@@ -921,7 +949,11 @@ def create_app(db_path: Path) -> FastAPI:
     def overlay_rank_graph(request: Request):
         history = _fetch_rank_history(db_path)
         svg = _render_rank_graph_svg(history)
-        context = {"svg": svg, "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS}
+        context = {
+            "svg": svg,
+            "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
+            "debug_bg_style": _overlay_debug_bg_style(request),
+        }
         return _TEMPLATES.TemplateResponse(request, "overlay_rank_graph.html", context)
 
     @app.get("/api/goal-stats")
@@ -939,6 +971,7 @@ def create_app(db_path: Path) -> FastAPI:
             "players": players,
             "single_player_mode": single_player_mode,
             "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
+            "debug_bg_style": _overlay_debug_bg_style(request),
         }
         return _TEMPLATES.TemplateResponse(request, "overlay_goal_stats.html", context)
 
@@ -950,7 +983,11 @@ def create_app(db_path: Path) -> FastAPI:
     def overlay_match_log(request: Request):
         results = _fetch_match_log(db_path)
         letters = _format_match_log_letters(results)
-        context = {"letters": letters, "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS}
+        context = {
+            "letters": letters,
+            "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
+            "debug_bg_style": _overlay_debug_bg_style(request),
+        }
         return _TEMPLATES.TemplateResponse(request, "overlay_match_log.html", context)
 
     @app.get("/api/vs-rank-comparison")
@@ -984,6 +1021,7 @@ def create_app(db_path: Path) -> FastAPI:
         # 他ウィジェットより短い間隔にし、VS画面確定後できるだけ早く新しい試合の
         # 値に切り替わるようにする(#100、ユーザーとの相談で決定)
         context["refresh_interval_ms"] = _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS
+        context["debug_bg_style"] = _overlay_debug_bg_style(request)
         return _TEMPLATES.TemplateResponse(request, "overlay_vs_rank_comparison.html", context)
 
     @app.get("/api/rank-delta-distribution")
@@ -994,7 +1032,11 @@ def create_app(db_path: Path) -> FastAPI:
     def overlay_rank_delta_distribution(request: Request):
         distribution = _fetch_rank_delta_distribution(db_path)
         svg = _render_rank_delta_box_plot_svg(distribution["win"], distribution["lose"])
-        context = {"svg": svg, "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS}
+        context = {
+            "svg": svg,
+            "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
+            "debug_bg_style": _overlay_debug_bg_style(request),
+        }
         return _TEMPLATES.TemplateResponse(request, "overlay_rank_delta_distribution.html", context)
 
     # Issue #257: 全overlayルートの登録が終わった時点で1回だけ組み立てる

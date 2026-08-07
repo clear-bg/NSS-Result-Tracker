@@ -6,7 +6,7 @@
 <link rel="stylesheet" href="/static/overlay.css">
 <link rel="stylesheet" href="/static/vs_rank_comparison.css">
 </head>
-<body>
+<body{{ debug_bg_style | safe }}>
 <div class="vs-rank-comparison">
 <div class="vs-rank-caption">Rank</div>
 <div class="vs-rank-row"><span class="vs-rank-pill" style="background-color: {{ mine_team_color }};">{{ mine_value }}</span><span class="vs-rank-vs">VS</span><span class="vs-rank-pill" style="background-color: {{ opponent_team_color }};">{{ opponent_value }}</span></div>

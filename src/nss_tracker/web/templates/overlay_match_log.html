@@ -5,7 +5,7 @@
 <title>直近試合結果</title>
 <link rel="stylesheet" href="/static/overlay.css">
 </head>
-<body>
+<body{{ debug_bg_style | safe }}>
 {% if letters %}
 <p>{{ letters }}</p>
 {% else %}
