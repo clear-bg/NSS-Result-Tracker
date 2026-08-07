@@ -31,6 +31,10 @@ docs/screen_states.md
 # 秘匿情報(配信キー等を扱うようになった場合の保険)
 .env
 
+# YouTube Data API連携(Issue #265)のOAuth認証情報。.envと同様の理由でGit管理外
+client_secret.json
+token.json
+
 # OS由来のゴミファイル(Windows想定)
 Thumbs.db
 desktop.ini
