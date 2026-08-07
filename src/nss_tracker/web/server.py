@@ -421,16 +421,18 @@ def _aggregate_goal_stats(rows: list[sqlite3.Row]) -> list[dict]:
     そのまま保存されている場合がある)は集計対象から除外する(ユーザーとの
     相談で決定)。関与数の多い順(同数の場合は得点数の多い順、それも同じなら
     名前順)に並べて返す。
+
+    Issue #271: 許可リストプレイヤーは`rows`に1件もゴールが無くても常に
+    0件(得点0・アシスト0)として結果に含める。ゴールがまだ無い状態と
+    「表示すべきデータが無い」状態(許可リストが未設定)を区別するため。
     """
-    counts: dict[str, dict[str, int]] = {}
+    counts: dict[str, dict[str, int]] = {name: {"goals": 0, "assists": 0} for name in get_allowed_players()}
     for row in rows:
         scorer_name = row["scorer_name"]
         if scorer_name and is_allowed_player(scorer_name):
-            counts.setdefault(scorer_name, {"goals": 0, "assists": 0})
             counts[scorer_name]["goals"] += 1
         assist_name = row["assist_name"]
         if assist_name and is_allowed_player(assist_name):
-            counts.setdefault(assist_name, {"goals": 0, "assists": 0})
             counts[assist_name]["assists"] += 1
 
     players = [
@@ -444,15 +446,14 @@ def _aggregate_goal_stats(rows: list[sqlite3.Row]) -> list[dict]:
 def _fetch_goal_stats(db_path: Path) -> list[dict]:
     """現在の配信セッションのゴール/アシスト統計を、プレイヤー別に集計して返す。
 
-    配信セッションが1件も無い場合(main.py未起動でDBのみ閲覧している場合等)は
-    空リストを返す。
+    配信セッションが1件も無い場合(main.py未起動でDBのみ閲覧している場合等)も
+    ゴール0件として扱い、許可リストプレイヤーを0件で返す(Issue #271、
+    `_aggregate_goal_stats`参照)。許可リスト自体が空の場合のみ空リストになる。
     """
     conn = _connect(db_path)
     try:
         session_id = fetch_current_session_id(conn)
-        if session_id is None:
-            return []
-        rows = fetch_goals_for_session(conn, session_id)
+        rows = fetch_goals_for_session(conn, session_id) if session_id is not None else []
     finally:
         conn.close()
     return _aggregate_goal_stats(rows)
