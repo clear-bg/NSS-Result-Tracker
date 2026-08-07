@@ -115,6 +115,20 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 - Issue #247: 配信用ダッシュボードのウィジェットはOBSの「ブラウザ」ソースとして表示しているが、ブラウザソースは一度読み込んだきり保持されるため、本アプリ(Webサーバー)を再起動してもOBS側で手動更新しない限り表示が復帰しない問題があった。接続成功直後に1回だけ、`.env`の`OBS_BROWSER_SOURCE_NAMES`(カンマ区切り、使わない場合は`none`)で指定したソースそれぞれに対し、obs-websocketの`PressInputPropertiesButton`(`press_input_properties_button(name, "refreshnocache")`)を呼んで自動的に再読み込みする。1つのソースの更新失敗は他のソースの更新を妨げない(個別にWARNINGログ)
 - Issue #248: 配信によっては手動でシーンを操作したい場合があるため、`.env`の`OBS_SCENE_SWITCHING_ENABLED`(`true`/`false`、`/admin`から変更可能な5項目の1つ、上記「配信中の設定変更GUI」参照)でシーン自動切替のON/OFFを切り替えられる。`false`にしてもOBSへの接続自体(シーン名の事前確認・Issue #247のブラウザソース再読み込みを含む)は維持したまま、`set_in_match`呼び出し時の`set_current_program_scene`だけをスキップする(接続を切らないことで、無効化中もブラウザソースの表示は最新に保たれる)。値は呼び出しのたびに`.env`から再読み込みするため、配信中に切り替えても検知ループの再起動は不要
 
+### チャットコメント連動「次に潜る時間」オーバーレイ(`youtube_chat.py`、Issue #265)
+
+配信中、自分(配信者)がYouTube Liveのコメント欄に数値のみのコメント(例: `24`)を打つと、それを自動検知して`/overlay/dive-time`の表示(「次に潜る時間」)を更新する。
+
+- 当初はわんコメ(OneComme)経由でのチャット取得・見た目バリエーション(pill/ribbon/band)・手動操作UI・localStorage復元まで含むフル機能のプロンプトを検討したが、レビューの結果このリポジトリの実態と食い違う前提が複数見つかった(存在しないカラートークン・未使用フォントを「既存に合わせろ」としていた点、および既存オーバーレイの自動更新方式(`overlay-refresh.js`によるbody innerHTML全差し替え、Issue #104)が、わんコメの永続WebSocket接続の維持と相性が悪い点)。ユーザーと相談の上、わんコメを使わずYouTube Data API v3を直接ポーリングする方針に転換した。Pythonバックエンドが状態を持ち、既存オーバーレイと同じ「GETのたびに最新値をレンダリングして返す」方式にそのまま乗せられるため、常時接続を維持するクライアントJSが不要になり、上記の相性問題が解消される
+- チャットID解決は手入力ではなく、OAuth認可した自分のチャンネルの配信中放送を自動検出する方式にした(`liveBroadcasts.list(mine=true, broadcastStatus="active")` → `snippet.liveChatId`)。毎回の手入力を避けたいというユーザーの意向による。`google-api-python-client`(discoveryベースの重量級クライアント)は使わず、`httpx`での素のREST呼び出しで済ませている
+- 認証: OAuth 2.0(installed app flow、スコープ`https://www.googleapis.com/auth/youtube.readonly`)。初回のみ`scripts/youtube_oauth_setup.py`を手動実行してリポジトリルートに`token.json`を生成する(以後は自動更新)。本体アプリ(`main.py`)の起動経路にはブラウザ同意フローを組み込まない(常時起動するアプリがブロックしないようにするため)。`client_secret.json`(OAuthクライアントID)・`token.json`ともにリポジトリルートの固定パスとして扱い、`.env`と同様の理由で`.gitignore`対象にした。セットアップ手順は`docs/youtube_dive_time_setup.md`参照
+- `YOUTUBE_CHAT_DIVE_TIME_ENABLED`(`.env`、`config.py`)で検知スレッド自体の起動有無を切り替える。`OBS_SCENE_SWITCHING_ENABLED`と異なり、無効時に接続だけ維持する理由が無いため(OBSブラウザソースの再読み込みのような「接続だけは維持したい」副作用が無い)、スレッドそのものを起動しない、というよりシンプルな設計にした。配信ごとに調整する値ではなくセットアップ時に一度決める値のため、`/admin`の編集対象(`_EDITABLE_ENV_KEYS`)には含めない
+- チャットメッセージの`authorDetails.isChatOwner`が配信者本人かどうかの判定に使う。視聴者のコメントでは絶対に発火しない(`tests/test_youtube_chat.py`で検証済み)。放送を新規に検出した直後の最初の1ページは、状態更新に使わず`nextPageToken`の取得のみに使う(アプリ起動時点で既にチャット欄に溜まっている過去コメントを「今打たれたコメント」として誤って拾わないため)
+- チャットポーリングの待機秒数はAPI応答の`pollingIntervalMillis`をそのまま使う(ハードコードしない。fps自動検出(Issue #255)等、既存コードの「プラットフォーム側の値を尊重する」方針と一貫)
+- 検知結果(`HH:MM`)はDBを経由せず、`youtube_chat.py`のモジュールレベルのインメモリ状態として保持する(`get_dive_time()`)。他のWebダッシュボードの値はSQLiteを介した疎結合(前掲「配信画面向けWebダッシュボード」節)を原則としているが、この値は配信セッションをまたいで参照する意味が無い一過性の値であり、DBに永続化する価値が無いための意図的な逸脱
+- トークン読み込み・更新に失敗した場合(`token.json`が無い・壊れている・失効している等)は`obs_control.ObsSceneController`の接続失敗時と同じ考え方で、WARNINGログを出したうえで検知を無効化したまま動作を継続する(本体の試合検知・DB記録とは独立した付加機能のため)
+- 見た目・機能は初期実装では最小構成(`HH:MM`表示のみ)にとどめた。表示スタイルの切替・配置指定・手動での時刻操作ボタン・localStorageでの復元・自動クリアは対象外(必要になった時点で別途検討する、ユーザーとの相談で決定)
+
 ### 対戦相手ランク比較ウィジェットの見た目・更新タイミング(Issue #145)
 
 - 見た目: 試合中(ゲーム画面が全画面の間)常時表示する想定のため文字量を極力減らしたい一方、数字だけだと何の値か伝わりにくいという実際の見た目確認を経て、「合計ランク：」という先頭ラベルを削除し、代わりに左上に小さく`RANK`というキャプションを添える形にした(ユーザーとの相談で決定。`overlay_vs_rank_comparison.html`・`static/vs_rank_comparison.css`の`vs-rank-caption`参照)。ピル+VSの構成自体(Issue #100/#113)は変更していない
@@ -144,6 +158,7 @@ src/
     ├── state/              # 試合の状態遷移(バナー表示→ランクアニメ→確定→暗転→マッチング)の管理
     ├── database/           # SQLiteへの読み書き
     ├── obs_control.py      # obs-websocket経由のOBSシーン自動切り替え(Issue #83)
+    ├── youtube_chat.py     # YouTube Liveチャット連動「次に潜る時間」検知(Issue #265)
     └── web/                # 配信画面向けダッシュボード(server.py: FastAPIアプリ, runner.py: 別スレッドでのuvicorn起動, templates/: Jinja2テンプレート, static/: CSS等の静的ファイル)
 ```
 
@@ -235,6 +250,7 @@ src/
 - `docs/screen_states.md`: 画面状態の一覧(Obsidianのメモから移行)。チェック済み項目 = 参照画像が `fixtures/screenshots/` に用意済み(状態遷移確認用の動画は `fixtures/videos/` に配置)。**Issue #195対応(2026-07-30)でGit追跡対象から外した**(得点者・アシスト名など他プレイヤーの実名を説明文に含むため、`fixtures/`本体と同じ理由。ローカルにファイル自体は残っており、内容の更新・参照は引き続き行ってよい)
 - [`docs/git_workflow.md`](docs/git_workflow.md): コミット・ブランチ運用・開発フロー
 - [`docs/capture_verification.md`](docs/capture_verification.md): OBS Virtual Camera実機での動作確認手順
+- [`docs/youtube_dive_time_setup.md`](docs/youtube_dive_time_setup.md): YouTube Liveチャット連動「次に潜る時間」のセットアップ手順(Issue #265)
 - [`README.md`](README.md): プロジェクト概要とアーキテクチャ図
 
 ## Claude Codeへの依頼時の注意

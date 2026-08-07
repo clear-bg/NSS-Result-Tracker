@@ -134,6 +134,10 @@ OBSが未起動・obs-websocketが無効・パスワード不一致等で接続�
 
 配信によっては手動でシーンを操作したい場合があるため、`.env`の`OBS_SCENE_SWITCHING_ENABLED`(`true`/`false`、`/admin`からも変更可能)でシーン自動切替自体のON/OFFを切り替えられる。`false`にしてもOBSへの接続自体は維持される(ブラウザソースの自動再読み込み等は引き続き動作する)。
 
+### YouTube Liveチャット連動「次に潜る時間」のセットアップ(任意)
+
+自分のYouTube Liveのコメント欄に数値のみのコメント(例: `24`)を打つと、`/overlay/dive-time`の表示を自動更新する機能。Google Cloud ConsoleでのOAuthクライアント作成・初回同意など手順が長いため、詳細は[`docs/youtube_dive_time_setup.md`](docs/youtube_dive_time_setup.md)を参照。設定後、`.env`の`YOUTUBE_CHAT_DIVE_TIME_ENABLED`を`true`にする(既定`false`、`/admin`からは変更不可)。
+
 ### 配信中の設定変更(`/admin`)
 
 `ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・`RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`の5項目は、`main.py`起動時に自動的に開くブラウザの設定画面(`http://<WEB_HOST>:<WEB_PORT>/admin`)からGUIで編集できる。「更新」ボタンを押すと即座に反映され(検知ループの再起動不要)、`.env`ファイルにも書き込まれるため次回起動時にも引き継がれる。この5項目以外(キャプチャ設定・OBS接続情報等)は配信開始前に一度決めれば十分なため対象外で、`.env`の手動編集が必要。
@@ -148,7 +152,8 @@ OBSが未起動・obs-websocketが無効・パスワード不一致等で接続�
 │   └── detection.toml         # detection/のROI・色閾値設定(デフォルト値入り、上書き自由)
 ├── docs/
 │   ├── screen_states.md      # 画面状態の一覧(スクショ対象.mdより)
-│   └── git_workflow.md       # Git/GitHub運用ルール
+│   ├── git_workflow.md       # Git/GitHub運用ルール
+│   └── youtube_dive_time_setup.md  # YouTube Liveチャット連動「次に潜る時間」のセットアップ手順
 ├── fixtures/
 │   ├── screenshots/          # 状態ごとの参照画像(.gitignore対象、ローカルのみ)
 │   └── videos/               # 状態遷移確認用の参照動画(.gitignore対象、ローカルのみ)
@@ -164,6 +169,7 @@ OBSが未起動・obs-websocketが無効・パスワード不一致等で接続�
 │       ├── state/              # 試合の状態遷移管理
 │       ├── database/           # SQLite読み書き
 │       ├── obs_control.py      # obs-websocket経由のOBSシーン自動切り替え
+│       ├── youtube_chat.py     # YouTube Liveチャット連動「次に潜る時間」検知
 │       └── web/                # 配信画面向けWebダッシュボード
 └── tests/                      # pytest(fixtures/screenshotsを使った検知ロジックのテスト)
 ```
