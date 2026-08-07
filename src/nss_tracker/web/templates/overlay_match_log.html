@@ -4,10 +4,15 @@
 <meta charset="utf-8">
 <title>直近試合結果</title>
 <link rel="stylesheet" href="/static/overlay.css">
+<link rel="stylesheet" href="/static/match_log.css">
 </head>
 <body{{ debug_bg_style | safe }}>
-{% if letters %}
-<p>{{ letters }}</p>
+{% if badges %}
+<div class="match-log-row">
+{% for badge in badges %}
+<span class="match-log-badge" style="background-color: {{ badge.color }}; opacity: {{ badge.opacity }};">{{ badge.letter }}</span>
+{% endfor %}
+</div>
 {% else %}
 <p>データがありません</p>
 {% endif %}

@@ -549,6 +549,15 @@ def _format_vs_rank_value(summary: dict) -> str:
 # #95のRANK_GRAPH_MATCH_LIMITと異なり.env化はしない)
 MATCH_LOG_LIMIT = 10
 _MATCH_RESULT_LETTERS = {"win": "W", "lose": "L", "draw": "D"}
+# Issue #262: 実際のサッカーの勝敗表示で見るような色分けバッジにする。dataviz skillの
+# status palette(good/critical、`references/palette.md`参照)を流用し、win=good・
+# lose=criticalに割り当てる。draw(引き分け)はstatus paletteに該当する状態が無いため、
+# 同skillの「Muted (axis/labels)」トーン(勝敗どちらでもない中間色、ライト/ダーク共通)を使う
+_MATCH_RESULT_BADGE_COLORS = {"win": "#0ca30c", "lose": "#d03b3b", "draw": "#898781"}
+# Issue #262: 一番古い試合のバッジをこの不透明度から始め、新しい方の半分は
+# フェードさせず常にopacity 1.0で表示する(古い方の半分だけ徐々に暗くする、
+# ユーザーとの相談で決定。2026-08-07)。
+_MATCH_LOG_OLDEST_OPACITY = 0.5
 
 
 def _fetch_match_log(db_path: Path, limit: int = MATCH_LOG_LIMIT) -> list[str]:
@@ -561,9 +570,41 @@ def _fetch_match_log(db_path: Path, limit: int = MATCH_LOG_LIMIT) -> list[str]:
     return [row["result"] for row in rows]
 
 
-def _format_match_log_letters(results: list[str]) -> str:
-    """試合結果のリストを'WWLWD'のような勝敗アイコンの並びに変換する。"""
-    return "".join(_MATCH_RESULT_LETTERS[result] for result in results)
+def _build_match_log_badges(results: list[str]) -> list[dict]:
+    """試合結果のリストを、テンプレートで色分けバッジとして描画するための一覧に変換する。
+
+    各要素は{"letter": "W", "color": "#0ca30c", "opacity": 1.0}のように、文字
+    (_MATCH_RESULT_LETTERS)・背景色(_MATCH_RESULT_BADGE_COLORS)・不透明度をまとめたもの。
+    色・不透明度とも固定のロジックからしか選ばれないため(任意の文字列をHTML/CSSに
+    そのまま埋め込むインジェクションの心配はない)。
+
+    不透明度は前半(古い方)と後半(新しい方)で扱いが異なる。件数(count)の
+    前半count // 2件(fade_count)だけが対象で、一番古い(先頭)を
+    _MATCH_LOG_OLDEST_OPACITYから始め、fade_countの終端(=後半の境界)で
+    ちょうど1.0に達するよう線形に濃くする。後半(fade_count件目以降、最新側)は
+    フェードさせず常にopacity 1.0で表示する(ユーザーとの相談で決定。
+    「新しい方はくっきり、古い方だけ徐々に薄く」という要望から)。
+    fade_countが1件のみの場合(全体が2〜3件程度の少数時)は線形補間のための
+    2点目が無いため、その1件はそのまま_MATCH_LOG_OLDEST_OPACITYにする。
+    """
+    count = len(results)
+    fade_count = count // 2
+    badges = []
+    for index, result in enumerate(results):
+        if index >= fade_count:
+            opacity = 1.0
+        elif fade_count == 1:
+            opacity = _MATCH_LOG_OLDEST_OPACITY
+        else:
+            opacity = _MATCH_LOG_OLDEST_OPACITY + (1.0 - _MATCH_LOG_OLDEST_OPACITY) * index / (fade_count - 1)
+        badges.append(
+            {
+                "letter": _MATCH_RESULT_LETTERS[result],
+                "color": _MATCH_RESULT_BADGE_COLORS[result],
+                "opacity": round(opacity, 2),
+            }
+        )
+    return badges
 
 
 def _fetch_rank_delta_distribution(db_path: Path) -> dict:
@@ -943,9 +984,9 @@ def create_app(db_path: Path) -> FastAPI:
     @app.get("/overlay/match-log")
     def overlay_match_log(request: Request):
         results = _fetch_match_log(db_path)
-        letters = _format_match_log_letters(results)
+        badges = _build_match_log_badges(results)
         context = {
-            "letters": letters,
+            "badges": badges,
             "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
             "debug_bg_style": _overlay_debug_bg_style(request),
         }
