@@ -123,6 +123,12 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
   - DBは`matches`/`vs_slot_ranks`(試合結果確定時にまとめて保存する履歴データ、保存タイミング・スキーマとも変更なし)とは別に、新しい`vs_rank_snapshots`/`vs_rank_snapshot_slots`テーブルを追加した。`main.py`が`pop_vs_screen_event()`をポーリングし、Noneでなければその場で`db.save_vs_rank_snapshot()`を呼んで即書き込む。ウィジェット側(`web/server.py`の`_fetch_vs_rank_comparison`)はこのスナップショットの最新1件だけを見るようにし、`matches`/`vs_slot_ranks`への依存を無くした
   - VS画面を見逃した試合が終わった際(`result.vs_mine_ranks`/`vs_opponent_ranks`が両方空)は、`_record_match_result`が明示的に空スナップショット(チームカラーNULL・スロット行無し)を書き込み、ウィジェットの表示を前の試合の値のまま残さずnone/noneにリセットする(既存の見逃し時のフォールバック挙動を、試合終了時点のタイミングのまま新しいテーブル経由で維持している)
 
+### 直近試合結果ログウィジェットの見た目(Issue #262)
+
+`/overlay/match-log`は、実際のサッカーの勝敗表示でよく見る色分けバッジ(円形、win=緑・lose=赤・draw=グレー)でW/L/Dを並べる。色は`web/server.py`の`_MATCH_RESULT_BADGE_COLORS`で固定値として定義しており、`dataviz` skillのstatus palette(`references/palette.md`のgood/critical)をwin/loseに流用した(win=`#0ca30c`、lose=`#d03b3b`)。draw(引き分け)はstatus paletteに該当する状態が無いため、同skillの「Muted (axis/labels)」トーン(`#898781`、ライト/ダーク共通の中間色)を使う。バッジの文字(W/L/D)自体がラベルを兼ねるため、色だけに意味を持たせる設計にはなっていない。
+
+どれが最新の試合か一見して分からない問題への対応として、並び順反転(最新を左に)・最新のみ拡大+リング・末尾に矢印表示、の4案をArtifactでモックアップし黒背景(`?debug_bg=1`相当)で見比べてもらった。並び順(左が最古)は変えずに済み、時系列グラフ等の他ウィジェットとも向きが揃う「不透明度のグラデーション」が選ばれた。当初は全件を通した線形グラデーション(最新のみ1.0)だったが、「新しい方の半分ははっきり見せたい」という追加要望を受け、`_build_match_log_badges()`は件数の前半`count // 2`件(fade_count)だけを`_MATCH_LOG_OLDEST_OPACITY`から1.0まで線形にフェードさせ、後半(最新側)は常にopacity 1.0のまま固定する方式に変更した(2026-08-07)。fade_countが0〜1件の少数時は全件/フェード対象の1件がそのまま1.0または`_MATCH_LOG_OLDEST_OPACITY`になる。`_MATCH_LOG_OLDEST_OPACITY`の値自体も実機確認で「一番暗いバッジが暗すぎる」というフィードバックを受け0.3→0.5に調整済み(2026-08-07)。
+
 ### 勝率ウィジェットの表示内容(Issue #261)
 
 `/overlay/winrate`は配信セッション・累計の試合数/勝敗数/勝率のみを表示する。以前は右側に許可リストプレイヤー全員分の得点・アシスト合計(`GOAL_ASSIST_TOTALS_SCOPE`、Issue #132)も表示していたが、`/overlay/goal-stats`ウィジェットと表示内容が重複していたため削除した(ユーザーとの相談で決定)。`GOAL_ASSIST_TOTALS_SCOPE`設定項目・`_fetch_goal_assist_totals()`・`/api/goal-assist-totals`エンドポイントは、この表示のためだけに存在していたため他に使い手が無くなり、あわせて削除した。
