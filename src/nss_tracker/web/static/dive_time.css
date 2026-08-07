@@ -6,9 +6,17 @@
    時刻の数字部分のみ、ユーザーが別途OBSで常時表示している時計(tmp/clock02.html、
    Roboto Bold)とフォントを揃えるため、Robotoを指定する(colonを含むLatin文字のみ
    に効き、キャプションの日本語には和文グリフが無いRobotoは適用されない)。 */
+/* キャプション行(次に潜る時間)の方が時刻より横幅が長いため、幅をキャプション
+   行に合わせて縮め(inline-block)、時刻側をtext-align: centerでその幅の中央に
+   揃える */
+.dive-time-widget {
+    display: inline-block;
+}
+
 .dive-time-caption {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 0.25em;
     margin: 0;
     color: #9fb2b8;
@@ -31,6 +39,7 @@
 
 .dive-time-value {
     margin: 2px 0 0;
+    text-align: center;
     color: #fff;
     font-family: "Roboto", sans-serif;
     font-size: 40px;
