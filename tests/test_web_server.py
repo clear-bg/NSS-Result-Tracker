@@ -3,6 +3,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from nss_tracker.database import db
@@ -13,6 +14,7 @@ from nss_tracker.web.runner import start_web_server_thread
 from nss_tracker.web.server import (
     _BOX_PLOT_TITLE,
     _OVERLAY_REFRESH_INTERVAL_MS,
+    _OVERLAY_WIDGET_LABELS,
     _RANK_GRAPH_LEFT_PADDING,
     _RANK_GRAPH_MARGIN_LEFT,
     _RANK_GRAPH_MARGIN_RIGHT,
@@ -24,6 +26,7 @@ from nss_tracker.web.server import (
     _convert_rank_tier_to_unified_scale,
     _fetch_goal_assist_totals,
     _format_vs_rank_value,
+    _overlay_widget_links,
     _percentile,
     _rank_delta_axis_max,
     _rank_graph_x_axis_max,
@@ -1432,6 +1435,46 @@ def test_admin_get_shows_current_settings(tmp_path: Path, monkeypatch):
     assert 'value="Alice,Bob"' in response.text
     assert 'value="30"' in response.text
     assert '<option value="false" selected>' in response.text
+
+
+def test_admin_get_shows_overlay_widget_links(tmp_path: Path):
+    """Issue #257: 各overlayウィジェットへのリンク一覧をリンク先付きで表示する。"""
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    for path, label in _OVERLAY_WIDGET_LABELS.items():
+        assert f'<a href="{path}" target="_blank" rel="noopener">{label}</a>' in response.text
+
+
+def test_overlay_widget_links_matches_registered_overlay_routes(tmp_path: Path):
+    """全/overlay/xxxルートが漏れなくリンク集に含まれることを確認する。"""
+    app = create_app(tmp_path / "test.db")
+    registered_paths = {
+        route.path
+        for route in app.routes
+        if getattr(route, "path", "").startswith("/overlay/")
+    }
+
+    links = _overlay_widget_links(app)
+
+    assert {link["path"] for link in links} == registered_paths
+    assert registered_paths  # そもそもoverlayルートが1つも無い状態で通ってしまわないように
+
+
+def test_overlay_widget_links_raises_when_label_is_missing_for_a_route():
+    """新しいoverlayルートを追加したのに_OVERLAY_WIDGET_LABELSへの追記を忘れた場合、
+    リンク集を組み立てる時点でRuntimeErrorになり、放置されないようにする。
+    """
+    app = FastAPI()
+
+    @app.get("/overlay/not-yet-labeled")
+    def _unlabeled_overlay():
+        return {}
+
+    with pytest.raises(RuntimeError, match="/overlay/not-yet-labeled"):
+        _overlay_widget_links(app)
 
 
 def test_admin_post_updates_settings_and_persists_to_env_file(tmp_path: Path, monkeypatch):

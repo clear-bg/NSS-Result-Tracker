@@ -13,6 +13,12 @@
 {% if error %}
 <p class="admin-message admin-message-error">{{ error }}</p>
 {% endif %}
+<h2>配信ウィジェット一覧</h2>
+<ul class="admin-overlay-links">
+  {% for link in overlay_links %}
+  <li><a href="{{ link.path }}" target="_blank" rel="noopener">{{ link.label }}</a></li>
+  {% endfor %}
+</ul>
 <form method="post" action="/admin">
   <div class="admin-field">
     <label for="allowed_players">許可リスト(得点・アシストを記録する対象のプレイヤー名、カンマ区切り)</label>
