@@ -983,6 +983,22 @@ class MatchStateMachine:
         優先する(バナー確定直後は本来コンパクト表示のはず、という設計上の
         期待に合わせるため)。食い違い自体はWARNINGログに残し、実際に発生する
         頻度・どちらの値が正しいことが多いかは今後のデータで判断する。
+
+        Issue #283: 帯番号(整数部)は、ここでのOCRよりVS画面読み取り
+        (vs_rank.py、PaddleOCRベース)の方が実測で大幅に精度が高いことが
+        実機ログで判明した。ゲージの溜まり具合(小数部)はここでのHSV読み取りの
+        まま使うが、帯番号は`self._pending_vs_mine_ranks[0]`(VS画面確定時に
+        読み取った自分のランク)が'∞'帯かつ数値を取得できていれば、ここでの
+        OCR結果を捨ててそちらを常に優先する(食い違っていてもVS画面側を採用、
+        ユーザーと合意済み)。S/A帯・VS画面を確認できなかった試合は対象外
+        (rank_before/afterの追跡自体が∞帯のみを前提にしているため)で、
+        従来通りここでのOCR結果にフォールバックする。ここでのOCRがcompact/
+        enlargedどちらのROIでもバッジ自体を読み取れなかった場合(バッジ非表示、
+        またはゲージも含め完全な読み取り失敗)は、VS画面側の情報があっても
+        値を捏造せずNoneのまま返す(「バッジが無い」ことと「帯番号だけ誤読した」
+        ことは別の状況のため)。Issue #136の帯変化の妥当性チェック・再スキャン・
+        ゲージ連続性フォールバックは、VS画面側も100%ではないため二段構えの
+        保険としてそのまま残す。
         """
         compact_result = read_precise_rank(frame, GAUGE_ROI_COMPACT, RANK_NUMBER_ROI_COMPACT)
         enlarged_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
@@ -993,9 +1009,23 @@ class MatchStateMachine:
                 compact_result,
                 enlarged_result,
             )
-        if compact_result is not None:
-            return compact_result
-        return enlarged_result
+        ocr_result = compact_result if compact_result is not None else enlarged_result
+        if ocr_result is None:
+            return None
+
+        vs_mine_rank = self._pending_vs_mine_ranks[0] if self._pending_vs_mine_ranks else None
+        vs_tier = vs_mine_rank.value if vs_mine_rank is not None and vs_mine_rank.tier == "∞" else None
+        if vs_tier is None or vs_tier == ocr_result[0]:
+            return ocr_result
+
+        logger.warning(
+            "結果バナー確定時点の帯番号OCR(%s)がVS画面の読み取り(%s)と食い違っています。"
+            "VS画面側を採用します",
+            ocr_result[0],
+            vs_tier,
+        )
+        fill = ocr_result[1] - ocr_result[0]
+        return vs_tier, vs_tier + fill
 
     def _watch_for_banner(self, frame: np.ndarray) -> Optional[MatchResult]:
         result = classify_banner(frame)
