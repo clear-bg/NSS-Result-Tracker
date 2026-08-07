@@ -9,10 +9,10 @@
 {% if players %}
 {% if single_player_mode %}
 {% set player = players[0] %}
-<p>得点 {{ player.goals }} / アシスト {{ player.assists }} (関与 {{ player.involvement }})</p>
+<p>今回: 得点 {{ player.goals }} / アシスト {{ player.assists }} (関与 {{ player.involvement }})</p>
 {% else %}
 {% for player in players %}
-<p>{{ player.name }}: 得点 {{ player.goals }} / アシスト {{ player.assists }} (関与 {{ player.involvement }})</p>
+<p>今回: {{ player.name }}: 得点 {{ player.goals }} / アシスト {{ player.assists }} (関与 {{ player.involvement }})</p>
 {% endfor %}
 {% endif %}
 {% else %}
