@@ -22,6 +22,7 @@ from nss_tracker.web.server import (
     _RANK_GRAPH_VIEWBOX_WIDTH,
     _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS,
     _aggregate_goal_stats,
+    _build_match_log_badges,
     _compute_box_stats,
     _convert_rank_tier_to_unified_scale,
     _format_vs_rank_value,
@@ -714,7 +715,47 @@ def test_match_log_limited_to_fixed_recent_count(tmp_path: Path):
     assert len(response.json()["results"]) == 10
 
 
-def test_overlay_match_log_page_shows_win_lose_draw_letters(tmp_path: Path):
+def test_build_match_log_badges_maps_results_to_letters_and_colors():
+    """3件(fade_count=3//2=1)のうち先頭1件だけがフェード対象になる。"""
+    badges = _build_match_log_badges(["win", "lose", "draw"])
+
+    assert badges == [
+        {"letter": "W", "color": "#0ca30c", "opacity": 0.5},
+        {"letter": "L", "color": "#d03b3b", "opacity": 1.0},
+        {"letter": "D", "color": "#898781", "opacity": 1.0},
+    ]
+
+
+def test_build_match_log_badges_returns_empty_list_for_no_results():
+    assert _build_match_log_badges([]) == []
+
+
+def test_build_match_log_badges_single_result_is_fully_opaque():
+    """1件だけの場合はフェード対象(fade_count=1//2=0件)が無いため、常に1.0にする。"""
+    badges = _build_match_log_badges(["win"])
+
+    assert badges == [{"letter": "W", "color": "#0ca30c", "opacity": 1.0}]
+
+
+def test_build_match_log_badges_newer_half_is_never_faded():
+    """Issue #262: 新しい方の半分ははっきり見せたいというユーザー要望から、
+    フェードするのは古い方の前半count // 2件のみ。後半は常にopacity 1.0にする
+    (並び順反転・最新のみ拡大・矢印表示などの他案を見た目付きで比較した上で選ばれた方式)。
+    """
+    badges = _build_match_log_badges(["win"] * 10)
+
+    opacities = [badge["opacity"] for badge in badges]
+
+    assert opacities[:5] == sorted(opacities[:5])
+    assert opacities[0] == 0.5
+    assert opacities[4] == 1.0
+    assert opacities[5:] == [1.0] * 5
+
+
+def test_overlay_match_log_page_shows_win_lose_draw_badges(tmp_path: Path):
+    """Issue #262: 各試合結果を色分けバッジ(win=緑・lose=赤・draw=グレー)で、
+    古い方の半分だけ不透明度のグラデーションを付けて表示する。
+    """
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for result in ["win", "win", "lose", "draw"]:
@@ -730,7 +771,16 @@ def test_overlay_match_log_page_shows_win_lose_draw_letters(tmp_path: Path):
 
     assert response.status_code == 200
     assert '<link rel="stylesheet" href="/static/overlay.css">' in response.text
-    assert "WWLD" in response.text
+    assert '<link rel="stylesheet" href="/static/match_log.css">' in response.text
+    # 4件のうち前半2件(fade_count=4//2=2)だけがフェード対象、後半2件は常に1.0
+    expected_badges = [
+        '<span class="match-log-badge" style="background-color: #0ca30c; opacity: 0.5;">W</span>',
+        '<span class="match-log-badge" style="background-color: #0ca30c; opacity: 1.0;">W</span>',
+        '<span class="match-log-badge" style="background-color: #d03b3b; opacity: 1.0;">L</span>',
+        '<span class="match-log-badge" style="background-color: #898781; opacity: 1.0;">D</span>',
+    ]
+    positions = [response.text.index(badge) for badge in expected_badges]
+    assert positions == sorted(positions)
 
     css_response = client.get("/static/overlay.css")
     assert "background: transparent" in css_response.text
