@@ -11,7 +11,7 @@
 `CAPTURE_HEIGHT`・`CAPTURE_FPS`・`DB_PATH`・`FRAME_READ_TIMEOUT_SECONDS`・
 `NSS_TRACKER_LOG_LEVEL`
 ・`WEB_HOST`・`WEB_PORT`・`GOAL_RECORD_MODE`・`RANK_DELTA_DISTRIBUTION_SCOPE`・
-`GOAL_ASSIST_TOTALS_SCOPE`・`RANK_GRAPH_MATCH_LIMIT`・`OBS_WEBSOCKET_HOST`・
+`RANK_GRAPH_MATCH_LIMIT`・`OBS_WEBSOCKET_HOST`・
 `OBS_WEBSOCKET_PORT`・`OBS_WEBSOCKET_PASSWORD`・`OBS_SCENE_IN_MATCH`・
 `OBS_SCENE_BETWEEN_MATCHES`・`OBS_BROWSER_SOURCE_NAMES`・
 `OBS_SCENE_SWITCHING_ENABLED`)は、
@@ -60,12 +60,6 @@ os.environと`.env`ファイルの両方を更新する(`.env`側も更新する
 にも同じ値を引き継ぐため)。この5項目を選んだ理由は、配信中に調整したくなり得る値
 (出演者・記録方針・グラフの表示範囲・シーン自動切替の要否)に絞ったため。
 キャプチャ設定やOBS接続情報等は配信開始前に一度決めれば十分なため対象外とした。
-
-`GOAL_ASSIST_TOTALS_SCOPE`(勝率ウィジェット右側に表示する許可リストプレイヤーの
-得点・アシスト合計の集計対象、Issue #132)は`RANK_DELTA_DISTRIBUTION_SCOPE`と
-同じ"session"/"all"の値・バリデーション方式を採るが、`_EDITABLE_ENV_KEYS`には
-含めない(/admin非対応)。配信開始前に一度決めれば十分な表示範囲の好みであり、
-配信中に調整したくなる想定が無いため。
 """
 
 import logging
@@ -80,7 +74,6 @@ load_dotenv()
 _VALID_LOG_LEVEL_NAMES = ("DEBUG", "INFO", "WARNING", "ERROR")
 _VALID_GOAL_RECORD_MODES = ("all", "allowlist", "allowlist_redact")
 _VALID_RANK_DELTA_DISTRIBUTION_SCOPES = ("session", "all")
-_VALID_GOAL_ASSIST_TOTALS_SCOPES = ("session", "all")
 _VALID_BOOL_STRINGS = ("true", "false")
 
 
@@ -217,26 +210,6 @@ def get_rank_delta_distribution_scope() -> str:
     空文字列は許容しない)。
     """
     return _validate_rank_delta_distribution_scope(_require_env("RANK_DELTA_DISTRIBUTION_SCOPE"))
-
-
-def _validate_goal_assist_totals_scope(value: str) -> str:
-    if value not in _VALID_GOAL_ASSIST_TOTALS_SCOPES:
-        raise ConfigError(
-            f"GOAL_ASSIST_TOTALS_SCOPEの値が不正です: {value}"
-            f"({'/'.join(_VALID_GOAL_ASSIST_TOTALS_SCOPES)}のいずれかを指定してください)"
-        )
-    return value
-
-
-def get_goal_assist_totals_scope() -> str:
-    """勝率ウィジェット右側に表示する得点・アシスト合計(許可リストプレイヤー全員分)の
-    集計対象を取得する。
-
-    "session"(現在の配信セッションのみ)/"all"(累計・全期間)のいずれか。
-    未設定・不正な値の場合はConfigErrorを送出する(RANK_DELTA_DISTRIBUTION_SCOPEと
-    同じ扱い、空文字列は許容しない)。
-    """
-    return _validate_goal_assist_totals_scope(_require_env("GOAL_ASSIST_TOTALS_SCOPE"))
 
 
 def get_obs_websocket_host() -> str:
