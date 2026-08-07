@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <title>次に潜る時間</title>
+<link rel="preconnect" href="https://fonts.gstatic.com">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/overlay.css">
+<link rel="stylesheet" href="/static/dive_time.css">
 </head>
 <body{{ debug_bg_style | safe }}>
-{% if dive_time %}
-<p>次に潜る時間: {{ dive_time }}</p>
-{% else %}
-<p>次に潜る時間: 未設定</p>
-{% endif %}
+<p class="dive-time-caption">次に潜る時間</p>
+<p class="dive-time-value">{{ dive_time or "未設定" }}</p>
 <script src="/static/overlay-refresh.js" data-interval-ms="{{ refresh_interval_ms }}"></script>
 </body>
 </html>
