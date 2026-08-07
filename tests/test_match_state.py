@@ -177,7 +177,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 10)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(15):
@@ -501,6 +501,125 @@ def test_rank_read_failure_is_logged(monkeypatch, caplog):
     assert "試合終了時点でも" in caplog.text
 
 
+def test_read_rank_before_prefers_vs_screen_tier_over_conflicting_ocr(monkeypatch, caplog):
+    """Issue #283: 結果バナー確定時点の帯番号OCRがVS画面の読み取りと食い違う場合、
+    VS画面側(精度が高い)を優先して採用することを確認する(実機で41→0と誤読した
+    事象の回帰防止)。ゲージの溜まり具合(小数部)は従来通りOCR側の値をそのまま使う。
+    """
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    # 帯番号を0と誤読(実機事象の再現)。小数部0.98は正しく読めている想定
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (0, 0.98))
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.98)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+    machine._vs_confirmed_this_match = True
+    # VS画面は正しく∞41と読めていた想定
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 41)]
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    with caplog.at_level("WARNING", logger="nss_tracker.state"):
+        for _ in range(5):
+            machine.process_frame(frame)
+            if machine._pending_rank_before_tier is not None:
+                break
+
+    assert machine._pending_rank_before_tier == 41, "帯番号はVS画面側(41)を採用するはず"
+    assert machine._pending_rank_before == pytest.approx(41.98), (
+        "小数部(ゲージの溜まり具合)はOCR側の値をそのまま使うはず"
+    )
+    assert "帯番号OCR(0)がVS画面の読み取り(41)と食い違っています" in caplog.text
+
+
+def test_read_rank_before_falls_back_to_ocr_when_vs_screen_tier_unavailable(monkeypatch):
+    """Issue #283: VS画面で自分のランクを検知できていない(S/A帯、または未確認)場合は、
+    従来通り結果バナー確定時点のOCR結果をそのまま使うことを確認する。
+    """
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (12, 12.5))
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.5)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+    machine._vs_confirmed_this_match = True
+    # S帯はrank_before/afterの追跡対象外のため、OCR結果にフォールバックするはず
+    machine._pending_vs_mine_ranks = [SlotRank("S", 9)]
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    for _ in range(5):
+        machine.process_frame(frame)
+        if machine._pending_rank_before_tier is not None:
+            break
+
+    assert machine._pending_rank_before_tier == 12
+    assert machine._pending_rank_before == pytest.approx(12.5)
+
+
+def test_read_rank_before_returns_none_when_ocr_completely_fails_even_with_vs_screen_tier(monkeypatch, caplog):
+    """Issue #283: バッジ自体が読み取れない(compact/enlargedどちらのOCRも失敗する)
+    場合は、VS画面側の帯番号があっても値を捏造せずNoneのまま返すことを確認する
+    (「バッジが無い」ことと「帯番号だけ誤読した」ことを混同しないため)。
+    """
+    calls = {"n": 0}
+
+    def fake_classify_banner(frame):
+        n = calls["n"]
+        calls["n"] += 1
+        # banner_confirm_frames分は"lose"を返して確定させ、以降はTRACKING_RANK中に
+        # バナーが消えている状態(banner_absence_confirm_frames)を再現する
+        return "lose" if n < 3 else None
+
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: None)
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: None)
+    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        banner_absence_confirm_frames=2,
+        league_change_grace_frames=1,
+        rank_recheck_interval_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+    machine._vs_confirmed_this_match = True
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 41)]
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        for _ in range(30):
+            r = machine.process_frame(frame)
+            if r is not None:
+                result = r
+                break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_before is None, "OCRが完全に失敗した場合はVS画面側があっても値を捏造しないはず"
+    assert "結果バナー確定時点でランクバッジを読み取れませんでした" in caplog.text
+
+
 def test_track_rank_grace_tracks_slow_drift_every_frame(monkeypatch):
     """GRACE中にゲージがピクセル差分の閾値を下回る速度で緩やかに変化し続けても、
     毎フレームの継続追跡で真の最終値まで追従できることを確認する
@@ -544,7 +663,7 @@ def test_track_rank_grace_tracks_slow_drift_every_frame(monkeypatch):
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 40)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -602,7 +721,7 @@ def test_track_rank_grace_debounces_transition_spike_and_fade_noise(monkeypatch)
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
     machine._vs_confirmed_this_match = True
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 39)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -640,7 +759,7 @@ def test_track_rank_grace_logs_gauge_value_every_frame_at_debug_level(monkeypatc
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
     machine._vs_confirmed_this_match = True
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 39)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     with caplog.at_level("DEBUG", logger="nss_tracker.state"):
         for _ in range(10):
@@ -709,7 +828,7 @@ def test_track_rank_periodic_recheck_catches_tier_change(monkeypatch):
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 40)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -775,7 +894,7 @@ def test_tier_jump_recovers_via_rescan(monkeypatch):
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 38)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -831,7 +950,7 @@ def test_tier_jump_falls_back_to_gauge_continuity_when_rescan_still_implausible_
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 38)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -888,7 +1007,7 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 38)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -944,7 +1063,7 @@ def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 38)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -1003,7 +1122,7 @@ def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magni
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 38)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -1064,7 +1183,7 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 38)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -1119,7 +1238,7 @@ def test_unchanged_tier_stays_plausible_without_demotion_confirmation(monkeypatc
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 38)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -1178,7 +1297,7 @@ def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(mo
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 38)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -1322,7 +1441,7 @@ def test_promotion_during_grace_period_is_caught(monkeypatch):
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 37)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(300):
@@ -1372,7 +1491,7 @@ def test_no_promotion_during_grace_period_still_finalizes_after_full_timeout(mon
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 37)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(60):
@@ -1423,7 +1542,7 @@ def test_full_blackout_triggers_immediate_finalize_bypassing_grace_timeout(monke
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 37)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for _ in range(100):
@@ -1506,7 +1625,7 @@ def test_match_end_confirmed_enables_fast_banner_confirm(monkeypatch):
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 10)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for i in range(10):
@@ -1547,7 +1666,7 @@ def test_match_end_candidate_rejected_by_ocr_keeps_slow_banner_confirm(monkeypat
     machine._vs_confirmed_this_match = True
     # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
     # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 10)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     for i in range(10):
@@ -1731,7 +1850,9 @@ def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
     )
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
+    # Issue #283: 結果バナー確定時点のrank_beforeはVS画面のスロット0(38)を優先して
+    # 採用するため、ここでのOCRモックもそれに合わせておく(不一致自体は別テストで検証)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (38, 38.0))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
@@ -1782,7 +1903,9 @@ def test_team_colors_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "read_team_colors", lambda frame: ("#64bde2", "#f87abe"))
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
+    # Issue #283: 結果バナー確定時点のrank_beforeはVS画面のスロット0(38)を優先して
+    # 採用するため、ここでのOCRモックもそれに合わせておく(不一致自体は別テストで検証)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (38, 38.0))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
@@ -2138,8 +2261,10 @@ def test_obs_switch_uses_first_blackout_when_finalize_itself_triggered_by_blacko
 
     monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
     # Issue #235: 暗転即確定パス(ランク監視中の挙動)を検証するテストのため、
-    # VS画面でランクを検知した(ランクを賭けた)試合として扱う必要がある
-    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([SlotRank("∞", 1)], []))
+    # VS画面でランクを検知した(ランクを賭けた)試合として扱う必要がある。
+    # Issue #283: 帯番号は結果バナー確定時点のOCR(下のread_precise_rank、tier=10)と
+    # 揃えておく(不一致時の挙動は別テストで検証するため、ここでは無関係にしたい)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([SlotRank("∞", 10)], []))
     monkeypatch.setattr(match_state_module, "is_match_end_screen", fake_is_match_end_screen)
     monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
