@@ -34,6 +34,7 @@ from nss_tracker.capture.ffmpeg_capture import FfmpegFrameReader
 from nss_tracker.config import (
     ConfigError,
     get_capture_device_name,
+    get_capture_fps,
     get_capture_resolution,
     get_db_path,
     get_frame_read_timeout_seconds,
@@ -68,8 +69,9 @@ from nss_tracker.web.runner import start_web_server_thread
 from nss_tracker.web.server import create_app
 
 LOG_DIR = Path("logs")
-# OBS Virtual Cameraのキャプチャは30fps想定(CLAUDE.md)。--videoでの動作確認時は
-# 実ファイルのfpsを自動検出するため、これは実キャプチャ時のみ使うデフォルト値
+# Issue #255: 実キャプチャ時のfpsは.envのCAPTURE_FPSを使う(get_capture_fps参照)。
+# これは--video指定時、動画ファイルからのfps自動検出(_detect_fps)が失敗した
+# 場合にのみ使うフォールバック値
 DEFAULT_CAPTURE_FPS = 30.0
 
 logger = logging.getLogger("nss_tracker")
@@ -370,7 +372,7 @@ def main() -> None:
         type=float,
         default=None,
         help="キャプチャのfps(状態機械の閾値スケーリングに使用)。"
-        "--video指定時は未指定ならファイルから自動検出、実キャプチャ時は未指定なら30fps想定",
+        "--video指定時は未指定ならファイルから自動検出、実キャプチャ時は未指定なら.envのCAPTURE_FPSを使用",
     )
     args = parser.parse_args()
 
@@ -381,13 +383,15 @@ def main() -> None:
         print(f"設定エラー: {exc}", file=sys.stderr)
         sys.exit(1)
     logger.info("ログファイル: %s", log_file)
-    fps = args.fps
-    if fps is None:
-        fps = _detect_fps(args.video) if args.video is not None else DEFAULT_CAPTURE_FPS
-    logger.info("fps=%.2fとして状態機械の閾値をスケーリングします", fps)
 
     try:
         reader = _make_reader(args.video)
+        fps = args.fps
+        if fps is None:
+            # Issue #255: 実キャプチャ時は.envのCAPTURE_FPSを使う(OBS Virtual Cameraの
+            # 実際の出力fpsは環境ごとに異なりうるため、他の実キャプチャ設定と同様に
+            # 未設定ならConfigErrorで明示的に失敗させる)
+            fps = _detect_fps(args.video) if args.video is not None else get_capture_fps()
         db_path = get_db_path()
         web_host = get_web_host()
         web_port = get_web_port()
@@ -404,6 +408,7 @@ def main() -> None:
     except ConfigError as exc:
         logger.error("設定エラー: %s", exc)
         sys.exit(1)
+    logger.info("fps=%.2fとして状態機械の閾値をスケーリングします", fps)
     if args.video is None:
         logger.info(
             "キャプチャ設定: device=%s resolution=%dx%d",
