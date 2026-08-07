@@ -13,7 +13,6 @@ from nss_tracker.config import (
     get_db_path,
     get_editable_settings,
     get_frame_read_timeout_seconds,
-    get_goal_assist_totals_scope,
     get_goal_record_mode,
     get_log_level,
     get_log_level_name,
@@ -207,24 +206,6 @@ def test_get_rank_delta_distribution_scope_raises_for_invalid_value(monkeypatch)
 def test_get_rank_delta_distribution_scope_uses_env_value(monkeypatch, scope):
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", scope)
     assert get_rank_delta_distribution_scope() == scope
-
-
-def test_get_goal_assist_totals_scope_raises_when_unset(monkeypatch):
-    monkeypatch.delenv("GOAL_ASSIST_TOTALS_SCOPE", raising=False)
-    with pytest.raises(ConfigError, match="GOAL_ASSIST_TOTALS_SCOPE"):
-        get_goal_assist_totals_scope()
-
-
-def test_get_goal_assist_totals_scope_raises_for_invalid_value(monkeypatch):
-    monkeypatch.setenv("GOAL_ASSIST_TOTALS_SCOPE", "everything")
-    with pytest.raises(ConfigError, match="GOAL_ASSIST_TOTALS_SCOPE"):
-        get_goal_assist_totals_scope()
-
-
-@pytest.mark.parametrize("scope", ["session", "all"])
-def test_get_goal_assist_totals_scope_uses_env_value(monkeypatch, scope):
-    monkeypatch.setenv("GOAL_ASSIST_TOTALS_SCOPE", scope)
-    assert get_goal_assist_totals_scope() == scope
 
 
 def test_get_rank_graph_match_limit_raises_when_unset(monkeypatch):
