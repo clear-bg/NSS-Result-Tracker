@@ -1,0 +1,30 @@
+/* Issue #262: 直近試合結果ログ専用のスタイル。実際のサッカーの勝敗表示でよく見る、
+   円形の色付きバッジ(win=緑・lose=赤・draw=グレー、色自体はweb/server.pyの
+   _MATCH_RESULT_BADGE_COLORSで定義)でW/L/Dを並べる。並び順は時系列のまま
+   (左が最古)、どれが最新かは不透明度のグラデーションで示す。ユーザーに
+   並び順反転・最新のみ拡大・矢印表示など複数案を見た目付きで比較してもらい、
+   時系列の並びを変えずに済むこの案が一番分かりやすいと判断された(2026-08-07)。
+   古い方の前半count // 2件だけを徐々に濃くし、新しい方の後半は常に完全に
+   不透明(新しい方ははっきり見せたいという追加要望)。詳細はweb/server.pyの
+   _build_match_log_badges参照。不透明度は行内style属性で個別に設定するため、
+   ここでは固定値を持たない。 */
+.match-log-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+}
+
+/* vs_rank_comparison.cssのvs-rank-pill(角丸ピル)と揃え、白い太字の文字を
+   使うが、1文字だけを収める円形にする(実際のサッカーの成績表示に寄せるため) */
+.match-log-badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5em;
+    height: 1.5em;
+    border-radius: 50%;
+    color: #fff;
+    font-weight: 900;
+    text-align: center;
+}
