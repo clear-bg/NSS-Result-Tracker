@@ -230,7 +230,7 @@ class DiveTimeWatcher:
             params["pageToken"] = self._next_page_token
         try:
             response = httpx.get(
-                f"{_API_BASE}/liveChatMessages",
+                f"{_API_BASE}/liveChat/messages",
                 params=params,
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=_HTTP_TIMEOUT_SECONDS,
