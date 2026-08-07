@@ -79,6 +79,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from nss_tracker import youtube_chat
 from nss_tracker.config import (
     ConfigError,
     get_allowed_players,
@@ -830,6 +831,7 @@ _OVERLAY_WIDGET_LABELS = {
     "/overlay/match-log": "直近試合結果ログ",
     "/overlay/vs-rank-comparison": "対戦相手ランク比較",
     "/overlay/rank-delta-distribution": "ランク増減分布",
+    "/overlay/dive-time": "次に潜る時間",
 }
 
 
@@ -1040,6 +1042,15 @@ def create_app(db_path: Path) -> FastAPI:
             "debug_bg_style": _overlay_debug_bg_style(request),
         }
         return _TEMPLATES.TemplateResponse(request, "overlay_rank_delta_distribution.html", context)
+
+    @app.get("/overlay/dive-time")
+    def overlay_dive_time(request: Request):
+        context = {
+            "dive_time": youtube_chat.get_dive_time(),
+            "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
+            "debug_bg_style": _overlay_debug_bg_style(request),
+        }
+        return _TEMPLATES.TemplateResponse(request, "overlay_dive_time.html", context)
 
     # Issue #257: 全overlayルートの登録が終わった時点で1回だけ組み立てる
     # (リクエストのたびに再計算する必要は無く、ラベル追記漏れがあれば

@@ -27,6 +27,7 @@ from nss_tracker.config import (
     get_rank_graph_match_limit,
     get_web_host,
     get_web_port,
+    get_youtube_chat_dive_time_enabled,
     is_allowed_player,
     update_editable_settings,
 )
@@ -337,6 +338,24 @@ def test_get_obs_scene_switching_enabled_raises_for_invalid_value(monkeypatch):
 def test_get_obs_scene_switching_enabled_parses_bool_string(monkeypatch, raw, expected):
     monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", raw)
     assert get_obs_scene_switching_enabled() is expected
+
+
+def test_get_youtube_chat_dive_time_enabled_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("YOUTUBE_CHAT_DIVE_TIME_ENABLED", raising=False)
+    with pytest.raises(ConfigError, match="YOUTUBE_CHAT_DIVE_TIME_ENABLED"):
+        get_youtube_chat_dive_time_enabled()
+
+
+def test_get_youtube_chat_dive_time_enabled_raises_for_invalid_value(monkeypatch):
+    monkeypatch.setenv("YOUTUBE_CHAT_DIVE_TIME_ENABLED", "yes")
+    with pytest.raises(ConfigError, match="YOUTUBE_CHAT_DIVE_TIME_ENABLED"):
+        get_youtube_chat_dive_time_enabled()
+
+
+@pytest.mark.parametrize("raw,expected", [("true", True), ("false", False)])
+def test_get_youtube_chat_dive_time_enabled_parses_bool_string(monkeypatch, raw, expected):
+    monkeypatch.setenv("YOUTUBE_CHAT_DIVE_TIME_ENABLED", raw)
+    assert get_youtube_chat_dive_time_enabled() is expected
 
 
 def test_get_editable_settings_returns_current_env_values(monkeypatch):

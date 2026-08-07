@@ -14,7 +14,7 @@
 `RANK_GRAPH_MATCH_LIMIT`・`OBS_WEBSOCKET_HOST`・
 `OBS_WEBSOCKET_PORT`・`OBS_WEBSOCKET_PASSWORD`・`OBS_SCENE_IN_MATCH`・
 `OBS_SCENE_BETWEEN_MATCHES`・`OBS_BROWSER_SOURCE_NAMES`・
-`OBS_SCENE_SWITCHING_ENABLED`)は、
+`OBS_SCENE_SWITCHING_ENABLED`・`YOUTUBE_CHAT_DIVE_TIME_ENABLED`)は、
 Python側にフォールバック用のデフォルト値を一切持たない。`.env`に値が設定されて
 いることを前提に動作し、未設定または不正な値の場合は起動時に`ConfigError`を
 送出して明示的に失敗する(暗黙のデフォルトに気づかないまま運用してしまうことを
@@ -47,6 +47,14 @@ OBSシーン自動切替(`obs_control.ObsSceneController.set_in_match`)を実際
 ソース再読み込み等)は維持したまま、シーン切替の呼び出しだけをスキップする
 (配信によっては手動でシーンを操作したい場合があるための切り替え手段。
 既定値は`"true"`で、これまでの「常に自動切替」という挙動を変えない)。
+
+`YOUTUBE_CHAT_DIVE_TIME_ENABLED`(Issue #265)は`"true"`/`"false"`の文字列で、
+YouTube Liveのチャットコメントから「次に潜る時間」を検知するバックグラウンド
+スレッド(`youtube_chat.DiveTimeWatcher`)を起動するかどうかを制御する。
+`OBS_SCENE_SWITCHING_ENABLED`と異なり、無効時は接続自体を維持する理由が
+無いため(OBSブラウザソースの再読み込みのような「接続だけは維持したい」
+副作用が無い)、スレッドそのものを起動しない。配信ごとに調整する値ではなく
+セットアップ時に一度決める値のため、`/admin`の編集対象(下記5項目)には含めない。
 
 `ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・
 `RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`の5項目のみ、
@@ -295,6 +303,24 @@ def get_goal_record_mode() -> str:
     値の場合はConfigErrorを送出する(database.db.save_goal参照)。
     """
     return _validate_goal_record_mode(_require_env("GOAL_RECORD_MODE"))
+
+
+def _validate_youtube_chat_dive_time_enabled(value: str) -> str:
+    if value not in _VALID_BOOL_STRINGS:
+        raise ConfigError(
+            f"YOUTUBE_CHAT_DIVE_TIME_ENABLEDの値が不正です: {value}"
+            f"({'/'.join(_VALID_BOOL_STRINGS)}のいずれかを指定してください)"
+        )
+    return value
+
+
+def get_youtube_chat_dive_time_enabled() -> bool:
+    """YouTube Liveのチャットコメントから「次に潜る時間」を検知するバックグラウンド
+    スレッド(youtube_chat.DiveTimeWatcher)を起動するかどうかを取得する(Issue #265)。
+
+    無効時はスレッド自体を起動しない。未設定・不正な値の場合はConfigErrorを送出する。
+    """
+    return _validate_youtube_chat_dive_time_enabled(_require_env("YOUTUBE_CHAT_DIVE_TIME_ENABLED")) == "true"
 
 
 _EDITABLE_ENV_KEYS = (

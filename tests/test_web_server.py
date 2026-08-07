@@ -1281,6 +1281,7 @@ def test_overlay_refresh_script_is_served_and_reads_the_page_it_is_embedded_in(t
         "/overlay/goal-stats",
         "/overlay/match-log",
         "/overlay/rank-delta-distribution",
+        "/overlay/dive-time",
     ],
 )
 def test_overlay_pages_include_refresh_script_with_default_interval(tmp_path: Path, path: str, monkeypatch):
@@ -1323,6 +1324,7 @@ def test_overlay_vs_rank_comparison_page_uses_shorter_refresh_interval(tmp_path:
         "/overlay/match-log",
         "/overlay/vs-rank-comparison",
         "/overlay/rank-delta-distribution",
+        "/overlay/dive-time",
     ],
 )
 def test_overlay_pages_have_no_debug_bg_style_by_default(tmp_path: Path, path: str, monkeypatch):
@@ -1351,6 +1353,7 @@ def test_overlay_pages_have_no_debug_bg_style_by_default(tmp_path: Path, path: s
         "/overlay/match-log",
         "/overlay/vs-rank-comparison",
         "/overlay/rank-delta-distribution",
+        "/overlay/dive-time",
     ],
 )
 def test_overlay_pages_apply_debug_bg_style_when_query_param_present(tmp_path: Path, path: str, monkeypatch):

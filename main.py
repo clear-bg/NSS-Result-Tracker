@@ -51,6 +51,7 @@ from nss_tracker.config import (
     get_rank_graph_match_limit,
     get_web_host,
     get_web_port,
+    get_youtube_chat_dive_time_enabled,
 )
 from nss_tracker.database import db
 from nss_tracker.detection.goal import _get_name_reader
@@ -67,6 +68,7 @@ from nss_tracker.state.match_state import (
 from nss_tracker.timeutil import JST, now_jst
 from nss_tracker.web.runner import start_web_server_thread
 from nss_tracker.web.server import create_app
+from nss_tracker.youtube_chat import DiveTimeWatcher
 
 LOG_DIR = Path("logs")
 # Issue #255: 実キャプチャ時のfpsは.envのCAPTURE_FPSを使う(get_capture_fps参照)。
@@ -405,6 +407,7 @@ def main() -> None:
         get_rank_graph_match_limit()  # 値自体はweb/server.pyが都度参照するため、ここでは早期に検証するだけ
         get_rank_delta_distribution_scope()  # 値自体はweb/server.pyが都度参照するため、ここでは早期に検証するだけ
         get_obs_scene_switching_enabled()  # 値自体はobs_control.pyが都度参照するため、ここでは早期に検証するだけ
+        youtube_chat_dive_time_enabled = get_youtube_chat_dive_time_enabled()
     except ConfigError as exc:
         logger.error("設定エラー: %s", exc)
         sys.exit(1)
@@ -439,9 +442,15 @@ def main() -> None:
         scene_between_matches=obs_scene_between_matches,
         browser_source_names=obs_browser_source_names,
     )
+    dive_time_watcher: Optional[DiveTimeWatcher] = None
+    if youtube_chat_dive_time_enabled:
+        dive_time_watcher = DiveTimeWatcher()
+        dive_time_watcher.start()
     try:
         run(reader, machine, conn, session_id, obs_controller)
     finally:
+        if dive_time_watcher is not None:
+            dive_time_watcher.stop()
         obs_controller.close()
         web_handle.stop()
         db.end_session(conn, session_id)
