@@ -103,8 +103,8 @@ def test_save_match_result_without_session_id_leaves_it_null():
     assert row["session_id"] is None
 
 
-def test_save_match_result_corrects_previous_rank_after_when_within_threshold(caplog):
-    """Issue #179: 直前の試合のrank_afterと今回のrank_beforeの差が閾値以内なら、
+def test_save_match_result_corrects_previous_rank_after_with_small_diff(caplog):
+    """Issue #179: 直前の試合のrank_afterと今回のrank_beforeに差があれば、
     続いている試合とみなして直前の試合のrank_afterを補正することを確認する。
     """
     conn = connect(":memory:")
@@ -133,9 +133,9 @@ def test_save_match_result_corrects_previous_rank_after_when_within_threshold(ca
     assert "補正しました" in caplog.text
 
 
-def test_save_match_result_does_not_correct_when_diff_exceeds_threshold():
-    """Issue #179: 差が閾値を超える場合は、間に未記録の試合を挟んだ可能性が
-    あるとみなし補正しないことを確認する。
+def test_save_match_result_corrects_previous_rank_after_even_when_diff_is_large(caplog):
+    """Issue #253: 差分が大きくても、試合間でランクは変動しないという前提のもと
+    常に直前の試合のrank_afterを補正することを確認する(閾値による補正スキップは撤廃済み)。
     """
     conn = connect(":memory:")
     first = MatchResult(
@@ -149,15 +149,18 @@ def test_save_match_result_does_not_correct_when_diff_exceeds_threshold():
 
     second = MatchResult(
         result="win",
-        rank_before=39.50,  # 1試合分の通常変動幅を大きく超える差
+        rank_before=39.50,  # 1試合分の通常変動幅を大きく超える差でも補正する
         rank_after=39.70,
         league_changed=None,
         detected_at=datetime.now(timezone.utc),
     )
-    save_match_result(conn, second)
+    with caplog.at_level("INFO", logger="nss_tracker.database"):
+        save_match_result(conn, second)
 
     row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
-    assert row["rank_after"] == 38.60
+    assert row["rank_after"] == 39.50
+    assert f"matches.id={first_id}" in caplog.text
+    assert "補正しました" in caplog.text
 
 
 def test_save_match_result_does_not_correct_when_previous_rank_after_is_none():

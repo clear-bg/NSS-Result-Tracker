@@ -1141,6 +1141,8 @@ def test_rank_delta_distribution_endpoint_separates_win_and_lose_and_excludes_dr
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     session_id = db.create_session(conn)
+    # Issue #253: 直前の試合のrank_afterは次の試合のrank_beforeで常に補正されるため、
+    # 試合間の連続性を保った値にする(そうしないと後続の補正で意図したdeltaが崩れる)
     db.save_match_result(
         conn,
         MatchResult(result="win", rank_before=10, rank_after=12, league_changed=None, detected_at=now_jst()),
@@ -1148,7 +1150,7 @@ def test_rank_delta_distribution_endpoint_separates_win_and_lose_and_excludes_dr
     )
     db.save_match_result(
         conn,
-        MatchResult(result="lose", rank_before=10, rank_after=8, league_changed=None, detected_at=now_jst()),
+        MatchResult(result="lose", rank_before=12, rank_after=10, league_changed=None, detected_at=now_jst()),
         session_id=session_id,
     )
     db.save_match_result(
@@ -1214,9 +1216,11 @@ def test_rank_delta_distribution_endpoint_uses_all_matches_when_scope_is_all(tmp
         session_id=old_session_id,
     )
     current_session_id = db.create_session(conn)
+    # Issue #253: rank_after補正はセッションを跨いでも常に働くため、直前の試合の
+    # rank_after(13)と連続するrank_beforeにする
     db.save_match_result(
         conn,
-        MatchResult(result="lose", rank_before=10, rank_after=9, league_changed=None, detected_at=now_jst()),
+        MatchResult(result="lose", rank_before=13, rank_after=12, league_changed=None, detected_at=now_jst()),
         session_id=current_session_id,
     )
     conn.close()
