@@ -16,10 +16,15 @@ from nss_tracker.web.server import (
     _OVERLAY_REFRESH_INTERVAL_MS,
     _OVERLAY_WIDGET_LABELS,
     _RANK_GRAPH_LEFT_PADDING,
+    _RANK_GRAPH_MARGIN_BOTTOM,
     _RANK_GRAPH_MARGIN_LEFT,
     _RANK_GRAPH_MARGIN_RIGHT,
+    _RANK_GRAPH_MARGIN_TOP,
     _RANK_GRAPH_TITLE,
+    _RANK_GRAPH_VIEWBOX_HEIGHT_MAX,
+    _RANK_GRAPH_VIEWBOX_HEIGHT_MIN,
     _RANK_GRAPH_VIEWBOX_WIDTH,
+    _RANK_GRAPH_Y_PX_PER_UNIT,
     _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS,
     _aggregate_goal_stats,
     _build_match_log_badges,
@@ -29,6 +34,7 @@ from nss_tracker.web.server import (
     _overlay_widget_links,
     _percentile,
     _rank_delta_axis_max,
+    _rank_graph_height,
     _rank_graph_x_axis_max,
     _rank_graph_x_tick_values,
     _rank_graph_y_bounds,
@@ -276,6 +282,37 @@ def test_rank_graph_y_tick_step_widens_for_outlier_range():
     """Issue #123: OCR誤読等の外れ値で軸の範囲が広がっても、きりの良い間隔に広がることを確認する。"""
     assert _rank_graph_y_tick_step(411) == 50
     assert _rank_graph_y_tick_step(0) == 1
+
+
+def test_rank_graph_height_stays_at_minimum_for_narrow_range():
+    """Issue #281: 通常運用の狭い範囲では、これまで通り220pxのまま変わらないことを確認する。"""
+    assert _rank_graph_height(4) == _RANK_GRAPH_VIEWBOX_HEIGHT_MIN
+
+
+def test_rank_graph_height_reaches_maximum_at_ten_ticks_with_step_one():
+    """Issue #281: 目盛り間隔1のまま10本に達するあたりでちょうど350pxに到達し、
+    それ以上は範囲が広がっても頭打ちになることを確認する(ユーザーとの相談で決定)。
+    """
+    height_at_boundary = _rank_graph_height(9)
+    assert height_at_boundary == _RANK_GRAPH_VIEWBOX_HEIGHT_MAX
+
+    plot_height = height_at_boundary - _RANK_GRAPH_MARGIN_TOP - _RANK_GRAPH_MARGIN_BOTTOM
+    max_tick_count = plot_height / _RANK_GRAPH_Y_PX_PER_UNIT
+    assert _rank_graph_y_tick_step(9, max_tick_count) == 1
+
+    assert _rank_graph_height(100) == _RANK_GRAPH_VIEWBOX_HEIGHT_MAX
+
+
+def test_rank_graph_height_does_not_widen_tick_step_before_reaching_maximum():
+    """整数pxへの丸め方によっては、350pxに達する前の段階で目盛り本数の逆算値が
+    実際のaxis_rangeよりわずかに小さくなり、間隔が早まって広がってしまう境界ケースが
+    あったため、350pxに達するまでは常に間隔1のままであることを回帰確認する。
+    """
+    for axis_range in range(1, 10):
+        height = _rank_graph_height(axis_range)
+        plot_height = height - _RANK_GRAPH_MARGIN_TOP - _RANK_GRAPH_MARGIN_BOTTOM
+        max_tick_count = plot_height / _RANK_GRAPH_Y_PX_PER_UNIT
+        assert _rank_graph_y_tick_step(axis_range, max_tick_count) == 1
 
 
 def test_rank_history_returns_all_matches_when_limit_env_is_all(tmp_path: Path, monkeypatch):
