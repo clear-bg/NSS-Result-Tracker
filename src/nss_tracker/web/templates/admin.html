@@ -16,7 +16,7 @@
 <h2>配信ウィジェット一覧</h2>
 <ul class="admin-overlay-links">
   {% for link in overlay_links %}
-  <li><a href="{{ link.path }}" target="_blank" rel="noopener">{{ link.label }}</a></li>
+  <li><a href="{{ link.path }}?debug_bg=1" target="_blank" rel="noopener">{{ link.label }}</a></li>
   {% endfor %}
 </ul>
 <form method="post" action="/admin">

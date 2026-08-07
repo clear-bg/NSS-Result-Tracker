@@ -6,7 +6,7 @@
 <link rel="stylesheet" href="/static/overlay.css">
 <link rel="stylesheet" href="/static/rank_graph.css">
 </head>
-<body>
+<body{{ debug_bg_style | safe }}>
 {{ svg | safe }}
 <script src="/static/overlay-refresh.js" data-interval-ms="{{ refresh_interval_ms }}"></script>
 </body>

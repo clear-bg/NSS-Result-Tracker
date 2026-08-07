@@ -5,7 +5,7 @@
 <title>ゴール/アシスト統計</title>
 <link rel="stylesheet" href="/static/overlay.css">
 </head>
-<body>
+<body{{ debug_bg_style | safe }}>
 {% if players %}
 {% if single_player_mode %}
 {% set player = players[0] %}
