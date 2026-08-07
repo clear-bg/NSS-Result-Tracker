@@ -217,14 +217,7 @@ class DiveTimeWatcher:
         # 起動時点で既にチャット欄に溜まっている過去コメントを「今打たれたコメント」
         # として誤検知しないよう、最初の1ページはnextPageTokenの取得のみに使う
         self._skip_next_result = True
-        logger.info(
-            "配信中の放送を検出しました。チャット監視を開始します"
-            "(liveChatId=%s, title=%r, channelId=%s, 該当件数=%d)",
-            self._live_chat_id,
-            items[0]["snippet"].get("title"),
-            items[0]["snippet"].get("channelId"),
-            len(items),
-        )
+        logger.info("配信中の放送を検出しました。チャット監視を開始します(liveChatId=%s)", self._live_chat_id)
 
     def _poll_chat_messages(self) -> None:
         token = self._access_token()
@@ -237,7 +230,7 @@ class DiveTimeWatcher:
             params["pageToken"] = self._next_page_token
         try:
             response = httpx.get(
-                f"{_API_BASE}/liveChatMessages",
+                f"{_API_BASE}/liveChat/messages",
                 params=params,
                 headers={"Authorization": f"Bearer {token}"},
                 timeout=_HTTP_TIMEOUT_SECONDS,
@@ -245,20 +238,8 @@ class DiveTimeWatcher:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
-                logger.info(
-                    "配信が終了したため、放送の再検出に戻ります"
-                    "(診断用、Issue #269: url=%s, liveChatId=%s, "
-                    "reason_phrase=%r, headers=%s, レスポンス本文=%s)",
-                    exc.response.url,
-                    self._live_chat_id,
-                    exc.response.reason_phrase,
-                    dict(exc.response.headers),
-                    exc.response.text,
-                )
+                logger.info("配信が終了したため、放送の再検出に戻ります")
                 self._live_chat_id = None
-                # 原因未特定の404が連続する場合にクォータを浪費しないよう待機する
-                # (Issue #269調査中の暫定対応)
-                self._stopped.wait(_ERROR_BACKOFF_SECONDS)
                 return
             raise
 
