@@ -11,9 +11,12 @@ OAuth 2.0(installed app flow)で自分のGoogleアカウントに一度だけ同
 リポジトリルートの`token.json`にリフレッシュトークンを保存する
 (`scripts/youtube_oauth_setup.py`を参照、初回のみ手動実行)。動画ID/放送を
 手入力させる案もあったが、配信のたびに手入力する手間を避けるため、OAuth認可した
-自分のチャンネルの`liveBroadcasts.list(mine=true, broadcastStatus="active")`で
-配信中の放送を自動検出する方式を選んだ。`google-api-python-client`(discovery
+自分のチャンネルの`liveBroadcasts.list(broadcastStatus="active")`で配信中の
+放送を自動検出する方式を選んだ。`google-api-python-client`(discovery
 ベースの重量級クライアント)は使わず、`httpx`での素のREST呼び出しで済ませている。
+`mine`と`broadcastStatus`はYouTube Data API v3の仕様上どちらか一方のみ指定
+可能なフィルタのため、`broadcastStatus`のみを指定する(Issue #267、同時指定は
+400 Bad Requestになる)。
 
 トークン読み込みに失敗した場合(`token.json`が無い、壊れている等)は
 `obs_control.ObsSceneController`の接続失敗時と同じ考え方で、WARNINGログを
@@ -200,7 +203,7 @@ class DiveTimeWatcher:
             return
         response = httpx.get(
             f"{_API_BASE}/liveBroadcasts",
-            params={"part": "snippet", "mine": "true", "broadcastStatus": "active"},
+            params={"part": "snippet", "broadcastStatus": "active"},
             headers={"Authorization": f"Bearer {token}"},
             timeout=_HTTP_TIMEOUT_SECONDS,
         )
