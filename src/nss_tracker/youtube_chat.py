@@ -247,8 +247,12 @@ class DiveTimeWatcher:
             if exc.response.status_code == 404:
                 logger.info(
                     "配信が終了したため、放送の再検出に戻ります"
-                    "(診断用、Issue #269: liveChatId=%s, レスポンス本文=%s)",
+                    "(診断用、Issue #269: url=%s, liveChatId=%s, "
+                    "reason_phrase=%r, headers=%s, レスポンス本文=%s)",
+                    exc.response.url,
                     self._live_chat_id,
+                    exc.response.reason_phrase,
+                    dict(exc.response.headers),
                     exc.response.text,
                 )
                 self._live_chat_id = None
