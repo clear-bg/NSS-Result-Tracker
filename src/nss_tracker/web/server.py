@@ -34,6 +34,14 @@ OBS_SCENE_SWITCHING_ENABLED(Issue #248)、`config.py`の`_EDITABLE_ENV_KEYS`参�
 POST後は同じ`/admin`へのリダイレクト(PRGパターン)で結果(成功/エラー文言)を
 クエリパラメータ経由で表示し、ブラウザの再読み込みで二重送信されないようにする。
 
+Issue #257: `/admin`には上記設定フォームに加え、各`/overlay/xxx`ウィジェットへの
+リンク一覧も表示する(OBSのブラウザソースごとに分かれているURLへ、動作確認等で
+すぐアクセスできるようにするため)。リンク先はテンプレートにハードコードせず、
+`_overlay_widget_links()`が実際に登録された`/overlay/xxx`ルート(`app.routes`)から
+機械的に集める。表示ラベルのみ`_OVERLAY_WIDGET_LABELS`で個別に管理し、新しい
+overlayルートを追加した際にラベルの追記を忘れるとアプリ起動時にRuntimeErrorで
+気づける設計にした。
+
 エンドポイントごとに新規のsqlite3コネクションを開いて処理後すぐ閉じる。
 sqlite3のコネクションはデフォルトでは開いたスレッド以外から使えず
 (check_same_thread=True)、FastAPI/uvicornは同期defのエンドポイントを
@@ -794,6 +802,43 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
     return f"{svg_open}{panel_svg}{title_svg}{''.join(axis_svg)}{''.join(rows_svg)}</svg>"
 
 
+# Issue #257: /adminページに表示する各overlayウィジェットへのリンク一覧の表示ラベル。
+# キーは実際に登録されているoverlayルートのパス。リンク自体は_overlay_widget_links()が
+# create_app()に実際に登録されたルート(app.routes)から機械的に集めるため、パスを
+# ここやテンプレート側に別途書き写す必要は無い。表示ラベルのみここで個別に管理し、
+# 新しいoverlayルートを追加した際にこの辞書への追記を忘れると、_overlay_widget_links()が
+# 起動時(create_app呼び出し時)にRuntimeErrorで気づける設計にした
+_OVERLAY_WIDGET_LABELS = {
+    "/overlay/winrate": "勝率",
+    "/overlay/rank-graph": "ランク推移グラフ",
+    "/overlay/goal-stats": "ゴール/アシスト統計",
+    "/overlay/match-log": "直近試合結果ログ",
+    "/overlay/vs-rank-comparison": "対戦相手ランク比較",
+    "/overlay/rank-delta-distribution": "ランク増減分布",
+}
+
+
+def _overlay_widget_links(app: FastAPI) -> list[dict]:
+    """登録済みの/overlay/xxxルートから、/adminページ用のリンク一覧を組み立てる。
+
+    パスはapp.routesから実際に登録されたものを集めるため、新しいoverlayルートを
+    追加すれば自動的にリンク集に反映される(テンプレート側の追記は不要)。
+    表示ラベルが_OVERLAY_WIDGET_LABELSに無い場合はRuntimeErrorで即座に失敗させ、
+    ラベルの追記漏れに気づけるようにする(Issue #257)。
+    """
+    links = []
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        if path is None or not path.startswith("/overlay/"):
+            continue
+        if path not in _OVERLAY_WIDGET_LABELS:
+            raise RuntimeError(
+                f"overlayルート{path}の表示ラベルが_OVERLAY_WIDGET_LABELSに登録されていません"
+            )
+        links.append({"path": path, "label": _OVERLAY_WIDGET_LABELS[path]})
+    return links
+
+
 def create_app(db_path: Path) -> FastAPI:
     app = FastAPI()
     app.mount("/static", StaticFiles(directory=_WEB_DIR / "static"), name="static")
@@ -817,7 +862,12 @@ def create_app(db_path: Path) -> FastAPI:
 
     @app.get("/admin")
     def admin(request: Request, status: Optional[str] = None, error: Optional[str] = None):
-        context = {"settings": get_editable_settings(), "status": status, "error": error}
+        context = {
+            "settings": get_editable_settings(),
+            "status": status,
+            "error": error,
+            "overlay_links": app.state.overlay_links,
+        }
         return _TEMPLATES.TemplateResponse(request, "admin.html", context)
 
     @app.post("/admin")
@@ -946,5 +996,10 @@ def create_app(db_path: Path) -> FastAPI:
         svg = _render_rank_delta_box_plot_svg(distribution["win"], distribution["lose"])
         context = {"svg": svg, "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS}
         return _TEMPLATES.TemplateResponse(request, "overlay_rank_delta_distribution.html", context)
+
+    # Issue #257: 全overlayルートの登録が終わった時点で1回だけ組み立てる
+    # (リクエストのたびに再計算する必要は無く、ラベル追記漏れがあれば
+    # アプリ起動時=create_app()呼び出し時点でRuntimeErrorにより気づける)
+    app.state.overlay_links = _overlay_widget_links(app)
 
     return app
