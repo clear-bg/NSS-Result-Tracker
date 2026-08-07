@@ -569,8 +569,21 @@ def test_aggregate_goal_stats_excludes_disallowed_players(monkeypatch):
     assert players == [{"name": "Alice", "goals": 1, "assists": 0, "involvement": 1}]
 
 
-def test_aggregate_goal_stats_returns_empty_list_for_no_rows():
+def test_aggregate_goal_stats_returns_empty_list_for_no_rows_and_no_allowed_players(monkeypatch):
+    monkeypatch.delenv("ALLOWED_PLAYERS", raising=False)
     assert _aggregate_goal_stats([]) == []
+
+
+def test_aggregate_goal_stats_returns_zero_counts_for_allowed_players_with_no_goals(monkeypatch):
+    """Issue #271: ゴールが1件も無くても、許可リストプレイヤーは0件として結果に含める。"""
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+
+    players = _aggregate_goal_stats([])
+
+    assert players == [
+        {"name": "Alice", "goals": 0, "assists": 0, "involvement": 0},
+        {"name": "Bob", "goals": 0, "assists": 0, "involvement": 0},
+    ]
 
 
 def test_goal_stats_endpoint_scoped_to_current_session(tmp_path: Path, monkeypatch):
@@ -609,7 +622,8 @@ def test_goal_stats_endpoint_scoped_to_current_session(tmp_path: Path, monkeypat
     }
 
 
-def test_goal_stats_endpoint_empty_when_no_sessions(tmp_path: Path):
+def test_goal_stats_endpoint_empty_when_no_sessions_and_no_allowed_players(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("ALLOWED_PLAYERS", raising=False)
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
@@ -618,6 +632,19 @@ def test_goal_stats_endpoint_empty_when_no_sessions(tmp_path: Path):
     response = client.get("/api/goal-stats")
 
     assert response.json() == {"players": []}
+
+
+def test_goal_stats_endpoint_zero_counts_when_no_sessions(tmp_path: Path, monkeypatch):
+    """Issue #271: 配信セッションが1件も無くても、許可リストプレイヤーは0件として返す。"""
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/goal-stats")
+
+    assert response.json() == {"players": [{"name": "Alice", "goals": 0, "assists": 0, "involvement": 0}]}
 
 
 def test_overlay_goal_stats_page_shows_readable_summary(tmp_path: Path, monkeypatch):
@@ -669,7 +696,8 @@ def test_overlay_goal_stats_page_hides_name_when_single_allowed_player(tmp_path:
     assert "得点 1 / アシスト 0 (関与 1)" in response.text
 
 
-def test_overlay_goal_stats_page_shows_empty_message_when_no_data(tmp_path: Path):
+def test_overlay_goal_stats_page_shows_empty_message_when_no_allowed_players(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("ALLOWED_PLAYERS", raising=False)
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
@@ -678,6 +706,21 @@ def test_overlay_goal_stats_page_shows_empty_message_when_no_data(tmp_path: Path
     response = client.get("/overlay/goal-stats")
 
     assert "データがありません" in response.text
+
+
+def test_overlay_goal_stats_page_shows_zero_when_no_goals_yet(tmp_path: Path, monkeypatch):
+    """Issue #271: 許可リストプレイヤーがいてもゴールが無い場合は0を表示する(データがありません、ではない)。"""
+    monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/goal-stats")
+
+    assert "データがありません" not in response.text
+    assert "Alice: 得点 0 / アシスト 0 (関与 0)" in response.text
+    assert "Bob: 得点 0 / アシスト 0 (関与 0)" in response.text
 
 
 def test_match_log_returns_recent_results_oldest_first(tmp_path: Path):
