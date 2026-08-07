@@ -19,7 +19,9 @@
     justify-content: center;
     gap: 0.25em;
     margin: 0;
-    color: #9fb2b8;
+    /* 実機確認で薄く感じるとのフィードバックを受け、白寄りに調整(Issue #272の
+       追加調整) */
+    color: #e2ecee;
     /* 他ウィジェット(winrate・goal-stats等)の日本語ラベルはoverlay.cssのbody
        font-size(34px)をそのまま使っているため、それに揃える(Issue #272の
        追加調整)。菱形アクセントはem単位にして、この値と一緒にスケールさせる */
@@ -30,8 +32,8 @@
 .dive-time-caption::before {
     content: "";
     display: inline-block;
-    width: 0.35em;
-    height: 0.35em;
+    width: 0.45em;
+    height: 0.45em;
     border-radius: 1px;
     background: #57c2d9;
     transform: rotate(45deg);
