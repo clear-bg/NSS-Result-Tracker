@@ -123,6 +123,10 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
   - DBは`matches`/`vs_slot_ranks`(試合結果確定時にまとめて保存する履歴データ、保存タイミング・スキーマとも変更なし)とは別に、新しい`vs_rank_snapshots`/`vs_rank_snapshot_slots`テーブルを追加した。`main.py`が`pop_vs_screen_event()`をポーリングし、Noneでなければその場で`db.save_vs_rank_snapshot()`を呼んで即書き込む。ウィジェット側(`web/server.py`の`_fetch_vs_rank_comparison`)はこのスナップショットの最新1件だけを見るようにし、`matches`/`vs_slot_ranks`への依存を無くした
   - VS画面を見逃した試合が終わった際(`result.vs_mine_ranks`/`vs_opponent_ranks`が両方空)は、`_record_match_result`が明示的に空スナップショット(チームカラーNULL・スロット行無し)を書き込み、ウィジェットの表示を前の試合の値のまま残さずnone/noneにリセットする(既存の見逃し時のフォールバック挙動を、試合終了時点のタイミングのまま新しいテーブル経由で維持している)
 
+### 勝率ウィジェットの表示内容(Issue #261)
+
+`/overlay/winrate`は配信セッション・累計の試合数/勝敗数/勝率のみを表示する。以前は右側に許可リストプレイヤー全員分の得点・アシスト合計(`GOAL_ASSIST_TOTALS_SCOPE`、Issue #132)も表示していたが、`/overlay/goal-stats`ウィジェットと表示内容が重複していたため削除した(ユーザーとの相談で決定)。`GOAL_ASSIST_TOTALS_SCOPE`設定項目・`_fetch_goal_assist_totals()`・`/api/goal-assist-totals`エンドポイントは、この表示のためだけに存在していたため他に使い手が無くなり、あわせて削除した。
+
 ### `src/` のモジュール構成
 
 ```

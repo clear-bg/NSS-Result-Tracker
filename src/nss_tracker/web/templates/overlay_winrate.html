@@ -8,7 +8,6 @@
 <body{{ debug_bg_style | safe }}>
 <p>配信セッション: {{ session.total }}試合(win {{ session.win }} / lose {{ session.lose }} / draw {{ session.draw }}) 勝率 {{ session_win_rate_text }}</p>
 <p>累計: {{ cumulative.total }}試合(win {{ cumulative.win }} / lose {{ cumulative.lose }} / draw {{ cumulative.draw }}) 勝率 {{ cumulative_win_rate_text }}</p>
-<p>{{ goal_assist_totals_scope_label }}: 得点{{ goal_assist_totals.goals }} / アシスト{{ goal_assist_totals.assists }}</p>
 <script src="/static/overlay-refresh.js" data-interval-ms="{{ refresh_interval_ms }}"></script>
 </body>
 </html>

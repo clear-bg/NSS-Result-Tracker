@@ -83,14 +83,12 @@ from nss_tracker.config import (
     ConfigError,
     get_allowed_players,
     get_editable_settings,
-    get_goal_assist_totals_scope,
     get_rank_delta_distribution_scope,
     get_rank_graph_match_limit,
     is_allowed_player,
     update_editable_settings,
 )
 from nss_tracker.database.db import (
-    fetch_all_goals,
     fetch_all_matches,
     fetch_current_session_id,
     fetch_goals_for_session,
@@ -457,36 +455,6 @@ def _fetch_goal_stats(db_path: Path) -> list[dict]:
     finally:
         conn.close()
     return _aggregate_goal_stats(rows)
-
-
-_EMPTY_GOAL_ASSIST_TOTALS = {"goals": 0, "assists": 0}
-
-
-def _fetch_goal_assist_totals(db_path: Path, scope: str) -> dict:
-    """許可リストプレイヤー全員分の得点・アシスト合計を返す(Issue #132)。
-
-    scopeが"session"の場合は現在の配信セッションのみ、"all"の場合は累計
-    (全期間)を集計対象にする(config.get_goal_assist_totals_scope参照)。
-    プレイヤー別の内訳は不要なため、_aggregate_goal_statsの結果を合計するだけ。
-    セッションが1件も無い場合(scope="session"時)は0件として返す。
-    """
-    conn = _connect(db_path)
-    try:
-        if scope == "session":
-            session_id = fetch_current_session_id(conn)
-            rows = fetch_goals_for_session(conn, session_id) if session_id is not None else []
-        else:
-            rows = fetch_all_goals(conn)
-    finally:
-        conn.close()
-
-    players = _aggregate_goal_stats(rows)
-    if not players:
-        return dict(_EMPTY_GOAL_ASSIST_TOTALS)
-    return {
-        "goals": sum(p["goals"] for p in players),
-        "assists": sum(p["assists"] for p in players),
-    }
 
 
 # Issue #100: ∞/S/A帯を跨いで比較できるよう、帯内の数値を統一スケールに換算する
@@ -921,21 +889,14 @@ def create_app(db_path: Path) -> FastAPI:
         _logger.info("設定画面(/admin)から設定を更新しました: %s -> %s", old_values, new_values)
         return RedirectResponse("/admin?status=updated", status_code=303)
 
-    @app.get("/api/goal-assist-totals")
-    def goal_assist_totals() -> dict:
-        return _fetch_goal_assist_totals(db_path, get_goal_assist_totals_scope())
-
     @app.get("/overlay/winrate")
     def overlay_winrate(request: Request):
         winrate_data = _fetch_winrate(db_path)
-        goal_assist_totals_scope = get_goal_assist_totals_scope()
         context = {
             "session": winrate_data["session"],
             "session_win_rate_text": _format_win_rate_text(winrate_data["session"]),
             "cumulative": winrate_data["cumulative"],
             "cumulative_win_rate_text": _format_win_rate_text(winrate_data["cumulative"]),
-            "goal_assist_totals": _fetch_goal_assist_totals(db_path, goal_assist_totals_scope),
-            "goal_assist_totals_scope_label": "配信セッション" if goal_assist_totals_scope == "session" else "累計",
             "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
             "debug_bg_style": _overlay_debug_bg_style(request),
         }
