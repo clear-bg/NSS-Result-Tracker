@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>次に潜る時間</title>
+<link rel="stylesheet" href="/static/overlay.css">
+</head>
+<body{{ debug_bg_style | safe }}>
+{% if dive_time %}
+<p>次に潜る時間: {{ dive_time }}</p>
+{% else %}
+<p>次に潜る時間: 未設定</p>
+{% endif %}
+<script src="/static/overlay-refresh.js" data-interval-ms="{{ refresh_interval_ms }}"></script>
+</body>
+</html>
