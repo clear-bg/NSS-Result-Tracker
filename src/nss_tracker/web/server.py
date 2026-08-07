@@ -693,6 +693,9 @@ _BOX_PLOT_MARGIN_TOP = 49  # タイトル分の余白を含む(_BOX_PLOT_TITLE�
 _BOX_PLOT_MARGIN_BOTTOM = 30
 _BOX_PLOT_TITLE = "ランク増減分布"
 _BOX_PLOT_ROW_HEIGHT_RATIO = 0.5  # 各段の高さのうち箱ひげ図本体が占める割合
+# Issue #278: 「増加」「減少」ラベルの文字サイズを上げたのに合わせ、win/lose
+# 2段が詰まって見えないよう段の間に明示的な余白を設ける(ユーザーとの相談で決定)
+_BOX_PLOT_ROW_GAP = 10
 # 横軸(数直線)の目盛りは、この値の倍数(0.1, 0.2, 0.3, ...)の位置に固定間隔で置く
 # (#99の横軸と同じ考え方。ユーザーとの相談で決定)
 _BOX_PLOT_X_TICK_STEP = 0.1
@@ -762,12 +765,14 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
             f"{tick_value:.1f}</text>"
         )
 
-    row_height = (plot_bottom - plot_top) / len(_BOX_PLOT_ROWS)
+    total_row_gap = _BOX_PLOT_ROW_GAP * (len(_BOX_PLOT_ROWS) - 1)
+    row_height = (plot_bottom - plot_top - total_row_gap) / len(_BOX_PLOT_ROWS)
     box_height = row_height * _BOX_PLOT_ROW_HEIGHT_RATIO
 
     rows_svg = []
     for index, (category, category_label) in enumerate(_BOX_PLOT_ROWS):
-        row_center_y = plot_top + row_height * (index + 0.5)
+        row_top = plot_top + index * (row_height + _BOX_PLOT_ROW_GAP)
+        row_center_y = row_top + row_height / 2
         rows_svg.append(
             f'<text x="{plot_left - 8}" y="{row_center_y:.1f}" text-anchor="end" dominant-baseline="middle" '
             f'class="rank-delta-row-label">{category_label}</text>'

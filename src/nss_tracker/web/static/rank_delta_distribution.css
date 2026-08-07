@@ -55,11 +55,21 @@
     opacity: 0.8;
 }
 
-.rank-delta-tick-label,
-.rank-delta-row-label {
+.rank-delta-tick-label {
     fill: #fff;
     font-family: sans-serif;
     font-size: 17px;
+}
+
+/* Issue #278: 「増加」「減少」が読み取りづらいという指摘を受け、文字サイズを
+   17px→24pxに拡大した。font-weight 900も試したが、日本語では太字にしすぎると
+   画数の多い文字の線同士が潰れて逆に読みにくくなり、他のoverlay(勝率等の
+   プレーンテキスト)の通常の太さのほうが読みやすいとユーザーからフィードバックが
+   あったため、太さ自体は変えずサイズ拡大のみで対応する */
+.rank-delta-row-label {
+    fill: #fff;
+    font-family: sans-serif;
+    font-size: 24px;
 }
 
 .rank-delta-empty {
