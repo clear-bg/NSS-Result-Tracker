@@ -101,6 +101,7 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 - `main.py`起動時に`/admin`のURLを既定ブラウザで自動的に開く(`webbrowser.open()`、失敗してもWARNINGログのみでアプリ全体は継続する)。視聴者向けオーバーレイページ(`/overlay/xxx`、透過背景)とは別パスにし、`/admin`自体は`overlay.css`を使わず通常のブラウザ表示として組む(`static/admin.css`)
 - 更新結果は`nss_tracker.web`ロガーでログに残す(成功=INFO、拒否=WARNING)
 - Issue #257: `/admin`には上記の設定フォームに加え、各`/overlay/xxx`ウィジェットへのリンク一覧(クリックで別タブが開く、iframeでのライブプレビューはスコープ外)も表示する。OBSのブラウザソースごとにURLが分かれているため、動作確認等で個別に開き直す手間を減らす目的。リンク先はテンプレートにハードコードせず、`web/server.py`の`_overlay_widget_links()`が実際に登録された`/overlay/xxx`ルート(`app.routes`)から機械的に収集する。表示ラベルのみ`_OVERLAY_WIDGET_LABELS`辞書で個別管理し、新しいoverlayルートを追加した際にラベルの追記を忘れるとアプリ起動時(`create_app()`呼び出し時)にRuntimeErrorで気づける設計にした
+- Issue #259: `/overlay/xxx`は`static/overlay.css`でOBS用に背景を`transparent`・文字色を白にしているため、通常のブラウザ(背景白)で開くと白文字が読めない。`/admin`のリンク一覧(#257)はこの問題を避けるため、リンク先URLに`?debug_bg=1`を付ける。overlay側のルートハンドラは`_overlay_debug_bg_style()`でこのクエリパラメータの**有無のみ**を見て(値そのものはHTML/CSSインジェクションを避けるため受け取らない)、付いていれば`<body>`に固定の黒背景inline styleを追加する。OBSのブラウザソースが実際に登録するURLにはこのパラメータを付けないため、配信時の見た目には一切影響しない。`overlay-refresh.js`(#104)は`<body>`のinnerHTMLしか差し替えないため、このinline styleは自動更新後も保持される
 
 ### OBSシーン自動切り替え(`obs_control.py`、Issue #83)
 
