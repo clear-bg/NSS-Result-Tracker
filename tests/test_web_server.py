@@ -1395,6 +1395,64 @@ def test_overlay_vs_rank_comparison_page_uses_shorter_refresh_interval(tmp_path:
         f'<script src="/static/overlay-refresh.js" data-interval-ms="{_VS_RANK_COMPARISON_REFRESH_INTERVAL_MS}">'
     )
     assert expected_tag in response.text
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/overlay/winrate",
+        "/overlay/rank-graph",
+        "/overlay/goal-stats",
+        "/overlay/match-log",
+        "/overlay/vs-rank-comparison",
+        "/overlay/rank-delta-distribution",
+    ],
+)
+def test_overlay_pages_have_no_debug_bg_style_by_default(tmp_path: Path, path: str, monkeypatch):
+    """Issue #259: OBSのブラウザソースが実際に使うURL(パラメータ無し)では、
+    従来通り透過のまま(<body>にstyle属性を付けない)ことを確認する。
+    """
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("GOAL_ASSIST_TOTALS_SCOPE", "session")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get(path)
+
+    assert "<body>" in response.text
+    assert "background: #000" not in response.text
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/overlay/winrate",
+        "/overlay/rank-graph",
+        "/overlay/goal-stats",
+        "/overlay/match-log",
+        "/overlay/vs-rank-comparison",
+        "/overlay/rank-delta-distribution",
+    ],
+)
+def test_overlay_pages_apply_debug_bg_style_when_query_param_present(tmp_path: Path, path: str, monkeypatch):
+    """Issue #259: ?debug_bg=1が付いている場合のみ、<body>の背景を黒にする
+    (通常のブラウザで白文字が読めるようにするための暫定策)。値そのものは
+    見ないため、どんな値でも(空文字含め)パラメータの有無だけで判定する。
+    """
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("GOAL_ASSIST_TOTALS_SCOPE", "session")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get(path, params={"debug_bg": "1"})
+
+    assert '<body style="background: #000;">' in response.text
     assert _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS < _OVERLAY_REFRESH_INTERVAL_MS
 
 
@@ -1438,14 +1496,18 @@ def test_admin_get_shows_current_settings(tmp_path: Path, monkeypatch):
 
 
 def test_admin_get_shows_overlay_widget_links(tmp_path: Path):
-    """Issue #257: 各overlayウィジェットへのリンク一覧をリンク先付きで表示する。"""
+    """Issue #257: 各overlayウィジェットへのリンク一覧をリンク先付きで表示する。
+
+    Issue #259: 通常のブラウザで開いても白文字が読めるよう、リンク先には
+    ?debug_bg=1を付ける(OBS側に登録するURL自体にはこのパラメータを付けない)。
+    """
     client = TestClient(create_app(tmp_path / "test.db"))
 
     response = client.get("/admin")
 
     assert response.status_code == 200
     for path, label in _OVERLAY_WIDGET_LABELS.items():
-        assert f'<a href="{path}" target="_blank" rel="noopener">{label}</a>' in response.text
+        assert f'<a href="{path}?debug_bg=1" target="_blank" rel="noopener">{label}</a>' in response.text
 
 
 def test_overlay_widget_links_matches_registered_overlay_routes(tmp_path: Path):
