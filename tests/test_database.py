@@ -163,9 +163,10 @@ def test_save_match_result_corrects_previous_rank_after_even_when_diff_is_large(
     assert "補正しました" in caplog.text
 
 
-def test_save_match_result_does_not_correct_when_previous_rank_after_is_none():
-    """直前の試合のrank_afterがNone(バッジ読み取り失敗等)の場合は補正しようがないため
-    何もしないことを確認する。
+def test_save_match_result_backfills_when_previous_rank_after_is_none(caplog):
+    """Issue #285: 直前の試合のrank_afterがNone(バッジ読み取り失敗等)の場合でも、
+    今回の試合のrank_beforeで補完することを確認する(以前はNoneの場合スキップして
+    永久に欠損が残るバグがあった)。
     """
     conn = connect(":memory:")
     first = MatchResult(
@@ -184,10 +185,13 @@ def test_save_match_result_does_not_correct_when_previous_rank_after_is_none():
         league_changed=None,
         detected_at=datetime.now(timezone.utc),
     )
-    save_match_result(conn, second)
+    with caplog.at_level("INFO", logger="nss_tracker.database"):
+        save_match_result(conn, second)
 
     row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
-    assert row["rank_after"] is None
+    assert row["rank_after"] == 38.62
+    assert f"matches.id={first_id}" in caplog.text
+    assert "補正しました" in caplog.text
 
 
 def test_save_match_result_does_not_correct_when_current_rank_before_is_none():

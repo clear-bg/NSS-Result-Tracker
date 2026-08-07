@@ -318,18 +318,21 @@ def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_r
     """直前の試合のrank_afterを、今回の試合のrank_beforeを使って必要なら補正する(Issue #179/#253)。
 
     モジュールdocstring参照。試合間でランクは変動しない前提のため、差分の大小に
-    関わらず常に補正する(diffが0の場合のみ、更新の必要が無いためスキップする)。
-    league_changedの再計算は行わない(通常のrank_after読み取り誤差の範囲では
-    帯を跨ぐことは無い想定)。
+    関わらず常に補正する(値が完全に一致している場合のみ、更新の必要が無いため
+    スキップする)。Issue #285: 直前の試合でランクバッジを最後まで一度も読み取れず
+    rank_afterがNoneのまま記録されたケースも、このNoneの状態こそ「補正が特に
+    必要な状態」であるにも関わらず、以前はrank_afterがNoneの場合は無条件にスキップ
+    しており、そのままDBに欠損が残り続けるバグがあった。rank_afterの現在値が
+    Noneかどうかに関わらず常に補正するよう修正した。league_changedの再計算は
+    行わない(通常のrank_after読み取り誤差の範囲では帯を跨ぐことは無い想定)。
     """
     if current_rank_before is None:
         return
     row = conn.execute("SELECT id, rank_after FROM matches ORDER BY id DESC LIMIT 1").fetchone()
-    if row is None or row["rank_after"] is None:
+    if row is None:
         return
     previous_rank_after = row["rank_after"]
-    diff = abs(current_rank_before - previous_rank_after)
-    if diff == 0:
+    if previous_rank_after == current_rank_before:
         return
     now = now_jst().isoformat()
     conn.execute(
@@ -337,12 +340,17 @@ def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_r
         (current_rank_before, now, row["id"]),
     )
     conn.commit()
+    diff_text = (
+        f"、差分{abs(current_rank_before - previous_rank_after):.4f}"
+        if previous_rank_after is not None
+        else "、直前は未読み取り(None)だったため補完"
+    )
     logger.info(
-        "matches.id=%d のrank_afterを%sから%sに補正しました(次の試合のrank_before基準、差分%.4f)",
+        "matches.id=%d のrank_afterを%sから%sに補正しました(次の試合のrank_before基準%s)",
         row["id"],
         previous_rank_after,
         current_rank_before,
-        diff,
+        diff_text,
     )
 
 
