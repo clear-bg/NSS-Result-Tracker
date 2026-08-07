@@ -9,18 +9,21 @@
 .dive-time-caption {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 0.25em;
     margin: 0;
     color: #9fb2b8;
-    font-size: 15px;
+    /* 他ウィジェット(winrate・goal-stats等)の日本語ラベルはoverlay.cssのbody
+       font-size(34px)をそのまま使っているため、それに揃える(Issue #272の
+       追加調整)。菱形アクセントはem単位にして、この値と一緒にスケールさせる */
+    font-size: 34px;
     letter-spacing: 0.03em;
 }
 
 .dive-time-caption::before {
     content: "";
     display: inline-block;
-    width: 6px;
-    height: 6px;
+    width: 0.35em;
+    height: 0.35em;
     border-radius: 1px;
     background: #57c2d9;
     transform: rotate(45deg);
