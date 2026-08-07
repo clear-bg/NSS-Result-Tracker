@@ -100,6 +100,7 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 - 別プロセスのネイティブGUI(tkinter等)は不採用とし、既存のFastAPI Webダッシュボード(同一プロセス内・別スレッド)に`/admin`ページを追加する方式にした(ユーザーとの相談で決定)。理由: 対象5項目は呼び出しのたびに`os.environ`を読み直す実装のため、同一プロセス内で直接書き換えれば検知ループの再起動なしに反映できる。別プロセスのGUIだとプロセス間で値を受け渡す仕組みが別途必要になる
 - `main.py`起動時に`/admin`のURLを既定ブラウザで自動的に開く(`webbrowser.open()`、失敗してもWARNINGログのみでアプリ全体は継続する)。視聴者向けオーバーレイページ(`/overlay/xxx`、透過背景)とは別パスにし、`/admin`自体は`overlay.css`を使わず通常のブラウザ表示として組む(`static/admin.css`)
 - 更新結果は`nss_tracker.web`ロガーでログに残す(成功=INFO、拒否=WARNING)
+- Issue #257: `/admin`には上記の設定フォームに加え、各`/overlay/xxx`ウィジェットへのリンク一覧(クリックで別タブが開く、iframeでのライブプレビューはスコープ外)も表示する。OBSのブラウザソースごとにURLが分かれているため、動作確認等で個別に開き直す手間を減らす目的。リンク先はテンプレートにハードコードせず、`web/server.py`の`_overlay_widget_links()`が実際に登録された`/overlay/xxx`ルート(`app.routes`)から機械的に収集する。表示ラベルのみ`_OVERLAY_WIDGET_LABELS`辞書で個別管理し、新しいoverlayルートを追加した際にラベルの追記を忘れるとアプリ起動時(`create_app()`呼び出し時)にRuntimeErrorで気づける設計にした
 
 ### OBSシーン自動切り替え(`obs_control.py`、Issue #83)
 
