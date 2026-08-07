@@ -168,7 +168,7 @@ def test_overlay_winrate_page_shows_readable_summary(tmp_path: Path):
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")
-    assert "配信セッション: 3試合" in response.text
+    assert "今回: 3試合" in response.text
     assert "win 2 / lose 1 / draw 0" in response.text
     assert "勝率 66.7%" in response.text
     assert "累計: 3試合" in response.text
@@ -667,7 +667,7 @@ def test_overlay_goal_stats_page_shows_readable_summary(tmp_path: Path, monkeypa
 
     assert response.status_code == 200
     assert '<link rel="stylesheet" href="/static/overlay.css">' in response.text
-    assert "Alice: 得点 1 / アシスト 0 (関与 1)" in response.text
+    assert "今回: Alice: 得点 1 / アシスト 0 (関与 1)" in response.text
 
     css_response = client.get("/static/overlay.css")
     assert "background: transparent" in css_response.text
@@ -693,7 +693,7 @@ def test_overlay_goal_stats_page_hides_name_when_single_allowed_player(tmp_path:
     response = client.get("/overlay/goal-stats")
 
     assert "Alice" not in response.text
-    assert "得点 1 / アシスト 0 (関与 1)" in response.text
+    assert "今回: 得点 1 / アシスト 0 (関与 1)" in response.text
 
 
 def test_overlay_goal_stats_page_shows_empty_message_when_no_allowed_players(tmp_path: Path, monkeypatch):
@@ -719,8 +719,8 @@ def test_overlay_goal_stats_page_shows_zero_when_no_goals_yet(tmp_path: Path, mo
     response = client.get("/overlay/goal-stats")
 
     assert "データがありません" not in response.text
-    assert "Alice: 得点 0 / アシスト 0 (関与 0)" in response.text
-    assert "Bob: 得点 0 / アシスト 0 (関与 0)" in response.text
+    assert "今回: Alice: 得点 0 / アシスト 0 (関与 0)" in response.text
+    assert "今回: Bob: 得点 0 / アシスト 0 (関与 0)" in response.text
 
 
 def test_match_log_returns_recent_results_oldest_first(tmp_path: Path):
