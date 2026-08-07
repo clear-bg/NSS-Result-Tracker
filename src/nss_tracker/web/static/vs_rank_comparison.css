@@ -12,16 +12,17 @@
     display: inline-block;
     /* キャプション分の余白。marginではなくpaddingにするのは、キャプションを
        position: absoluteで浮かせているため、通常のフローに余白を作る必要が
-       あるため */
-    padding-top: 16px;
+       あるため(Issue #276でキャプションを拡大したのに合わせて広げた) */
+    padding-top: 20px;
 }
 
 .vs-rank-caption {
     position: absolute;
     top: -2px;
     left: 2px;
-    color: #aaa;
-    font-size: 11px;
+    /* 実機確認で薄く感じるとのフィードバックを受け、白寄りに調整(Issue #276) */
+    color: #e8e8e8;
+    font-size: 14px;
     letter-spacing: 0.2em;
     text-transform: uppercase;
 }
@@ -36,11 +37,11 @@
 }
 
 /* VSの文字はピルの数字より優先度が低い(あくまで数字同士の対戦を読みやすくする
-   補助)ため、ピルより小さく・薄い色にする */
+   補助)ため、ピルより小さくする。ただし実機確認で薄く感じるとのフィードバックを
+   受け、色自体はopacityで落とさず白寄りにした(Issue #276) */
 .vs-rank-vs {
-    color: #ccc;
-    font-size: 20px;
-    opacity: 0.8;
+    color: #eee;
+    font-size: 26px;
 }
 
 /* Issue #113: ゲーム内のライブスコア表示(角丸ピル背景+白い太字の数字)に

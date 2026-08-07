@@ -9,8 +9,10 @@
 <link rel="stylesheet" href="/static/dive_time.css">
 </head>
 <body{{ debug_bg_style | safe }}>
+<div class="dive-time-widget">
 <p class="dive-time-caption">次に潜る時間</p>
 <p class="dive-time-value">{{ dive_time or "未設定" }}</p>
+</div>
 <script src="/static/overlay-refresh.js" data-interval-ms="{{ refresh_interval_ms }}"></script>
 </body>
 </html>

@@ -541,9 +541,10 @@ def _format_vs_rank_value(summary: dict) -> str:
     このウィジェットは試合中(ゲーム画面が全画面の間)ゲーム映像に重ねて常時表示する
     想定のため、他のウィジェットと異なり文字数を極力減らす(ユーザーとの相談で決定、
     Issue #100)。値が無い場合(不明人数のみ等)は、直近スナップショット自体が無い
-    場合の表示(none VS none)と表記を揃えるため"none"を返す(Issue #113)。
+    場合の表示("-" VS "-")と表記を揃えるため"-"を返す(Issue #113、Issue #276で
+    "none"から変更)。
     """
-    return str(summary["total"]) if summary["total"] is not None else "none"
+    return str(summary["total"]) if summary["total"] is not None else "-"
 
 
 # Issue #99: 直近試合結果ログの対象範囲は#95(ランク推移グラフ)と同じく
@@ -1006,8 +1007,8 @@ def create_app(db_path: Path) -> FastAPI:
     def overlay_vs_rank_comparison(request: Request):
         comparison = _fetch_vs_rank_comparison(db_path)
         # スナップショットが1件も無い・直近の試合でVS画面を見逃した場合も表示形式
-        # 自体は崩さず、値をnoneにするだけにする(ユーザーとの相談で決定)。
-        # チームカラーも同様に検知できていない場合は_DEFAULT_TEAM_COLORにする
+        # 自体は崩さず、値を"-"にするだけにする(ユーザーとの相談で決定、Issue #276で
+        # "none"から変更)。チームカラーも同様に検知できていない場合は_DEFAULT_TEAM_COLORにする
         context = (
             {
                 "mine_value": _format_vs_rank_value(comparison["mine"]),
@@ -1017,8 +1018,8 @@ def create_app(db_path: Path) -> FastAPI:
             }
             if comparison is not None
             else {
-                "mine_value": "none",
-                "opponent_value": "none",
+                "mine_value": "-",
+                "opponent_value": "-",
                 "mine_team_color": _DEFAULT_TEAM_COLOR,
                 "opponent_team_color": _DEFAULT_TEAM_COLOR,
             }
