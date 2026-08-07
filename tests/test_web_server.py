@@ -893,9 +893,9 @@ def test_format_vs_rank_value_returns_total_as_string():
     assert _format_vs_rank_value({"total": 160, "known_count": 4, "unknown_count": 0}) == "160"
 
 
-def test_format_vs_rank_value_returns_none_when_total_missing():
-    """Issue #113: 直近試合自体が無い場合の表示(none VS none)と表記を揃える。"""
-    assert _format_vs_rank_value({"total": None, "known_count": 0, "unknown_count": 4}) == "none"
+def test_format_vs_rank_value_returns_dash_when_total_missing():
+    """Issue #113/#276: 直近試合自体が無い場合の表示("-" VS "-")と表記を揃える。"""
+    assert _format_vs_rank_value({"total": None, "known_count": 0, "unknown_count": 4}) == "-"
 
 
 def test_vs_rank_comparison_endpoint_uses_latest_snapshot(tmp_path: Path):
@@ -1017,8 +1017,8 @@ def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
     assert "160</span><span class=\"vs-rank-vs\">VS</span><span" in response.text
 
 
-def test_overlay_vs_rank_comparison_page_shows_none_placeholders_when_no_data(tmp_path: Path):
-    """データが無い場合も表示形式は崩さず、値をnoneにするだけにする。"""
+def test_overlay_vs_rank_comparison_page_shows_dash_placeholders_when_no_data(tmp_path: Path):
+    """データが無い場合も表示形式は崩さず、値を"-"にするだけにする(Issue #276)。"""
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
@@ -1026,12 +1026,12 @@ def test_overlay_vs_rank_comparison_page_shows_none_placeholders_when_no_data(tm
 
     response = client.get("/overlay/vs-rank-comparison")
 
-    assert '<span class="vs-rank-pill" style="background-color: #666666;">none</span>' in response.text
+    assert '<span class="vs-rank-pill" style="background-color: #666666;">-</span>' in response.text
     assert '<div class="vs-rank-caption">Rank</div>' in response.text
 
 
-def test_overlay_vs_rank_comparison_page_shows_none_for_side_with_only_unknown_members(tmp_path: Path):
-    """Issue #113: VS画面自体は検知できているが片側が全員不明人数の場合も、noneで表記を揃える。"""
+def test_overlay_vs_rank_comparison_page_shows_dash_for_side_with_only_unknown_members(tmp_path: Path):
+    """Issue #113/#276: VS画面自体は検知できているが片側が全員不明人数の場合も、"-"で表記を揃える。"""
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     db.save_vs_rank_snapshot(
@@ -1050,7 +1050,7 @@ def test_overlay_vs_rank_comparison_page_shows_none_for_side_with_only_unknown_m
     response = client.get("/overlay/vs-rank-comparison")
 
     assert '<span class="vs-rank-pill" style="background-color: #64bde2;">160</span>' in response.text
-    assert '<span class="vs-rank-pill" style="background-color: #f87abe;">none</span>' in response.text
+    assert '<span class="vs-rank-pill" style="background-color: #f87abe;">-</span>' in response.text
 
 
 def test_overlay_vs_rank_comparison_page_uses_default_color_when_team_color_not_detected(tmp_path: Path):
