@@ -777,6 +777,11 @@ class MatchStateMachine:
             self._check_for_vs_screen(frame)
             self._check_for_goal(frame)
             self._check_for_match_end(frame)
+            # Issue #297: 結果バナー確定時点のランクバッジ読み取り(_watch_for_banner
+            # 参照)を、バッジ領域(RANK_ROI)が安定するまで待ってから行うため、
+            # WATCHING状態の間も継続的に更新しておく。TRACKING_RANK突入時に
+            # reset()されるため、ここでの状態が漏れて悪さをすることはない
+            self._rank_monitor.update(frame)
             if self._collecting_rank_before:
                 result = self._collect_rank_before(frame)
             else:
@@ -1092,6 +1097,19 @@ class MatchStateMachine:
                 self._pending_goals = []
                 self._goal_streak = 0
                 self._goal_recorded_this_event = False
+                return None
+            # Issue #297: バナー(色/形状)自体は確定していても、ランクバッジ
+            # (RANK_ROI)がまだフェードイン等で動いている途中のことがある。
+            # rank_beforeの読み取り(Issue #287の多数決収集)は、rank_after側
+            # (GRACE突入時)と同じくバッジ領域が安定するまで待ってから始める。
+            # ここでbanner_candidate/streakをリセットせずreturnすることで、
+            # 安定するまで毎フレームこの分岐に入り直し、再チェックし続ける
+            if not self._rank_monitor.is_stable:
+                logger.debug(
+                    "%d試合目: 結果バナーは確定しましたがランクバッジがまだ安定していないため、"
+                    "読み取り開始を待機します",
+                    self._session_match_no,
+                )
                 return None
             self._pending_result = self._banner_candidate
             self._banner_candidate = None
