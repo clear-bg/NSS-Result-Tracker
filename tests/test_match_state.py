@@ -658,54 +658,6 @@ def test_rank_before_consensus_frame_count_is_configurable(monkeypatch):
     assert calls["n"] == 3
 
 
-def test_rank_before_waits_for_stable_badge_before_reading(monkeypatch):
-    """Issue #297: 結果バナー(色/形状)が確定していても、ランクバッジ領域
-    (RANK_ROI)がまだ動いている間は読み取りを始めず、安定するまで待つことを確認する
-    (rank_after側のGRACE突入時と同じ、StabilityMonitorによる安定待ち)。
-    """
-    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (10, 10.0))
-    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
-
-    machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        rank_before_consensus_frames=1,
-        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=3),
-    )
-    machine._vs_confirmed_this_match = True
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 10)]
-
-    stable_frame = np.zeros((10, 10, 3), dtype=np.uint8)
-    unstable_counter = {"n": 0}
-
-    def make_unstable_frame():
-        # バッジ領域(0,0,5,5)がフェードイン中でまだ動き続けている状態を再現する。
-        # DEFAULT_DIFF_THRESHOLD(6.0)を確実に超えるよう、白/黒を交互にする
-        unstable_counter["n"] += 1
-        frame = stable_frame.copy()
-        frame[0:5, 0:5] = 255 if unstable_counter["n"] % 2 == 0 else 0
-        return frame
-
-    # バナー自体は最初の2フレームで確定するが、バッジ領域はその後も動き続ける
-    for _ in range(6):
-        result = machine.process_frame(make_unstable_frame())
-        assert result is None
-        assert machine._pending_rank_before_tier is None, "バッジが不安定な間は読み取りが始まらないはず"
-
-    # ここでバッジ領域を含め画面が静止する
-    for _ in range(10):
-        machine.process_frame(stable_frame)
-        if machine._pending_rank_before_tier is not None:
-            break
-
-    assert machine._pending_rank_before_tier == 10, "安定した後は読み取りが行われるはず"
-
-
 def test_read_rank_before_returns_none_when_ocr_completely_fails_even_with_vs_screen_tier(monkeypatch, caplog):
     """Issue #283: バッジ自体が読み取れない(compact/enlargedどちらのOCRも失敗する)
     場合は、VS画面側の帯番号があっても値を捏造せずNoneのまま返すことを確認する
@@ -1448,11 +1400,9 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
 
     def fake_classify_banner(frame):
         banner_call_count["n"] += 1
-        # banner_confirm_frames分(2)に加え、Issue #297のバッジ安定待ち
-        # (rank_stability_monitorのstable_frames_required分)を満たすまでの
-        # 数フレームも"lose"を返し続けてからTRACKING_RANKへ遷移させ、
+        # 最初の2回(banner_confirm_frames分)は"lose"を返してTRACKING_RANKへ遷移させ、
         # GRACE突入後の最初の呼び出しでNoneを返してバナー消失(即確定)を発生させる
-        return "lose" if banner_call_count["n"] <= 4 else None
+        return "lose" if banner_call_count["n"] <= 2 else None
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         rois_used.append(gauge_roi)
@@ -1545,10 +1495,9 @@ def test_promotion_during_grace_period_is_caught(monkeypatch):
 
     def fake_classify_banner(frame):
         banner_call_count["n"] += 1
-        # banner_confirm_frames分(2)に加え、Issue #297のバッジ安定待ちを満たすまでの
-        # 数フレームも"win"を返し続けてから確定させ、以降はTRACKING_RANK中にバナーの
-        # テキストが一時的に(または最後まで)消えている状態を再現する
-        return "win" if banner_call_count["n"] <= 4 else None
+        # banner_confirm_frames分は"win"を返して確定させ、以降はTRACKING_RANK中に
+        # バナーのテキストが一時的に(または最後まで)消えている状態を再現する
+        return "win" if banner_call_count["n"] <= 2 else None
 
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
@@ -1598,9 +1547,7 @@ def test_no_promotion_during_grace_period_still_finalizes_after_full_timeout(mon
 
     def fake_classify_banner(frame):
         banner_call_count["n"] += 1
-        # banner_confirm_frames分(2)に加え、Issue #297のバッジ安定待ちを満たすまでの
-        # 数フレームも"win"を返し続けてから確定させる
-        return "win" if banner_call_count["n"] <= 4 else None
+        return "win" if banner_call_count["n"] <= 2 else None
 
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (37, 37.98))
@@ -1899,9 +1846,6 @@ def test_unranked_match_finalizes_immediately_at_banner_confirm(monkeypatch):
     machine = MatchStateMachine(
         banner_confirm_frames=2,
         vs_screen_confirm_frames=2,
-        # Issue #297: 既定のRANK_ROIはこのテストの10x10フレームより大きく、
-        # 安定判定用の差分計算が常に空クロップになってしまうため、小さいROIに差し替える
-        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -1951,9 +1895,6 @@ def test_ranked_match_still_waits_for_rank_tracking_after_banner_confirm(monkeyp
         rank_before_consensus_frames=1,
         banner_confirm_frames=2,
         vs_screen_confirm_frames=2,
-        # Issue #297: 既定のRANK_ROIはこのテストの10x10フレームより大きく、
-        # 安定判定用の差分計算が常に空クロップになってしまうため、小さいROIに差し替える
-        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
