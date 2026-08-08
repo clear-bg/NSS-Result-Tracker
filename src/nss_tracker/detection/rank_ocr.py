@@ -78,6 +78,7 @@ RANK_NUMBER_ROIもゲージと同じ理由(コンパクト/拡大でバッジの
 サイズで誤って使われたときに気付けないため)。
 """
 
+import re
 from functools import lru_cache
 from typing import Optional
 
@@ -122,12 +123,33 @@ RANK_TIER_LETTERS = ("S", "A")
 RANK_NUMBER_UPSCALE = get_detection_value("rank_ocr", "RANK_NUMBER_UPSCALE", 3)
 RANK_NUMBER_PAD = get_detection_value("rank_ocr", "RANK_NUMBER_PAD", 40)
 
+# Issue #288: read_rank()由来の誤読(41→0、40→4の桁落ち等)が実機ログで
+# 繰り返し見つかったため、vs_rank.py・goal.pyと同じ理由(小さい/クセのある
+# 切り出し画像でEasyOCRの精度が低かった)でPaddleOCRに切り替える。
+# 文字列全体の完全一致ではなく、先頭の数字部分を正規表現で取り出す方式に
+# 変更する(vs_rank.pyの_read_pill_digitsと同じ。「10×」のようにコントローラー
+# アイコン等が末尾に混ざるケースを許容するため)
+_LEADING_DIGITS = re.compile(r"^\d+")
+
 
 @lru_cache(maxsize=1)
 def _get_reader():
     import easyocr
 
     return easyocr.Reader(["en"], gpu=False)
+
+
+@lru_cache(maxsize=1)
+def _get_paddle_reader():
+    from paddleocr import PaddleOCR
+
+    return PaddleOCR(
+        lang="en",
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        enable_mkldnn=False,
+    )
 
 
 def read_rank(frame: np.ndarray, roi: tuple[int, int, int, int]) -> Optional[int]:
@@ -138,8 +160,9 @@ def read_rank(frame: np.ndarray, roi: tuple[int, int, int, int]) -> Optional[int
     参照)。デフォルト値は持たせない(read_rank_gauge_fill()と同じ理由、
     どちらか一方を既定にすると誤用に気付けないため)。
 
-    Issue #289: vs_rank.pyと同じ前処理(拡大+単色余白の追加)を適用してから
-    OCRする(RANK_NUMBER_UPSCALE/RANK_NUMBER_PAD参照)。
+    Issue #289/#288: vs_rank.pyと同じ前処理(拡大+単色余白の追加)・OCRエンジン
+    (PaddleOCR)を使う(RANK_NUMBER_UPSCALE/RANK_NUMBER_PAD、_get_paddle_reader参照)。
+    read_rank_tier()(アイコン判定)は従来通りEasyOCRのまま(この変更の対象外)。
     """
     x1, y1, x2, y2 = roi
     crop = frame[y1:y2, x1:x2]
@@ -147,18 +170,17 @@ def read_rank(frame: np.ndarray, roi: tuple[int, int, int, int]) -> Optional[int
     padded = cv2.copyMakeBorder(
         resized, RANK_NUMBER_PAD, RANK_NUMBER_PAD, RANK_NUMBER_PAD, RANK_NUMBER_PAD, cv2.BORDER_CONSTANT, value=(0, 0, 0)
     )
-    results = _get_reader().readtext(padded, allowlist="0123456789")
-    if not results:
+    results = _get_paddle_reader().predict(padded)
+    candidates: list[tuple[str, float]] = []
+    for result in results:
+        for text, score in zip(result.get("rec_texts", []), result.get("rec_scores", [])):
+            match = _LEADING_DIGITS.match(text)
+            if match:
+                candidates.append((match.group(), score))
+    if not candidates:
         return None
-
-    def bbox_top(result: tuple) -> float:
-        bbox, _text, _conf = result
-        return min(point[1] for point in bbox)
-
-    _bbox, text, _conf = max(results, key=bbox_top)
-    if not text.isdigit():
-        return None
-    return int(text)
+    candidates.sort(key=lambda candidate: (-len(candidate[0]), -candidate[1]))
+    return int(candidates[0][0])
 
 
 def read_rank_tier(frame: np.ndarray, roi: tuple[int, int, int, int] = RANK_ROI) -> Optional[str]:
