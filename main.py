@@ -181,7 +181,6 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
         demotion_label_confirm_frames=confirm_frames,
         league_change_grace_frames=round(fps * 5.0),
         rank_recheck_interval_frames=round(fps * 0.25),
-        rank_tier_rescan_wait_frames=round(fps / 6),
         # Issue #287: DEFAULT_RANK_BEFORE_CONSENSUS_FRAMES(30fps想定で5)と同じ基準でスケーリングする
         rank_before_consensus_frames=round(fps / 6),
         # Issue #224: 試合終了時のOBSシーン切替は、暗転を最初に検知してから1秒後
