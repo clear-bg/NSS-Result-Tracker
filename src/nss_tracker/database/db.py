@@ -79,7 +79,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from nss_tracker.config import get_db_path, get_goal_record_mode, is_allowed_player
+from nss_tracker.config import get_db_path, get_goal_record_mode, get_rank_after_correction_enabled, is_allowed_player
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchResult
 from nss_tracker.timeutil import now_jst
@@ -325,7 +325,15 @@ def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_r
     しており、そのままDBに欠損が残り続けるバグがあった。rank_afterの現在値が
     Noneかどうかに関わらず常に補正するよう修正した。league_changedの再計算は
     行わない(通常のrank_after読み取り誤差の範囲では帯を跨ぐことは無い想定)。
+
+    Issue #295: 実機データで、この仕組み自体が(次の試合のrank_beforeの読み取り
+    誤差を通じて)直前の試合の正しかった値を逆に壊してしまうケースが見つかった。
+    仕組み自体は残しつつ、.envのRANK_AFTER_CORRECTION_ENABLEDで一時的に
+    無効化できるようにする(無効時は直前の試合のrank_afterを一切書き換えない)。
     """
+    if not get_rank_after_correction_enabled():
+        logger.debug("RANK_AFTER_CORRECTION_ENABLEDが無効化されているため、前試合のrank_after補正をスキップしました")
+        return
     if current_rank_before is None:
         return
     row = conn.execute("SELECT id, rank_after FROM matches ORDER BY id DESC LIMIT 1").fetchone()

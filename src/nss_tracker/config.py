@@ -14,7 +14,8 @@
 `RANK_GRAPH_MATCH_LIMIT`・`OBS_WEBSOCKET_HOST`・
 `OBS_WEBSOCKET_PORT`・`OBS_WEBSOCKET_PASSWORD`・`OBS_SCENE_IN_MATCH`・
 `OBS_SCENE_BETWEEN_MATCHES`・`OBS_BROWSER_SOURCE_NAMES`・
-`OBS_SCENE_SWITCHING_ENABLED`・`YOUTUBE_CHAT_DIVE_TIME_ENABLED`)は、
+`OBS_SCENE_SWITCHING_ENABLED`・`YOUTUBE_CHAT_DIVE_TIME_ENABLED`・
+`RANK_AFTER_CORRECTION_ENABLED`)は、
 Python側にフォールバック用のデフォルト値を一切持たない。`.env`に値が設定されて
 いることを前提に動作し、未設定または不正な値の場合は起動時に`ConfigError`を
 送出して明示的に失敗する(暗黙のデフォルトに気づかないまま運用してしまうことを
@@ -55,6 +56,14 @@ YouTube Liveのチャットコメントから「次に潜る時間」を検知�
 無いため(OBSブラウザソースの再読み込みのような「接続だけは維持したい」
 副作用が無い)、スレッドそのものを起動しない。配信ごとに調整する値ではなく
 セットアップ時に一度決める値のため、`/admin`の編集対象(下記5項目)には含めない。
+
+`RANK_AFTER_CORRECTION_ENABLED`(Issue #295)は`"true"`/`"false"`の文字列で、
+次の試合のrank_beforeで直前の試合のrank_afterを補正する仕組み
+(database.db._maybe_correct_previous_match_rank_after、Issue #179/#253/#285)を
+実際に行うかどうかを制御する。実機データで、この仕組み自体が(次の試合の
+rank_beforeの読み取り誤差を通じて)直前の試合の正しかった値を逆に壊してしまう
+ケースが見つかったため、仕組み自体は残しつつ一時的に無効化できるようにした。
+配信ごとに調整する値ではないため`/admin`の編集対象には含めない。
 
 `ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・
 `RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`の5項目のみ、
@@ -321,6 +330,29 @@ def get_youtube_chat_dive_time_enabled() -> bool:
     無効時はスレッド自体を起動しない。未設定・不正な値の場合はConfigErrorを送出する。
     """
     return _validate_youtube_chat_dive_time_enabled(_require_env("YOUTUBE_CHAT_DIVE_TIME_ENABLED")) == "true"
+
+
+def _validate_rank_after_correction_enabled(value: str) -> str:
+    if value not in _VALID_BOOL_STRINGS:
+        raise ConfigError(
+            f"RANK_AFTER_CORRECTION_ENABLEDの値が不正です: {value}"
+            f"({'/'.join(_VALID_BOOL_STRINGS)}のいずれかを指定してください)"
+        )
+    return value
+
+
+def get_rank_after_correction_enabled() -> bool:
+    """次の試合のrank_beforeで直前の試合のrank_afterを補正する仕組み
+    (database.db._maybe_correct_previous_match_rank_after、Issue #179/#253/#285)を
+    実際に行うかどうかを取得する(Issue #295)。
+
+    実機データで、この仕組み自体が(次の試合のrank_beforeの読み取り誤差を通じて)
+    直前の試合の正しかった値を逆に壊してしまうケースが見つかったため、仕組み自体は
+    残しつつ一時的に無効化できるようにした。無効時は直前の試合のrank_afterを
+    一切書き換えない(そのまま、または読み取れなければNoneのまま残る)。
+    未設定・不正な値の場合はConfigErrorを送出する。
+    """
+    return _validate_rank_after_correction_enabled(_require_env("RANK_AFTER_CORRECTION_ENABLED")) == "true"
 
 
 _EDITABLE_ENV_KEYS = (
