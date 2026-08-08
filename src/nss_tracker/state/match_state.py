@@ -220,7 +220,7 @@ Issue #145: 対戦相手ランク比較ウィジェット(web/server.py)は、�
 Issue #190: 実プレイ中(ゴール演出とは無関係な通常プレイ中)の背景誤検知が
 banner_confirm_frames(2秒デバウンス)を突破し、OBSシーンが誤って試合中→
 試合間(ワイプ)へ切り替わってしまう事象が実配信で確認された。特にランクを
-賭けない試合(rank_before=Noneのため_begin_finalize等の数値ベースの
+賭けない試合(rank_before=Noneのため_is_tier_change_plausible等の数値ベースの
 安全装置が一切効かない)は、StabilityMonitorの「安定」判定さえ誤検知フレームで
 たまたま満たされれば、あとはbanner_confirm_framesの2秒デバウンスだけが最後の
 砦になる。配信者体験として「マッチング待機中に誤って試合中シーンのままになる」
@@ -281,24 +281,6 @@ _demotion_confirmed_this_matchがTrueの場合はdelta=0も不自然とみなす
 いるのに帯番号OCRが変化無しに化けるケース)にも対称的に存在するが、
 今回のスコープには含めない(ユーザーと合意の上、必要になれば別issueで
 対応する)。
-
-Issue #290: 2026-08-08の実機ログ・動画の検証で、帯番号OCR(read_rank)側の
-誤読(桁落ち等)が繰り返し見つかった一方、ゲージの明度読み取り(read_rank_gauge_fill)
-自体は勝敗を問わず安定していることが実測で確認できた。そのため上記
-Issue #136/#202の「帯番号OCRを主、ゲージ連続性を数フレーム後の再スキャンを
-経た最終フォールバック」という位置づけを見直し、優先順位を入れ替えた:
-常に先にゲージ連続性(_infer_tier_from_gauge_continuity)側の値を計算し、
-帯番号OCRの値がそれと一致するかどうかだけを確認する(_begin_finalize参照)。
-一致すればOCR側の値を採用し、一致しなければ再スキャンで様子を見ることは
-せずその場でゲージ連続性側の値に差し替える。これにより再スキャン機構
-(_RankPhase.RESCAN_WAIT、_is_tier_change_plausible)自体が不要になり削除した。
-Issue #202の「降格ラベル確認済みなのにOCRが変化無しを返す」ケースも、この
-比較だけで自動的に正しく上書きされるようになったため、専用の対応は不要になった。
-一方で、独立信号(降格ラベル・ゲージ巻き戻り幅)が一切得られなかった降格を
-OCRが正しく読めていたケースは、以前は帯番号OCR側をそのまま信頼していたが、
-今後はゲージ連続性側(帯番号変化無し)が優先されるため見逃す可能性がある
-(実機データでの誤読の多さを踏まえ、ユーザーと相談の上この向きのトレードオフを
-許容することにした)。
 
 Issue #189: VS画面確定〜OBSシーン切替(in_match=True)までが実配信で10〜17秒
 遅れる不具合を調査したところ、色閾値のズレ(Issue #68/#116で一度あった前例)
@@ -540,12 +522,16 @@ DEFAULT_RANK_RECHECK_INTERVAL_FRAMES = 15
 # (config/detection.tomlの[match_state]で上書き可能)
 RANK_RECHECK_CHANGE_TOLERANCE = get_detection_value("match_state", "RANK_RECHECK_CHANGE_TOLERANCE", 0.05)
 
-# Issue #136: 帯番号(整数)の変化が不自然かどうかを判断する際、ゲージ小数部
-# (HSVベースの独立信号)の連続性を使う。「勝ったら降格しない/負けたら昇格しない」
-# というゲーム仕様(ユーザー確認済み)を前提に、勝敗と矛盾する向きにこの割合を
-# 超えて動いて見える場合にのみ1帯またいだとみなす。Issue #290で、この連続性の
-# 推測をOCRの再スキャン待ちを経由せず常に主判定として使うよう変更した
-# (_begin_finalize参照)
+# Issue #136: 試合前後で帯番号(整数)が2以上急変した場合の再スキャンまでの
+# 待機フレーム数(30fps想定)。同一フレームへの再OCRは同じ誤読を繰り返すだけ
+# のため、数フレーム後の別フレームで読み直す
+DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES = 5
+
+# Issue #136: 再スキャンしても帯番号が不自然なまま(1帯を超える変化、または
+# 昇格演出未確認の+1、または勝敗と矛盾する向きの変化)だった場合、ゲージ小数部
+# (HSVベースの独立信号)の連続性で判断し直す。「勝ったら降格しない/負けたら
+# 昇格しない」というゲーム仕様(ユーザー確認済み)を前提に、勝敗と矛盾する
+# 向きにこの割合を超えて動いて見える場合にのみ1帯またいだとみなす
 RANK_TIER_WRAP_MIN_MAGNITUDE = get_detection_value("match_state", "RANK_TIER_WRAP_MIN_MAGNITUDE", 0.5)
 
 # Issue #224: 試合終了時のOBSシーン切替(in_match=False)は、ランク値の確定
@@ -578,6 +564,7 @@ class _RankPhase(Enum):
     WAITING_STABLE = auto()
     GRACE = auto()
     IN_LEAGUE_CHANGE = auto()
+    RESCAN_WAIT = auto()
 
 
 @dataclass
@@ -641,6 +628,7 @@ class MatchStateMachine:
         vs_screen_confirm_frames: int = DEFAULT_VS_SCREEN_CONFIRM_FRAMES,
         vs_screen_lockout_frames: int = DEFAULT_VS_SCREEN_LOCKOUT_FRAMES,
         match_end_confirm_frames: int = DEFAULT_MATCH_END_CONFIRM_FRAMES,
+        rank_tier_rescan_wait_frames: int = DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES,
         demotion_label_confirm_frames: int = DEFAULT_DEMOTION_LABEL_CONFIRM_FRAMES,
         obs_switch_delay_after_blackout_frames: int = DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_FRAMES,
         rank_before_consensus_frames: int = DEFAULT_RANK_BEFORE_CONSENSUS_FRAMES,
@@ -655,6 +643,7 @@ class MatchStateMachine:
         self._vs_screen_confirm_frames = vs_screen_confirm_frames
         self._vs_screen_lockout_frames = vs_screen_lockout_frames
         self._match_end_confirm_frames = match_end_confirm_frames
+        self._rank_tier_rescan_wait_frames = rank_tier_rescan_wait_frames
         self._demotion_label_confirm_frames = demotion_label_confirm_frames
         self._obs_switch_delay_after_blackout_frames = obs_switch_delay_after_blackout_frames
         self._rank_before_consensus_frames = rank_before_consensus_frames
@@ -698,6 +687,7 @@ class MatchStateMachine:
         self._demotion_confirmed_this_match = False
         self._demotion_label_streak = 0
         self._demotion_label_recorded_this_event = False
+        self._rescan_counter = 0
         self._goal_streak = 0
         self._goal_recorded_this_event = False
         self._pending_goals: list[GoalEvent] = []
@@ -1024,8 +1014,8 @@ class MatchStateMachine:
         enlargedどちらのROIでもバッジ自体を読み取れなかった場合(バッジ非表示、
         またはゲージも含め完全な読み取り失敗)は、VS画面側の情報があっても
         値を捏造せずNoneのまま返す(「バッジが無い」ことと「帯番号だけ誤読した」
-        ことは別の状況のため)。Issue #290のゲージ連続性による帯番号判定
-        (_begin_finalize参照)は、VS画面側も100%ではないため二段構えの
+        ことは別の状況のため)。Issue #136の帯変化の妥当性チェック・再スキャン・
+        ゲージ連続性フォールバックは、VS画面側も100%ではないため二段構えの
         保険としてそのまま残す。
         """
         compact_result = read_precise_rank(frame, GAUGE_ROI_COMPACT, RANK_NUMBER_ROI_COMPACT)
@@ -1220,6 +1210,9 @@ class MatchStateMachine:
         if self._grace_candidate_rank_tier is not None and is_full_blackout(frame):
             return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank())
 
+        if self._rank_phase is _RankPhase.RESCAN_WAIT:
+            return self._continue_rescan_wait(frame)
+
         was_stable = self._rank_monitor.is_stable
         is_stable = self._rank_monitor.update(frame)
 
@@ -1365,43 +1358,71 @@ class MatchStateMachine:
             self._latest_gauge_fill = precise - self._grace_candidate_rank_tier
 
     def _begin_finalize(self, tier: Optional[int], rank: Optional[float]) -> Optional[MatchResult]:
-        """帯番号を確定する(Issue #290)。
-
-        Issue #136時点では帯番号OCRを主、ゲージ小数部の連続性(独立信号込み)を
-        「OCRが不自然だった場合の、数フレーム後の再スキャンを経た最終フォールバック」
-        という位置づけにしていた。実機データでOCR側の誤読(桁落ち等)が繰り返し
-        見つかった一方、ゲージの明度読み取り自体は勝敗を問わず安定していることが
-        確認できたため、優先順位を入れ替える: 常に先にゲージ連続性
-        (_infer_tier_from_gauge_continuity、昇格演出/降格ラベルの独立確認込み)側の
-        値を計算し、OCRの値がそれと一致するかどうかだけを確認する。一致すれば
-        そのままOCR側の値(=ゲージ連続性とも矛盾しない値)を採用し、一致しなければ
-        再スキャンで様子を見ることはせず、その場でゲージ連続性側の値に差し替える。
-        これによりIssue #136の再スキャン待ち(_RankPhase.RESCAN_WAIT)自体が
-        不要になったため削除した。
-
-        Issue #202の「降格ラベルを確認できているのに帯番号OCRが変化なしを返す」
-        ケースも、_infer_tier_from_gauge_continuity側が独立信号を優先して
-        tier_before-1を返すため、この比較だけで自動的に正しく上書きされる
-        (以前のような専用の妥当性チェックは不要)。
-
-        トレードオフ: 以前は「負け試合でOCRが1帯下げて読めていれば、独立信号
-        (降格ラベル・ゲージ巻き戻り幅)が無くてもそのまま確定」していたが、
-        今は独立信号が無いとゲージ連続性側(帯番号変化無し)が優先されるため、
-        降格ラベル・巻き戻り幅のどちらの独立信号も得られなかった降格を
-        見逃す可能性がある(ユーザーと相談の上、実機データでの誤読の多さを
-        踏まえてこの向きのトレードオフを許容することにした)。
+        """帯番号確定前の最終チェック(Issue #136)。不自然な急変ならすぐには確定せず、
+        数フレーム後に再スキャンする。
         """
-        expected_tier, expected_rank = self._infer_tier_from_gauge_continuity(tier, rank)
-        if tier == expected_tier:
+        if self._is_tier_change_plausible(tier):
             return self._finalize(tier, rank)
         logger.warning(
-            "%d試合目: 帯番号OCR(%s)がゲージ連続性の推測(%s)と食い違っています。"
-            "ゲージ連続性側を採用します",
+            "%d試合目: 帯番号が不自然に変化しています(before=%s after=%s)。"
+            "%dフレーム後に再スキャンします",
+            self._session_match_no,
+            self._pending_rank_before_tier,
+            tier,
+            self._rank_tier_rescan_wait_frames,
+        )
+        self._rescan_counter = 0
+        self._rank_phase = _RankPhase.RESCAN_WAIT
+        return None
+
+    def _continue_rescan_wait(self, frame: np.ndarray) -> Optional[MatchResult]:
+        self._rescan_counter += 1
+        if self._rescan_counter < self._rank_tier_rescan_wait_frames:
+            return None
+        precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
+        if precise_result is not None:
+            tier, rank = precise_result
+        else:
+            tier, rank = self._grace_candidate_rank_tier, self._current_grace_rank()
+        if self._is_tier_change_plausible(tier):
+            return self._finalize(tier, rank)
+        logger.warning(
+            "%d試合目: 再スキャンでも帯番号が不自然なままのため(after=%s)、"
+            "ゲージ小数部の連続性から補正します",
             self._session_match_no,
             tier,
-            expected_tier,
         )
-        return self._finalize(expected_tier, expected_rank)
+        corrected_tier, corrected_rank = self._infer_tier_from_gauge_continuity(tier, rank)
+        return self._finalize(corrected_tier, corrected_rank)
+
+    def _is_tier_change_plausible(self, tier_after: Optional[int]) -> bool:
+        """試合前後の帯番号の変化が、ゲームの仕様上ありうるものか検証する(Issue #136)。
+
+        1試合での帯変化は昇格/降格いずれも1帯までしか起こらない。さらに
+        「勝ったら降格しない/負けたら昇格しない」というゲーム仕様(ユーザー確認済み)
+        より、昇格(+1)は勝ちかつ昇格演出(is_league_change_screen)を確認できて
+        いる場合のみ、降格(-1)は負けの場合のみ許容する。引き分けはゲージ自体が
+        全く動かない仕様のため、変化無し(0)以外は常に不自然とみなす。
+
+        Issue #202: 変化無し(0)は上記に加えて、降格ラベル(is_demotion_label_candidate/
+        confirm_demotion_label_text、Issue #176)を確認できている負け試合では不自然と
+        みなす。降格ラベルという独立信号で降格の発生自体は確認できているにも
+        関わらず帯番号OCRが「変化なし」に化けてしまったケースを、他の帯番号急変
+        ケースと同じ再スキャン経路(_begin_finalize→_continue_rescan_wait→
+        _infer_tier_from_gauge_continuity)に合流させ、最終的にtier_before-1として
+        記録できるようにするため。
+        """
+        tier_before = self._pending_rank_before_tier
+        if tier_before is None or tier_after is None:
+            return True
+        delta = tier_after - tier_before
+        if delta == 0:
+            return not (self._pending_result == "lose" and self._demotion_confirmed_this_match)
+        if delta == 1:
+            return self._pending_result == "win" and self._promotion_confirmed_this_match
+        if delta == -1:
+            return self._pending_result == "lose"
+        return False
 
     def _infer_tier_from_gauge_continuity(
         self, tier_ocr: Optional[int], rank_value: Optional[float]

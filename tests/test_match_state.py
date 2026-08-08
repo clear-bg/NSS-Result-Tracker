@@ -930,12 +930,11 @@ def test_track_rank_periodic_recheck_catches_tier_change(monkeypatch):
     )
 
 
-def test_tier_jump_corrected_via_gauge_continuity_when_promotion_confirmed(monkeypatch):
-    """Issue #290: 試合前後で帯番号が不自然に急変(38→15)しても、ゲージ連続性側
-    (昇格演出確認済みのためtier_before+1)を優先して採用することを確認する。
-    帯番号OCRの再スキャンは行わない(Issue #136時点の設計から変更、モジュール
-    docstring参照)。値は目視ではなくこのテストのために意図的に用意した架空の
-    シーケンスであり、実装の出力を転記したものではない。
+def test_tier_jump_recovers_via_rescan(monkeypatch):
+    """試合前後で帯番号が不自然に急変(38→15)しても、数フレーム後の再スキャンで
+    正しい値(38→39、昇格演出確認済み)にたどり着けることを確認する(Issue #136)。
+    値は目視ではなくこのテストのために意図的に用意した架空のシーケンスであり、
+    実装の出力を転記したものではない。
     """
     read_calls = {"n": 0}
     raw_calls = {"n": 0}
@@ -949,7 +948,9 @@ def test_tier_jump_corrected_via_gauge_continuity_when_promotion_confirmed(monke
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # 結果バナー時点(before)
-        return (15, 15.5)  # GRACE突入時のスナップショット(不自然な急変、以後は読み直さない)
+        if read_calls["n"] == 2:
+            return (15, 15.5)  # GRACE突入直後の誤読み(不自然な急変)
+        return (39, 39.3)  # 再スキャン後の正しい値(昇格演出確認済み)
 
     league_change_calls = {"n": 0}
 
@@ -971,7 +972,7 @@ def test_tier_jump_corrected_via_gauge_continuity_when_promotion_confirmed(monke
         banner_confirm_frames=2,
         league_change_grace_frames=3,
         rank_recheck_interval_frames=1000,
-        rank_before_consensus_frames=1,
+        rank_tier_rescan_wait_frames=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -989,15 +990,13 @@ def test_tier_jump_corrected_via_gauge_continuity_when_promotion_confirmed(monke
             break
 
     assert result is not None, "MatchResultが確定しなかった"
-    # tier_before(38)+1=39、小数部はGRACE突入時のスナップショット(15.5)の
-    # 小数部(0.5)をそのまま引き継ぐ
-    assert result.rank_after == pytest.approx(39.5)
+    assert result.rank_after == pytest.approx(39.3)
     assert result.league_changed == "up"
 
 
-def test_tier_jump_falls_back_to_gauge_continuity_when_promotion_not_confirmed(monkeypatch):
-    """Issue #290: 帯番号OCRが不自然な値を返しても、昇格演出を確認できていなければ
-    帯番号は変えずゲージ小数部の連続性だけを採用することを確認する。
+def test_tier_jump_falls_back_to_gauge_continuity_when_rescan_still_implausible_win(monkeypatch):
+    """再スキャンしても帯番号が不自然なまま(勝ちなのに降格演出未確認)の場合、
+    帯番号は変えずゲージ小数部の連続性だけを採用することを確認する(Issue #136)。
     """
     read_calls = {"n": 0}
     raw_calls = {"n": 0}
@@ -1011,7 +1010,9 @@ def test_tier_jump_falls_back_to_gauge_continuity_when_promotion_not_confirmed(m
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # before(小数部0.2)
-        return (99, 99.4)  # GRACE突入時のスナップショット(誤読み、小数部0.4は継続として自然)
+        if read_calls["n"] == 2:
+            return (99, 99.4)  # GRACE突入直後の誤読み(小数部0.4は継続として自然)
+        return (7, 7.4)  # 再スキャンでも誤読みのまま(小数部は同じく0.4)
 
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
@@ -1027,7 +1028,7 @@ def test_tier_jump_falls_back_to_gauge_continuity_when_promotion_not_confirmed(m
         banner_confirm_frames=2,
         league_change_grace_frames=3,
         rank_recheck_interval_frames=1000,
-        rank_before_consensus_frames=1,
+        rank_tier_rescan_wait_frames=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1066,7 +1067,9 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # before(小数部0.2)
-        return (5, 5.9)  # GRACE突入時のスナップショット(誤読み、以後は読み直さない)
+        if read_calls["n"] == 2:
+            return (99, 99.9)  # GRACE突入直後の誤読み(小数部0.9)
+        return (5, 5.9)  # 再スキャンでも誤読みのまま(小数部は同じく0.9)
 
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
@@ -1082,6 +1085,7 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
         banner_confirm_frames=2,
         league_change_grace_frames=3,
         rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
         # Issue #287: このテストはfake_read_precise_rankの呼び出し回数で応答を
         # 切り替えているため、多数決による複数回呼び出しと相性が悪い。1回で
         # 即確定させ、従来通りの呼び出し回数を保つ(多数決自体は別テストで検証)
@@ -1108,8 +1112,8 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
 
 
 def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
-    """引き分け試合はゲージが全く動かない仕様のため、帯番号OCRが不自然な値を
-    返しても常に試合前の帯番号を据え置くことを確認する(Issue #290)。
+    """引き分け試合はゲージが全く動かない仕様のため、再スキャンしても帯番号が
+    不自然なままの場合は常に試合前の帯番号を据え置くことを確認する(Issue #136)。
     """
     read_calls = {"n": 0}
     raw_calls = {"n": 0}
@@ -1123,7 +1127,9 @@ def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # before(小数部0.2)
-        return (5, 5.9)  # GRACE突入時のスナップショット(誤読み、以後は読み直さない)
+        if read_calls["n"] == 2:
+            return (99, 99.9)  # GRACE突入直後の誤読み
+        return (5, 5.9)  # 再スキャンでも誤読みのまま
 
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "draw")
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
@@ -1139,7 +1145,7 @@ def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
         banner_confirm_frames=2,
         league_change_grace_frames=3,
         rank_recheck_interval_frames=1000,
-        rank_before_consensus_frames=1,
+        rank_tier_rescan_wait_frames=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1178,7 +1184,9 @@ def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magni
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # before(小数部0.2)
-        return (5, 5.3)  # GRACE突入時のスナップショット(誤読み、小数部0.3、before比+0.1のみ)
+        if read_calls["n"] == 2:
+            return (99, 99.9)  # GRACE突入直後の誤読み
+        return (5, 5.3)  # 再スキャンでも誤読みのまま(小数部0.3、before比+0.1のみ)
 
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
@@ -1195,8 +1203,8 @@ def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magni
         banner_confirm_frames=2,
         league_change_grace_frames=3,
         rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
         demotion_label_confirm_frames=2,
-        rank_before_consensus_frames=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1220,9 +1228,10 @@ def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magni
 
 def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(monkeypatch):
     """Issue #202: 降格ラベルを確認できているのに帯番号OCRが「変化なし」を
-    返した場合でも、ゲージ連続性側が独立信号を優先して最終的に帯番号を1つ
-    下げて記録することを確認する(降格ラベルという独立信号があるにも関わらず
-    帯番号OCRの「変化なし」がそのまま採用されてしまうバグの回帰テスト)。
+    返し続けた場合でも、再スキャン経路に合流して最終的に帯番号を1つ下げて
+    記録することを確認する(_is_tier_change_plausibleがdelta=0を無条件に
+    許容していたため、この独立信号が一切参照されずに降格が記録から漏れる
+    バグの回帰テスト)。
     """
     read_calls = {"n": 0}
     raw_calls = {"n": 0}
@@ -1236,7 +1245,9 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)  # before(小数部0.2)
-        return (38, 38.4)  # GRACE突入時のスナップショット(帯番号は変化なしのまま)
+        if read_calls["n"] == 2:
+            return (38, 38.3)  # GRACE突入直後(帯番号は変化なしのまま)
+        return (38, 38.4)  # 再スキャンでも変化なしのまま
 
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
@@ -1253,8 +1264,8 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
         banner_confirm_frames=2,
         league_change_grace_frames=3,
         rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
         demotion_label_confirm_frames=2,
-        rank_before_consensus_frames=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1278,8 +1289,8 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
 
 def test_unchanged_tier_stays_plausible_without_demotion_confirmation(monkeypatch):
     """Issue #202の修正が通常ケースを壊していないことを確認する。降格ラベルを
-    確認できていない(通常の)試合では、帯番号が変化なしと読めた場合はゲージ
-    連続性側も同じく「変化なし」を返すため、そのまま素直に確定することを確認する。
+    確認できていない(通常の)試合では、帯番号が変化なしと読めた場合は
+    再スキャンを挟まず素直に確定することを確認する。
     """
     read_calls = {"n": 0}
     raw_calls = {"n": 0}
@@ -1309,7 +1320,7 @@ def test_unchanged_tier_stays_plausible_without_demotion_confirmation(monkeypatc
         banner_confirm_frames=2,
         league_change_grace_frames=3,
         rank_recheck_interval_frames=1000,
-        rank_before_consensus_frames=1,
+        rank_tier_rescan_wait_frames=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1348,7 +1359,9 @@ def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(mo
         read_calls["n"] += 1
         if read_calls["n"] == 1:
             return (38, 38.2)
-        return (5, 5.3)  # GRACE突入時のスナップショット(誤読み、before比+0.1のみ、閾値未満)
+        if read_calls["n"] == 2:
+            return (99, 99.9)
+        return (5, 5.3)  # before比+0.1のみ(閾値未満)
 
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
@@ -1365,8 +1378,8 @@ def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(mo
         banner_confirm_frames=2,
         league_change_grace_frames=3,
         rank_recheck_interval_frames=1000,
+        rank_tier_rescan_wait_frames=3,
         demotion_label_confirm_frames=2,
-        rank_before_consensus_frames=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
