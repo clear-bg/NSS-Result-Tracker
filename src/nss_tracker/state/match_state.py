@@ -438,7 +438,6 @@ Falseに戻った瞬間、つまりVS画面が視覚的に消えて数フレー�
 """
 
 import threading
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
@@ -542,13 +541,6 @@ RANK_TIER_WRAP_MIN_MAGNITUDE = get_detection_value("match_state", "RANK_TIER_WRA
 # 瞬間からの単純な経過フレーム数で数える(モジュールdocstring参照)
 DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_FRAMES = 30
 
-# Issue #287: 結果バナー確定時点のランクバッジ読み取り(_read_rank_before)は、
-# 実況キャプチャがたまたま乱れた1フレームだけを見て誤読することがあると
-# 実機動画の検証で判明した(41→0の誤読事例で、前後数十フレームは全て正しく
-# 読めていた)。1フレームの単発読み取りに頼らず、確定直後の数フレームを
-# 読み取って多数決を取ることでこの種の偶発的な誤読に強くする
-DEFAULT_RANK_BEFORE_CONSENSUS_FRAMES = 5
-
 
 class _State(Enum):
     WATCHING = auto()
@@ -631,7 +623,6 @@ class MatchStateMachine:
         rank_tier_rescan_wait_frames: int = DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES,
         demotion_label_confirm_frames: int = DEFAULT_DEMOTION_LABEL_CONFIRM_FRAMES,
         obs_switch_delay_after_blackout_frames: int = DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_FRAMES,
-        rank_before_consensus_frames: int = DEFAULT_RANK_BEFORE_CONSENSUS_FRAMES,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
     ) -> None:
         self._banner_confirm_frames = banner_confirm_frames
@@ -646,7 +637,6 @@ class MatchStateMachine:
         self._rank_tier_rescan_wait_frames = rank_tier_rescan_wait_frames
         self._demotion_label_confirm_frames = demotion_label_confirm_frames
         self._obs_switch_delay_after_blackout_frames = obs_switch_delay_after_blackout_frames
-        self._rank_before_consensus_frames = rank_before_consensus_frames
         self._rank_monitor = rank_stability_monitor or StabilityMonitor(roi=rank_roi)
 
         self._state = _State.WATCHING
@@ -661,11 +651,6 @@ class MatchStateMachine:
         # 誤検知しないよう、判定には必ず帯番号(整数)側を使うこと
         self._pending_rank_before_tier: Optional[int] = None
         self._pending_rank_before: Optional[float] = None
-        # Issue #287: 結果バナー確定直後、rank_before_consensus_frames分の
-        # _read_rank_before()結果を多数決するための一時バッファ
-        self._collecting_rank_before = False
-        self._rank_before_samples: list[tuple[int, float]] = []
-        self._rank_before_collect_counter = 0
         self._grace_candidate_rank_tier: Optional[int] = None
         # Issue #178: ゲージの塗りつぶし(小数部)の確定値。確定時にはスナップショット
         # ではなくこの値を使う。Issue #235: 生値をそのまま信頼せず、下記
@@ -767,10 +752,7 @@ class MatchStateMachine:
             self._check_for_vs_screen(frame)
             self._check_for_goal(frame)
             self._check_for_match_end(frame)
-            if self._collecting_rank_before:
-                result = self._collect_rank_before(frame)
-            else:
-                result = self._watch_for_banner(frame)
+            result = self._watch_for_banner(frame)
         elif self._state is _State.TRACKING_RANK:
             result = self._track_rank(frame)
         else:
@@ -1084,101 +1066,61 @@ class MatchStateMachine:
                 self._goal_recorded_this_event = False
                 return None
             self._pending_result = self._banner_candidate
+            # Issue #222: バナー確定直後は本来コンパクト表示のはずだが、確定までの
+            # 時間が長引くとバッジが既に拡大表示へ遷移していることがあるため、
+            # 両方のROIで試す(_read_rank_before参照)
+            precise_result = self._read_rank_before(frame)
+            if precise_result is not None:
+                self._pending_rank_before_tier, self._pending_rank_before = precise_result
+            else:
+                self._pending_rank_before_tier = None
+                self._pending_rank_before = None
+                logger.info(
+                    "%d試合目: 結果バナー確定時点でランクバッジを読み取れませんでした"
+                    "(バッジ非表示、または読み取り失敗の可能性)",
+                    self._session_match_no,
+                )
+            logger.info(
+                "%d試合目の結果: %s (ランク(試合前): %s)",
+                self._session_match_no,
+                _BANNER_RESULT_LABELS[self._pending_result],
+                self._pending_rank_before if self._pending_rank_before is not None else "なし",
+            )
             self._banner_candidate = None
             self._banner_streak = 0
-            # Issue #287: ここで即座に読み取り確定とはせず、数フレーム分の
-            # _read_rank_before()結果を多数決するための収集フェーズへ移る
-            # (_collect_rank_before参照)。このフレーム自体も1サンプル目として使う
-            self._collecting_rank_before = True
-            self._rank_before_samples = []
-            self._rank_before_collect_counter = 0
-            return self._collect_rank_before(frame)
-        return None
+            # 「試合終了」の確認は今回の結果バナー確定にのみ使うため、ここでリセットする
+            self._match_end_seen = False
 
-    def _collect_rank_before(self, frame: np.ndarray) -> Optional[MatchResult]:
-        """結果バナー確定直後、rank_before_consensus_frames分読み取って多数決する(Issue #287)。
+            # Issue #235: VS画面のスロット0(自チーム側、自分自身)のランクバッジを
+            # 検知できていない試合は「ランクを賭けない対戦」とみなし、ランク変動
+            # アニメーションの安定待ち(TRACKING_RANK)を経由せず結果バナー確定時点で
+            # 直ちに確定する。ランクを賭けた試合でランク変動アニメーション中に
+            # 昇格演出等を挟んで早期確定してしまう不具合(#235本体)とは独立に、
+            # 「そもそもランクが無い試合はランクの安定待ち自体が不要」という
+            # 前提を先に切り分ける対応(B/C/D/E帯は現状tier=None(未識別)になり
+            # 区別できないため、この判定でもランク無しと扱われる。実プレイでは
+            # 常に∞帯のためユーザー確認の上、許容する既知の制限)
+            if not (self._pending_vs_mine_ranks and self._pending_vs_mine_ranks[0].tier is not None):
+                logger.info(
+                    "%d試合目: VS画面で自分のランクを検知できなかったため、"
+                    "ランクを賭けない試合とみなし結果バナー確定時点で確定します",
+                    self._session_match_no,
+                )
+                return self._finalize(None, None)
 
-        1フレームだけの読み取りだと、実況キャプチャがたまたま乱れた1フレームを
-        引いてしまい誤読することがあると実機動画の検証で判明した(モジュール
-        docstring参照)。読み取れた結果(_read_rank_before参照、VS画面優先の
-        補正も含んだ最終値)のうち最も多く出現したものを採用する。全フレームで
-        読み取れなかった場合はNone(バッジ非表示、または読み取り失敗)のまま扱う。
-        """
-        # Issue #222: バナー確定直後は本来コンパクト表示のはずだが、確定までの
-        # 時間が長引くとバッジが既に拡大表示へ遷移していることがあるため、
-        # 両方のROIで試す(_read_rank_before参照)
-        result = self._read_rank_before(frame)
-        if result is not None:
-            self._rank_before_samples.append(result)
-        self._rank_before_collect_counter += 1
-        if self._rank_before_collect_counter < self._rank_before_consensus_frames:
-            return None
-
-        self._collecting_rank_before = False
-        consensus = None
-        if self._rank_before_samples:
-            consensus, _count = Counter(self._rank_before_samples).most_common(1)[0]
-        self._rank_before_samples = []
-        self._rank_before_collect_counter = 0
-        return self._finish_banner_confirm(frame, consensus)
-
-    def _finish_banner_confirm(
-        self, frame: np.ndarray, precise_result: Optional[tuple[int, float]]
-    ) -> Optional[MatchResult]:
-        """結果バナー確定処理の後半(rank_beforeの多数決が済んだ後)。
-
-        _watch_for_banner()から分離した(Issue #287)。precise_resultは
-        _collect_rank_before()が多数決した結果(読み取れなかった場合はNone)。
-        """
-        if precise_result is not None:
-            self._pending_rank_before_tier, self._pending_rank_before = precise_result
-        else:
-            self._pending_rank_before_tier = None
-            self._pending_rank_before = None
-            logger.info(
-                "%d試合目: 結果バナー確定時点でランクバッジを読み取れませんでした"
-                "(バッジ非表示、または読み取り失敗の可能性)",
-                self._session_match_no,
-            )
-        logger.info(
-            "%d試合目の結果: %s (ランク(試合前): %s)",
-            self._session_match_no,
-            _BANNER_RESULT_LABELS[self._pending_result],
-            self._pending_rank_before if self._pending_rank_before is not None else "なし",
-        )
-        # 「試合終了」の確認は今回の結果バナー確定にのみ使うため、ここでリセットする
-        self._match_end_seen = False
-
-        # Issue #235: VS画面のスロット0(自チーム側、自分自身)のランクバッジを
-        # 検知できていない試合は「ランクを賭けない対戦」とみなし、ランク変動
-        # アニメーションの安定待ち(TRACKING_RANK)を経由せず結果バナー確定時点で
-        # 直ちに確定する。ランクを賭けた試合でランク変動アニメーション中に
-        # 昇格演出等を挟んで早期確定してしまう不具合(#235本体)とは独立に、
-        # 「そもそもランクが無い試合はランクの安定待ち自体が不要」という
-        # 前提を先に切り分ける対応(B/C/D/E帯は現状tier=None(未識別)になり
-        # 区別できないため、この判定でもランク無しと扱われる。実プレイでは
-        # 常に∞帯のためユーザー確認の上、許容する既知の制限)
-        if not (self._pending_vs_mine_ranks and self._pending_vs_mine_ranks[0].tier is not None):
-            logger.info(
-                "%d試合目: VS画面で自分のランクを検知できなかったため、"
-                "ランクを賭けない試合とみなし結果バナー確定時点で確定します",
-                self._session_match_no,
-            )
-            return self._finalize(None, None)
-
-        self._rank_phase = _RankPhase.WAITING_STABLE
-        self._grace_counter = 0
-        self._grace_candidate_rank_tier = None
-        self._latest_gauge_fill = None
-        self._pending_gauge_fill = None
-        self._pending_gauge_streak = 0
-        self._promotion_confirmed_this_match = False
-        self._demotion_confirmed_this_match = False
-        self._demotion_label_streak = 0
-        self._demotion_label_recorded_this_event = False
-        self._rank_monitor.reset()
-        self._rank_monitor.update(frame)
-        self._state = _State.TRACKING_RANK
+            self._rank_phase = _RankPhase.WAITING_STABLE
+            self._grace_counter = 0
+            self._grace_candidate_rank_tier = None
+            self._latest_gauge_fill = None
+            self._pending_gauge_fill = None
+            self._pending_gauge_streak = 0
+            self._promotion_confirmed_this_match = False
+            self._demotion_confirmed_this_match = False
+            self._demotion_label_streak = 0
+            self._demotion_label_recorded_this_event = False
+            self._rank_monitor.reset()
+            self._rank_monitor.update(frame)
+            self._state = _State.TRACKING_RANK
         return None
 
     def _track_rank(self, frame: np.ndarray) -> Optional[MatchResult]:

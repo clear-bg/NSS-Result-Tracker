@@ -10,7 +10,7 @@ from conftest import requires_video_fixtures
 from nss_tracker.detection.motion import StabilityMonitor
 from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED, RANK_ROI
 from nss_tracker.detection.vs_rank import SlotRank
-from nss_tracker.state.match_state import DEFAULT_RANK_BEFORE_CONSENSUS_FRAMES, MatchStateMachine
+from nss_tracker.state.match_state import MatchStateMachine
 
 TARGET_SIZE = (1920, 1080)
 METADATA_FILENAME = "metadata.json"
@@ -519,9 +519,6 @@ def test_read_rank_before_prefers_vs_screen_tier_over_conflicting_ocr(monkeypatc
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
-        # Issue #287: このテストはVS画面優先ロジック単体の検証のため、多数決自体は
-        # 1フレームで即確定するようにしてタイミングを単純にする(多数決自体は別テストで検証)
-        rank_before_consensus_frames=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
     machine._vs_confirmed_this_match = True
@@ -558,7 +555,6 @@ def test_read_rank_before_falls_back_to_ocr_when_vs_screen_tier_unavailable(monk
 
     machine = MatchStateMachine(
         banner_confirm_frames=2,
-        rank_before_consensus_frames=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
     machine._vs_confirmed_this_match = True
@@ -573,89 +569,6 @@ def test_read_rank_before_falls_back_to_ocr_when_vs_screen_tier_unavailable(monk
 
     assert machine._pending_rank_before_tier == 12
     assert machine._pending_rank_before == pytest.approx(12.5)
-
-
-def test_rank_before_consensus_rejects_single_bad_frame(monkeypatch):
-    """Issue #287: 結果バナー確定直後に数フレーム分読み取って多数決を取ることで、
-    偶発的に1フレームだけ誤読しても正しい値を採用できることを確認する
-    (実機で起きた41→0の誤読は、前後のフレームは全て正しく読めていたことが
-    動画の検証で判明している)。
-    """
-    compact_calls = {"n": 0}
-
-    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
-        if gauge_roi != GAUGE_ROI_COMPACT:
-            return None
-        compact_calls["n"] += 1
-        if compact_calls["n"] == 3:
-            return (0, 0.98)  # 偶発的な誤読(実機事象の再現)
-        return (41, 41.0)
-
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
-    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
-    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
-
-    machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
-    )
-    machine._vs_confirmed_this_match = True
-    # VS画面側も正解(41)と一致させ、多数決自体の検証に集中する
-    # (VS画面優先ロジックとの相互作用はtest_read_rank_before_prefers_vs_screen_tier_over_conflicting_ocr参照)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 41)]
-
-    frame = np.zeros((10, 10, 3), dtype=np.uint8)
-    for _ in range(10):
-        machine.process_frame(frame)
-        if machine._pending_rank_before_tier is not None:
-            break
-
-    assert compact_calls["n"] == DEFAULT_RANK_BEFORE_CONSENSUS_FRAMES, (
-        "既定のフレーム数分だけ読み取っているはず"
-    )
-    assert machine._pending_rank_before_tier == 41, "偶発的な1フレームの誤読は多数決で無視されるはず"
-    assert machine._pending_rank_before == pytest.approx(41.0)
-
-
-def test_rank_before_consensus_frame_count_is_configurable(monkeypatch):
-    """Issue #287: rank_before_consensus_framesで多数決に使うフレーム数を変更できることを確認する。"""
-    calls = {"n": 0}
-
-    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
-        if gauge_roi != GAUGE_ROI_COMPACT:
-            return None
-        calls["n"] += 1
-        return (10, 10.0)
-
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
-    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
-    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
-
-    machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        rank_before_consensus_frames=3,
-        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
-    )
-    machine._vs_confirmed_this_match = True
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 10)]
-
-    frame = np.zeros((10, 10, 3), dtype=np.uint8)
-    for _ in range(10):
-        machine.process_frame(frame)
-        if machine._pending_rank_before_tier is not None:
-            break
-
-    assert calls["n"] == 3
 
 
 def test_read_rank_before_returns_none_when_ocr_completely_fails_even_with_vs_screen_tier(monkeypatch, caplog):
@@ -1086,10 +999,6 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
         league_change_grace_frames=3,
         rank_recheck_interval_frames=1000,
         rank_tier_rescan_wait_frames=3,
-        # Issue #287: このテストはfake_read_precise_rankの呼び出し回数で応答を
-        # 切り替えているため、多数決による複数回呼び出しと相性が悪い。1回で
-        # 即確定させ、従来通りの呼び出し回数を保つ(多数決自体は別テストで検証)
-        rank_before_consensus_frames=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1439,9 +1348,6 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        # Issue #287: このテストは1フレームでの確定を前提にしているため、
-        # 多数決による複数回呼び出しの影響を受けないようにする
-        rank_before_consensus_frames=1,
         banner_confirm_frames=2,
         league_change_grace_frames=10,
         rank_recheck_interval_frames=3,
@@ -1748,9 +1654,6 @@ def test_match_end_candidate_rejected_by_ocr_keeps_slow_banner_confirm(monkeypat
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
-        # Issue #287: このテストは1フレームでの確定を前提にしているため、
-        # 多数決による複数回呼び出しの影響を受けないようにする
-        rank_before_consensus_frames=1,
         banner_confirm_frames=5,
         banner_confirm_frames_after_match_end=1,
         match_end_confirm_frames=1,
@@ -1903,9 +1806,6 @@ def test_ranked_match_still_waits_for_rank_tracking_after_banner_confirm(monkeyp
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        # Issue #287: このテストは1フレームでの確定を前提にしているため、
-        # 多数決による複数回呼び出しの影響を受けないようにする
-        rank_before_consensus_frames=1,
         banner_confirm_frames=2,
         vs_screen_confirm_frames=2,
     )
@@ -2376,9 +2276,6 @@ def test_obs_switch_uses_first_blackout_when_finalize_itself_triggered_by_blacko
     monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
 
     machine = MatchStateMachine(
-        # Issue #287: このテストは1フレームでの確定を前提にしているため、
-        # 多数決による複数回呼び出しの影響を受けないようにする
-        rank_before_consensus_frames=1,
         vs_screen_confirm_frames=2,
         banner_confirm_frames=2,
         banner_confirm_frames_after_match_end=2,
