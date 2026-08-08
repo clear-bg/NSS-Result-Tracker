@@ -103,10 +103,11 @@ def test_save_match_result_without_session_id_leaves_it_null():
     assert row["session_id"] is None
 
 
-def test_save_match_result_corrects_previous_rank_after_with_small_diff(caplog):
+def test_save_match_result_corrects_previous_rank_after_with_small_diff(caplog, monkeypatch):
     """Issue #179: 直前の試合のrank_afterと今回のrank_beforeに差があれば、
     続いている試合とみなして直前の試合のrank_afterを補正することを確認する。
     """
+    monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", "true")
     conn = connect(":memory:")
     first = MatchResult(
         result="lose",
@@ -133,10 +134,11 @@ def test_save_match_result_corrects_previous_rank_after_with_small_diff(caplog):
     assert "補正しました" in caplog.text
 
 
-def test_save_match_result_corrects_previous_rank_after_even_when_diff_is_large(caplog):
+def test_save_match_result_corrects_previous_rank_after_even_when_diff_is_large(caplog, monkeypatch):
     """Issue #253: 差分が大きくても、試合間でランクは変動しないという前提のもと
     常に直前の試合のrank_afterを補正することを確認する(閾値による補正スキップは撤廃済み)。
     """
+    monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", "true")
     conn = connect(":memory:")
     first = MatchResult(
         result="lose",
@@ -163,11 +165,12 @@ def test_save_match_result_corrects_previous_rank_after_even_when_diff_is_large(
     assert "補正しました" in caplog.text
 
 
-def test_save_match_result_backfills_when_previous_rank_after_is_none(caplog):
+def test_save_match_result_backfills_when_previous_rank_after_is_none(caplog, monkeypatch):
     """Issue #285: 直前の試合のrank_afterがNone(バッジ読み取り失敗等)の場合でも、
     今回の試合のrank_beforeで補完することを確認する(以前はNoneの場合スキップして
     永久に欠損が残るバグがあった)。
     """
+    monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", "true")
     conn = connect(":memory:")
     first = MatchResult(
         result="lose",
@@ -194,10 +197,11 @@ def test_save_match_result_backfills_when_previous_rank_after_is_none(caplog):
     assert "補正しました" in caplog.text
 
 
-def test_save_match_result_does_not_correct_when_current_rank_before_is_none():
+def test_save_match_result_does_not_correct_when_current_rank_before_is_none(monkeypatch):
     """今回の試合のrank_beforeがNoneの場合は補正の基準にできないため
     何もしないことを確認する。
     """
+    monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", "true")
     conn = connect(":memory:")
     first = MatchResult(
         result="lose",
@@ -221,10 +225,11 @@ def test_save_match_result_does_not_correct_when_current_rank_before_is_none():
     assert row["rank_after"] == 38.60
 
 
-def test_save_match_result_does_not_correct_first_match_in_db():
+def test_save_match_result_does_not_correct_first_match_in_db(monkeypatch):
     """DB内に1件も試合が無い状態で最初の試合を保存する場合、直前の試合が
     存在しないため補正処理自体が何もしないことを確認する(エラーにならない)。
     """
+    monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", "true")
     conn = connect(":memory:")
     match = MatchResult(
         result="win",
@@ -238,6 +243,35 @@ def test_save_match_result_does_not_correct_first_match_in_db():
 
     row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
     assert row["rank_after"] == 38.80
+
+
+def test_save_match_result_skips_correction_when_disabled(monkeypatch):
+    """Issue #295: RANK_AFTER_CORRECTION_ENABLED=falseの場合、直前の試合の
+    rank_afterを一切書き換えないことを確認する(仕組み自体は残しつつ、実機データで
+    見つかった副作用のため一時的に無効化できるようにした)。
+    """
+    monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", "false")
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="lose",
+        rank_before=38.62,
+        rank_after=38.60,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    first_id = save_match_result(conn, first)
+
+    second = MatchResult(
+        result="win",
+        rank_before=39.50,
+        rank_after=39.70,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    save_match_result(conn, second)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
+    assert row["rank_after"] == 38.60, "無効化されている間は直前の試合のrank_afterを書き換えないはず"
 
 
 def test_connect_migrates_legacy_matches_without_session_id(tmp_path):

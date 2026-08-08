@@ -23,6 +23,7 @@ from nss_tracker.config import (
     get_obs_websocket_host,
     get_obs_websocket_password,
     get_obs_websocket_port,
+    get_rank_after_correction_enabled,
     get_rank_delta_distribution_scope,
     get_rank_graph_match_limit,
     get_web_host,
@@ -356,6 +357,24 @@ def test_get_youtube_chat_dive_time_enabled_raises_for_invalid_value(monkeypatch
 def test_get_youtube_chat_dive_time_enabled_parses_bool_string(monkeypatch, raw, expected):
     monkeypatch.setenv("YOUTUBE_CHAT_DIVE_TIME_ENABLED", raw)
     assert get_youtube_chat_dive_time_enabled() is expected
+
+
+def test_get_rank_after_correction_enabled_raises_when_unset(monkeypatch):
+    monkeypatch.delenv("RANK_AFTER_CORRECTION_ENABLED", raising=False)
+    with pytest.raises(ConfigError, match="RANK_AFTER_CORRECTION_ENABLED"):
+        get_rank_after_correction_enabled()
+
+
+def test_get_rank_after_correction_enabled_raises_for_invalid_value(monkeypatch):
+    monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", "yes")
+    with pytest.raises(ConfigError, match="RANK_AFTER_CORRECTION_ENABLED"):
+        get_rank_after_correction_enabled()
+
+
+@pytest.mark.parametrize("raw,expected", [("true", True), ("false", False)])
+def test_get_rank_after_correction_enabled_parses_bool_string(monkeypatch, raw, expected):
+    monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", raw)
+    assert get_rank_after_correction_enabled() is expected
 
 
 def test_get_editable_settings_returns_current_env_values(monkeypatch):
