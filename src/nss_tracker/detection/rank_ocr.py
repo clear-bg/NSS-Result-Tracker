@@ -114,14 +114,6 @@ GAUGE_FILLED_VALUE_THRESHOLD = get_detection_value("rank_ocr", "GAUGE_FILLED_VAL
 # B~E帯は参照fixtureが無く未対応のため対象外)
 RANK_TIER_LETTERS = ("S", "A")
 
-# Issue #289: vs_rank.pyの数字OCR前処理(拡大+単色余白の追加)をread_rank()にも
-# 適用する。vs_rank.pyのモジュールdocstring参照: 切り出しがそのままの解像度だと
-# 文字検出自体が働かないことがあり、拡大後に周囲へ余白を足すことで切り出し境界
-# ギリギリの文字も見逃さなくなる。数値ピルは暗い背景に明るい文字のため、
-# vs_rank.pyの_read_pill_digits用の余白色(黒)と同じ値にする
-RANK_NUMBER_UPSCALE = get_detection_value("rank_ocr", "RANK_NUMBER_UPSCALE", 3)
-RANK_NUMBER_PAD = get_detection_value("rank_ocr", "RANK_NUMBER_PAD", 40)
-
 
 @lru_cache(maxsize=1)
 def _get_reader():
@@ -137,17 +129,10 @@ def read_rank(frame: np.ndarray, roi: tuple[int, int, int, int]) -> Optional[int
     バッジ表示サイズに合ったものを呼び出し側が指定すること(モジュールdocstring
     参照)。デフォルト値は持たせない(read_rank_gauge_fill()と同じ理由、
     どちらか一方を既定にすると誤用に気付けないため)。
-
-    Issue #289: vs_rank.pyと同じ前処理(拡大+単色余白の追加)を適用してから
-    OCRする(RANK_NUMBER_UPSCALE/RANK_NUMBER_PAD参照)。
     """
     x1, y1, x2, y2 = roi
     crop = frame[y1:y2, x1:x2]
-    resized = cv2.resize(crop, None, fx=RANK_NUMBER_UPSCALE, fy=RANK_NUMBER_UPSCALE, interpolation=cv2.INTER_CUBIC)
-    padded = cv2.copyMakeBorder(
-        resized, RANK_NUMBER_PAD, RANK_NUMBER_PAD, RANK_NUMBER_PAD, RANK_NUMBER_PAD, cv2.BORDER_CONSTANT, value=(0, 0, 0)
-    )
-    results = _get_reader().readtext(padded, allowlist="0123456789")
+    results = _get_reader().readtext(crop, allowlist="0123456789")
     if not results:
         return None
 
