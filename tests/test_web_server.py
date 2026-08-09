@@ -1,4 +1,7 @@
+import json
 import os
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -8,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from nss_tracker.database import db
 from nss_tracker.detection.vs_rank import SlotRank
+from nss_tracker.web import server as server_module
 from nss_tracker.state.match_state import MatchResult
 from nss_tracker.timeutil import now_jst
 from nss_tracker.web.runner import start_web_server_thread
@@ -62,6 +66,18 @@ def _save_match_result(conn, match: MatchResult, session_id=None) -> int:
         )
         conn.commit()
     return match_id
+
+
+def _extract_rank_entry_clips(html: str) -> list[dict]:
+    """Issue #307: /rank-entryの左側(試合情報・入力フォーム)は動画選択と連動して
+    JS側で描画するようになったため、レンダリング結果のHTML文字列ではなく、
+    ページに埋め込まれたJSONデータ(サーバー側の実際の出力)を検証する。
+    """
+    match = re.search(
+        r'<script id="rank-entry-clips-data" type="application/json">(.*?)</script>', html, re.DOTALL
+    )
+    assert match is not None, "rank-entry-clips-dataが見つかりません"
+    return json.loads(match.group(1))
 
 
 def test_health_endpoint(tmp_path: Path):
@@ -1711,6 +1727,9 @@ def test_rank_entry_get_shows_no_pending_message_when_nothing_pending(tmp_path: 
 
 
 def test_rank_entry_get_shows_oldest_pending_match(tmp_path: Path):
+    """クリップが1件も無い場合、Issue #306/#308までと同じくfetch_oldest_pending_manual_rank_match()
+    の結果1件(has_clip=False)が埋め込みJSONに含まれることを確認する。
+    """
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     db.save_match_result(
@@ -1723,9 +1742,13 @@ def test_rank_entry_get_shows_oldest_pending_match(tmp_path: Path):
     response = client.get("/rank-entry")
 
     assert response.status_code == 200
-    assert "負け" in response.text
-    assert "38.62" in response.text
-    assert 'value="38.4"' in response.text  # rank_after_ocrが入力欄の初期値になる
+    clips = _extract_rank_entry_clips(response.text)
+    assert len(clips) == 1
+    assert clips[0]["result_text"] == "負け"
+    assert clips[0]["rank_before"] == 38.62
+    assert clips[0]["rank_after_ocr"] == 38.4
+    assert clips[0]["has_clip"] is False
+    assert clips[0]["recency_label"] == "最新"
 
 
 def test_rank_entry_post_saves_rank_after_and_league_changed(tmp_path: Path):
@@ -1803,22 +1826,23 @@ def test_rank_entry_get_shows_pending_count_when_multiple_pending(tmp_path: Path
 
     response = client.get("/rank-entry")
 
-    assert "他に2件未確定です" in response.text
+    assert "未確定の試合: 3件" in response.text
 
 
-def test_rank_entry_get_does_not_show_pending_count_when_only_one_pending(tmp_path: Path):
+def test_rank_entry_get_does_not_show_pending_count_when_nothing_pending(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
-    db.save_match_result(
+    match_id = db.save_match_result(
         conn,
-        MatchResult(result="win", rank_before=38.62, rank_after=38.50, league_changed=None, detected_at=now_jst()),
+        MatchResult(result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=now_jst()),
     )
+    db.save_manual_rank_after(conn, match_id, 38.90)
     conn.close()
     client = TestClient(create_app(db_path))
 
     response = client.get("/rank-entry")
 
-    assert "未確定です" not in response.text
+    assert "未確定の試合:" not in response.text
 
 
 def test_rank_entry_get_shows_blocked_message_when_rank_before_chain_unresolved(tmp_path: Path):
@@ -1843,8 +1867,158 @@ def test_rank_entry_get_shows_blocked_message_when_rank_before_chain_unresolved(
     response = client.get("/rank-entry")
 
     assert response.status_code == 200
-    assert "この試合は入力できません" in response.text
-    assert 'name="rank_after"' not in response.text
+    clips = _extract_rank_entry_clips(response.text)
+    assert len(clips) == 1
+    assert clips[0]["rank_before"] is None
+    assert clips[0]["rank_after"] is None
+
+
+def test_rank_entry_clips_api_returns_empty_list_when_no_clips(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-entry-clips")
+
+    assert response.status_code == 200
+    assert response.json() == {"clips": [], "pending_count": 0}
+
+
+def test_rank_entry_clips_api_returns_clips_newest_first_with_recency_labels(tmp_path: Path, monkeypatch):
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    older_id = db.save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=38.62,
+            rank_after=38.50,
+            league_changed=None,
+            detected_at=datetime(2026, 8, 9, 20, 0, tzinfo=timezone.utc),
+        ),
+    )
+    newer_id = db.save_match_result(
+        conn,
+        MatchResult(
+            result="lose",
+            rank_before=38.62,
+            rank_after=38.10,
+            league_changed=None,
+            detected_at=datetime(2026, 8, 9, 21, 0, tzinfo=timezone.utc),
+        ),
+    )
+    conn.close()
+    (clips_dir / f"{older_id}.mp4").write_bytes(b"dummy")
+    (clips_dir / f"{newer_id}.mp4").write_bytes(b"dummy")
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-entry-clips")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["pending_count"] == 2
+    clips = body["clips"]
+    assert [clip["match_id"] for clip in clips] == [newer_id, older_id]
+    assert [clip["recency_label"] for clip in clips] == ["最新", "1つ前"]
+    assert clips[0]["result_text"] == "負け"
+    assert clips[1]["result_text"] == "勝ち"
+    assert all(clip["has_clip"] for clip in clips)
+
+
+def test_rank_entry_clips_api_labels_third_clip_as_two_before(tmp_path: Path, monkeypatch):
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    ids = []
+    for i in range(3):
+        match_id = db.save_match_result(
+            conn,
+            MatchResult(
+                result="win",
+                rank_before=38.62,
+                rank_after=38.50,
+                league_changed=None,
+                detected_at=datetime(2026, 8, 9, 20 + i, 0, tzinfo=timezone.utc),
+            ),
+        )
+        ids.append(match_id)
+        (clips_dir / f"{match_id}.mp4").write_bytes(b"dummy")
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-entry-clips")
+
+    clips = response.json()["clips"]
+    assert [clip["match_id"] for clip in clips] == list(reversed(ids))
+    assert [clip["recency_label"] for clip in clips] == ["最新", "1つ前", "2つ前"]
+
+
+def test_rank_entry_clips_api_marks_confirmed_matches(tmp_path: Path, monkeypatch):
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    db.save_manual_rank_after(conn, match_id, 39.00)
+    conn.close()
+    (clips_dir / f"{match_id}.mp4").write_bytes(b"dummy")
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-entry-clips")
+
+    clips = response.json()["clips"]
+    assert clips[0]["rank_after"] == 39.00
+
+
+def test_rank_entry_clips_api_skips_clip_without_matching_db_row(tmp_path: Path, monkeypatch):
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    (clips_dir / "999.mp4").write_bytes(b"dummy")  # DBに対応する試合が無いidを持つファイル
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-entry-clips")
+
+    assert response.json() == {"clips": [], "pending_count": 0}
+
+
+def test_rank_entry_clip_file_serves_existing_file(tmp_path: Path, monkeypatch):
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    (clips_dir / "5.mp4").write_bytes(b"dummy video bytes")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/rank-entry/clips/5.mp4")
+
+    assert response.status_code == 200
+    assert response.content == b"dummy video bytes"
+    assert response.headers["content-type"] == "video/mp4"
+
+
+def test_rank_entry_clip_file_404_when_missing(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/rank-entry/clips/5.mp4")
+
+    assert response.status_code == 404
 
 
 def test_start_web_server_thread_serves_requests_and_stops_cleanly(tmp_path: Path):
