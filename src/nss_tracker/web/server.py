@@ -113,7 +113,7 @@ from nss_tracker.database.db import (
     fetch_vs_rank_snapshot_slots,
     save_manual_rank_after,
 )
-from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR
+from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR
 
 _WEB_DIR = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=_WEB_DIR / "templates")
@@ -962,7 +962,7 @@ def _rank_entry_recency_label(index: int) -> str:
     return "最新" if index == 0 else f"{index}つ前"
 
 
-def _build_rank_entry_clip_info(row: sqlite3.Row, index: int, has_clip: bool) -> dict:
+def _build_rank_entry_clip_info(row: sqlite3.Row, index: int, has_clip: bool, has_gauge_clip: bool = False) -> dict:
     detected_at = datetime.fromisoformat(row["detected_at"])
     return {
         "match_id": row["id"],
@@ -973,6 +973,10 @@ def _build_rank_entry_clip_info(row: sqlite3.Row, index: int, has_clip: bool) ->
         "rank_after_ocr": row["rank_after_ocr"],
         "rank_after": row["rank_after"],
         "has_clip": has_clip,
+        # Issue #312: ゲージクローズアップ動画(画面全体クリップとは別ファイル)が
+        # 存在するかどうか。画面全体クリップより後から追加した機能のため、
+        # 導入前に生成された試合や、まだエンコードが終わっていない試合ではFalseになりうる
+        "has_gauge_clip": has_gauge_clip,
     }
 
 
@@ -997,13 +1001,18 @@ def _build_rank_entry_context(db_path: Path) -> dict:
     try:
         pending_count = fetch_pending_manual_rank_match_count(conn)
         clip_ids = _list_clip_match_ids(DEFAULT_CLIPS_DIR)
+        gauge_clip_ids = set(_list_clip_match_ids(GAUGE_CLIPS_DIR))
         clips = []
         for match_id in clip_ids:
             row = fetch_match(conn, match_id)
             if row is None:
                 # 通常は起きないはずだが、DBをリセットした場合等の防御的スキップ
                 continue
-            clips.append(_build_rank_entry_clip_info(row, len(clips), has_clip=True))
+            clips.append(
+                _build_rank_entry_clip_info(
+                    row, len(clips), has_clip=True, has_gauge_clip=match_id in gauge_clip_ids
+                )
+            )
         if not clips:
             row = fetch_oldest_pending_manual_rank_match(conn)
             if row is not None:
@@ -1107,6 +1116,13 @@ def create_app(db_path: Path) -> FastAPI:
     @app.get("/rank-entry/clips/{match_id}.mp4")
     def rank_entry_clip_file(match_id: int):
         clip_path = DEFAULT_CLIPS_DIR / f"{match_id}.mp4"
+        if not clip_path.is_file():
+            raise HTTPException(status_code=404, detail="クリップが見つかりません")
+        return FileResponse(clip_path, media_type="video/mp4")
+
+    @app.get("/rank-entry/gauge-clips/{match_id}.mp4")
+    def rank_entry_gauge_clip_file(match_id: int):
+        clip_path = GAUGE_CLIPS_DIR / f"{match_id}.mp4"
         if not clip_path.is_file():
             raise HTTPException(status_code=404, detail="クリップが見つかりません")
         return FileResponse(clip_path, media_type="video/mp4")
