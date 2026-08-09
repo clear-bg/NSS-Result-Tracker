@@ -118,7 +118,11 @@ CREATE TABLE IF NOT EXISTS matches (
     detected_at TEXT NOT NULL,      -- 結果バナー検知時刻(ISO8601, JST)
     result TEXT NOT NULL,           -- 'win' / 'lose' / 'draw'
     rank_before REAL,               -- 結果バナー表示時点のランク値
-    rank_after REAL,                -- ランク変動確定後の値
+    rank_after REAL,                -- ランク変動確定後の値。Issue #306以降は手動入力専用
+                                     -- (自動検知はこの列に書き込まず、手動入力されるまでNULLのまま)
+    rank_after_ocr REAL,            -- 自動検知(OCR)が読み取ったランク変動確定後の値。Issue #306。
+                                     -- 比較・将来のOCR精度検証用で、rank_afterのように表示・
+                                     -- league_changed算出には使わない
     league_changed TEXT,            -- 'up' / 'down' / NULL
     mine_team_color TEXT,           -- VS画面で実測した自チームの色(hex文字列、例: '#64bde2')。Issue #113
     opponent_team_color TEXT,       -- 同、相手チーム。VS画面を検知できなかった試合ではどちらもNULL
@@ -259,6 +263,22 @@ def _migrate_matches_add_team_color(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_matches_add_rank_after_ocr(conn: sqlite3.Connection) -> None:
+    """Issue #306: 既存DBファイルのmatchesテーブルにrank_after_ocr列を追加する。
+
+    NOT NULL制約が絡まない列追加のため、_migrate_matches_add_session_idと同じく
+    ALTER TABLE ADD COLUMNだけで済む。新規DBでは_SCHEMA自体に既にrank_after_ocr
+    列を含むため、この関数は無害にreturnする。
+    """
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    if any(c["name"] == "rank_after_ocr" for c in columns):
+        return
+
+    logger.info("matchesテーブルにrank_after_ocr列を追加しています")
+    conn.execute("ALTER TABLE matches ADD COLUMN rank_after_ocr REAL")
+    conn.commit()
+
+
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """DBに接続し、テーブルが無ければ作成して返す。
 
@@ -276,6 +296,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     _migrate_matches_add_session_id(conn)
     _migrate_vs_slot_ranks_add_rank_tier_label(conn)
     _migrate_matches_add_team_color(conn)
+    _migrate_matches_add_rank_after_ocr(conn)
     logger.info("DBに接続しました: %s", Path(db_path).resolve())
     return conn
 
@@ -330,6 +351,13 @@ def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_r
     誤差を通じて)直前の試合の正しかった値を逆に壊してしまうケースが見つかった。
     仕組み自体は残しつつ、.envのRANK_AFTER_CORRECTION_ENABLEDで一時的に
     無効化できるようにする(無効時は直前の試合のrank_afterを一切書き換えない)。
+
+    Issue #306: rank_afterはこの関数以降、save_match_result()では書き込まれなく
+    なり、手動入力(save_manual_rank_after())によってのみ設定されるようになった。
+    そのため非NULLのrank_afterは「人間が確定させた値」を意味する。
+    RANK_AFTER_CORRECTION_ENABLEDを将来trueに戻した場合でも、手動確定済みの値を
+    OCR由来の推測(次の試合のrank_before)で上書きしてはならないため、
+    rank_afterが既に非NULLの場合は補正自体を行わない(ユーザー確認済み)。
     """
     if not get_rank_after_correction_enabled():
         logger.debug("RANK_AFTER_CORRECTION_ENABLEDが無効化されているため、前試合のrank_after補正をスキップしました")
@@ -340,7 +368,8 @@ def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_r
     if row is None:
         return
     previous_rank_after = row["rank_after"]
-    if previous_rank_after == current_rank_before:
+    if previous_rank_after is not None:
+        # Issue #306: 非NULLは手動確定済みを意味するため上書きしない(docstring参照)
         return
     now = now_jst().isoformat()
     conn.execute(
@@ -348,17 +377,10 @@ def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_r
         (current_rank_before, now, row["id"]),
     )
     conn.commit()
-    diff_text = (
-        f"、差分{abs(current_rank_before - previous_rank_after):.4f}"
-        if previous_rank_after is not None
-        else "、直前は未読み取り(None)だったため補完"
-    )
     logger.info(
-        "matches.id=%d のrank_afterを%sから%sに補正しました(次の試合のrank_before基準%s)",
+        "matches.id=%d のrank_afterを未読み取り(None)から%sに補完しました(次の試合のrank_before基準)",
         row["id"],
-        previous_rank_after,
         current_rank_before,
-        diff_text,
     )
 
 
@@ -370,21 +392,26 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
 
     保存前に、直前の試合のrank_afterを今回のrank_beforeで補正できないか確認する
     (Issue #179、_maybe_correct_previous_match_rank_after参照)。
+
+    Issue #306: 自動検知(OCR)が読み取ったmatch.rank_afterは、正の値であるrank_after
+    列ではなく比較用のrank_after_ocr列へ保存する。rank_after(・そこから算出される
+    league_changed)は手動入力(save_manual_rank_after())が確定させるまでNULLの
+    ままにする(ランクを賭けない試合はmatch.rank_after自体がNoneのため、
+    rank_after_ocrもNoneのまま保存されるだけで扱いは変わらない)。
     """
     _maybe_correct_previous_match_rank_after(conn, match.rank_before)
     now = now_jst().isoformat()
     cursor = conn.execute(
         "INSERT INTO matches "
-        "(session_id, detected_at, result, rank_before, rank_after, league_changed, "
+        "(session_id, detected_at, result, rank_before, rank_after_ocr, "
         "mine_team_color, opponent_team_color, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             session_id,
             match.detected_at.isoformat(),
             match.result,
             match.rank_before,
             match.rank_after,
-            match.league_changed,
             match.mine_team_color,
             match.opponent_team_color,
             now,
@@ -393,6 +420,60 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
     )
     conn.commit()
     return cursor.lastrowid
+
+
+def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: float) -> None:
+    """試合のrank_after(ランク変動確定後の値)を手動入力で確定させる(Issue #306)。
+
+    league_changedは対象試合のrank_beforeとの帯番号(int)比較から算出し、あわせて
+    書き込む(state/match_state.pyの_finalize()と同じ、帯番号(整数)同士で比較する
+    方式。小数のランク値同士で比較すると、帯自体は変わっていないのにゲージの
+    僅かな増減だけで誤判定するため)。対象の試合が存在しない、または
+    ランクを賭けていない試合(rank_beforeがNULL)の場合はValueErrorを送出する
+    (呼び出し元がfetch_oldest_pending_manual_rank_match()の結果のみを渡す前提のため、
+    通常はここに到達しない想定の防御的チェック)。
+    """
+    row = conn.execute("SELECT rank_before FROM matches WHERE id = ?", (match_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"matches.id={match_id} が見つかりません")
+    rank_before = row["rank_before"]
+    if rank_before is None:
+        raise ValueError(f"matches.id={match_id} はランクを賭けていない試合です(rank_beforeがNULL)")
+
+    tier_before = int(rank_before)
+    tier_after = int(rank_after)
+    if tier_after > tier_before:
+        league_changed = "up"
+    elif tier_after < tier_before:
+        league_changed = "down"
+    else:
+        league_changed = None
+
+    now = now_jst().isoformat()
+    conn.execute(
+        "UPDATE matches SET rank_after = ?, league_changed = ?, updated_at = ? WHERE id = ?",
+        (rank_after, league_changed, now, match_id),
+    )
+    conn.commit()
+    logger.info(
+        "matches.id=%d のrank_afterを手動入力で確定しました: rank=%s->%s league_changed=%s",
+        match_id,
+        rank_before,
+        rank_after,
+        league_changed,
+    )
+
+
+def fetch_oldest_pending_manual_rank_match(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
+    """rank_after未確定(手動入力待ち)の試合のうち、最も古い1件を返す(Issue #306)。
+
+    ランクを賭けた試合(rank_beforeが非NULL)かつrank_afterが未確定(NULL)の
+    ものが対象。ランクを賭けない試合はrank_before自体がNULLのため対象外
+    (従来どおり)。1件も無ければNoneを返す。
+    """
+    return conn.execute(
+        "SELECT * FROM matches WHERE rank_before IS NOT NULL AND rank_after IS NULL ORDER BY id ASC LIMIT 1"
+    ).fetchone()
 
 
 def fetch_all_matches(conn: sqlite3.Connection) -> list[sqlite3.Row]:
