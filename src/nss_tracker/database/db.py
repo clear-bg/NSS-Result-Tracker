@@ -606,6 +606,13 @@ def fetch_pending_manual_rank_match_count(conn: sqlite3.Connection) -> int:
     return row["count"]
 
 
+def fetch_match(conn: sqlite3.Connection, match_id: int) -> Optional[sqlite3.Row]:
+    """指定したidの試合を1件取得する。無ければNoneを返す(Issue #307、動画クリップの
+    ラベル表示用に試合情報を引く用途)。
+    """
+    return conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+
+
 def fetch_all_matches(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """保存済みの試合結果を記録順(id昇順)ですべて取得する。"""
     return conn.execute("SELECT * FROM matches ORDER BY id").fetchall()
