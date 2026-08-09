@@ -1542,6 +1542,32 @@ def test_admin_get_shows_overlay_widget_links(tmp_path: Path):
         assert f'<a href="{path}?debug_bg=1" target="_blank" rel="noopener">{label}</a>' in response.text
 
 
+def test_admin_get_shows_rank_entry_link(tmp_path: Path):
+    """Issue #314: /rank-entryへのリンクを表示する。"""
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert '<a href="/rank-entry" target="_blank" rel="noopener">' in response.text
+
+
+def test_admin_get_shows_dashboard_heading_before_settings_heading(tmp_path: Path):
+    """Issue #314: 見出し構成を「配信ダッシュボード」→「配信ウィジェット一覧」→
+    「配信中の設定」の順に再構成したことを確認する。
+    """
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert "<h1>配信ダッシュボード</h1>" in response.text
+    dashboard_index = response.text.index("配信ダッシュボード")
+    widget_list_index = response.text.index("配信ウィジェット一覧")
+    settings_index = response.text.index("配信中の設定")
+    assert dashboard_index < widget_list_index < settings_index
+
+
 def test_overlay_widget_links_matches_registered_overlay_routes(tmp_path: Path):
     """全/overlay/xxxルートが漏れなくリンク集に含まれることを確認する。"""
     app = create_app(tmp_path / "test.db")
@@ -1724,6 +1750,18 @@ def test_rank_entry_get_shows_no_pending_message_when_nothing_pending(tmp_path: 
 
     assert response.status_code == 200
     assert "未確定の試合はありません" in response.text
+
+
+def test_rank_entry_get_shows_admin_link(tmp_path: Path):
+    """Issue #314: /adminへのリンクを表示する。"""
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/rank-entry")
+
+    assert response.status_code == 200
+    assert '<a href="/admin" target="_blank" rel="noopener">' in response.text
 
 
 def test_rank_entry_get_shows_oldest_pending_match(tmp_path: Path):
