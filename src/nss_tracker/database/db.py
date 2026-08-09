@@ -117,9 +117,16 @@ CREATE TABLE IF NOT EXISTS matches (
     session_id INTEGER REFERENCES sessions(id), -- 検知時点の配信セッション。Issue #93より前の既存行はNULL
     detected_at TEXT NOT NULL,      -- 結果バナー検知時刻(ISO8601, JST)
     result TEXT NOT NULL,           -- 'win' / 'lose' / 'draw'
-    rank_before REAL,               -- 結果バナー表示時点のランク値
+    rank_before REAL,               -- 試合開始時点のランク値。Issue #308以降は、直近の
+                                     -- ランクを賭けた試合のrank_after(確定済みのもの)を
+                                     -- そのまま引き継ぐ値(チェーン)。まだ引き継ぎ元が
+                                     -- 未確定の場合はNULLのまま(rank_before_ocr参照)
     rank_after REAL,                -- ランク変動確定後の値。Issue #306以降は手動入力専用
                                      -- (自動検知はこの列に書き込まず、手動入力されるまでNULLのまま)
+    rank_before_ocr REAL,           -- 自動検知(OCR/VS画面)が読み取った試合開始時点のランク値。
+                                     -- Issue #308。比較用、および直近の確定済み試合が無い場合
+                                     -- (セッション最初のランクを賭けた試合等)のrank_beforeの
+                                     -- フォールバック値としても使う
     rank_after_ocr REAL,            -- 自動検知(OCR)が読み取ったランク変動確定後の値。Issue #306。
                                      -- 比較・将来のOCR精度検証用で、rank_afterのように表示・
                                      -- league_changed算出には使わない
@@ -279,6 +286,27 @@ def _migrate_matches_add_rank_after_ocr(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_matches_add_rank_before_ocr(conn: sqlite3.Connection) -> None:
+    """Issue #308: 既存DBファイルのmatchesテーブルにrank_before_ocr列を追加する。
+
+    NOT NULL制約が絡まない列追加のため、ALTER TABLE ADD COLUMNだけで済む。
+    新規DBでは_SCHEMA自体に既にrank_before_ocr列を含むため、この関数は無害にreturnする。
+
+    Issue #308より前に記録された既存行は、rank_before自体がOCR/VS画面由来の値
+    そのものだった(rank_beforeがチェーン導出値になるのはこの列追加以降)ため、
+    既存のrank_beforeをそのままrank_before_ocrへコピーして埋める(比較列の
+    過去データが空のままにならないようにするため)。
+    """
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    if any(c["name"] == "rank_before_ocr" for c in columns):
+        return
+
+    logger.info("matchesテーブルにrank_before_ocr列を追加しています")
+    conn.execute("ALTER TABLE matches ADD COLUMN rank_before_ocr REAL")
+    conn.execute("UPDATE matches SET rank_before_ocr = rank_before WHERE rank_before IS NOT NULL")
+    conn.commit()
+
+
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """DBに接続し、テーブルが無ければ作成して返す。
 
@@ -297,6 +325,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     _migrate_vs_slot_ranks_add_rank_tier_label(conn)
     _migrate_matches_add_team_color(conn)
     _migrate_matches_add_rank_after_ocr(conn)
+    _migrate_matches_add_rank_before_ocr(conn)
     logger.info("DBに接続しました: %s", Path(db_path).resolve())
     return conn
 
@@ -384,6 +413,70 @@ def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_r
     )
 
 
+def _resolve_rank_before(conn: sqlite3.Connection, rank_before_ocr: Optional[float]) -> Optional[float]:
+    """新しい試合のrank_before(チェーン導出値)を決定する(Issue #308)。
+
+    ランクを賭けない試合(rank_before_ocrがNone)はチェーンの対象外で、常にNoneを返す。
+    ランクを賭けた試合は、直近の「ランクを賭けた試合」(rank_before_ocrが非NULLの
+    行、確定済みかどうかは問わない)を1件だけ見る:
+
+    - 直近の試合が無い(DB上で最初のランクを賭けた試合、またはそれまでの試合が
+      すべてランクを賭けない試合だった場合): 引き継ぎ元が無いため、フォールバックと
+      してこの試合自身のrank_before_ocr(OCR実測値)をそのまま使う
+    - 直近の試合のrank_afterが確定済み(非NULL): その値をそのまま引き継ぐ
+    - 直近の試合のrank_afterが未確定(NULL、手動入力待ち): チェーンが詰まっている
+      ため、この試合のrank_beforeもNoneのまま(手動入力待ち)にする。直近の試合が
+      確定した時点でsave_manual_rank_after()がこの試合のrank_beforeを遡って
+      埋める(_backfill_next_rank_before参照)
+    """
+    if rank_before_ocr is None:
+        return None
+    row = conn.execute(
+        "SELECT rank_after FROM matches WHERE rank_before_ocr IS NOT NULL ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return rank_before_ocr
+    return row["rank_after"]
+
+
+def _backfill_next_rank_before(conn: sqlite3.Connection, confirmed_match_id: int, rank_after: float) -> None:
+    """confirmed_match_idのrank_afterが確定したことで、rank_beforeのチェーンが
+    詰まっていた後続の試合を解決できないか確認し、解決できれば埋める(Issue #308)。
+
+    「直近のランクを賭けた試合」(rank_before_ocrが非NULL)を時系列順に1件ずつ
+    辿り、rank_beforeがまだNoneの間は今回確定した値を使って埋め、そのままさらに
+    次の試合へ連鎖的に辿る(通常の運用では古い順に1件ずつ確定させるため高々1件
+    しか埋まらないはずだが、まとめて何件も未確定のまま溜まっていた場合等の
+    保険として複数件に対応できるようにしている)。
+    """
+    current_rank_after = rank_after
+    after_id = confirmed_match_id
+    while True:
+        row = conn.execute(
+            "SELECT id, rank_before, rank_after FROM matches "
+            "WHERE id > ? AND rank_before_ocr IS NOT NULL ORDER BY id ASC LIMIT 1",
+            (after_id,),
+        ).fetchone()
+        if row is None or row["rank_before"] is not None:
+            return
+        now = now_jst().isoformat()
+        conn.execute(
+            "UPDATE matches SET rank_before = ?, updated_at = ? WHERE id = ?",
+            (current_rank_after, now, row["id"]),
+        )
+        conn.commit()
+        logger.info(
+            "matches.id=%d のrank_beforeを直前の試合(id=%d)の確定済みrank_after(%s)で埋めました",
+            row["id"],
+            after_id,
+            current_rank_after,
+        )
+        if row["rank_after"] is None:
+            return
+        after_id = row["id"]
+        current_rank_after = row["rank_after"]
+
+
 def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: Optional[int] = None) -> int:
     """MatchResultを1件matchesテーブルに保存し、挿入したレコードのidを返す。
 
@@ -398,18 +491,24 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
     league_changed)は手動入力(save_manual_rank_after())が確定させるまでNULLの
     ままにする(ランクを賭けない試合はmatch.rank_after自体がNoneのため、
     rank_after_ocrもNoneのまま保存されるだけで扱いは変わらない)。
+
+    Issue #308: 同様にmatch.rank_before(自動検知値)もrank_before_ocr列へ保存し、
+    正の値であるrank_beforeは直近のランクを賭けた試合のrank_afterから導出する
+    (_resolve_rank_before参照)。
     """
     _maybe_correct_previous_match_rank_after(conn, match.rank_before)
+    rank_before = _resolve_rank_before(conn, match.rank_before)
     now = now_jst().isoformat()
     cursor = conn.execute(
         "INSERT INTO matches "
-        "(session_id, detected_at, result, rank_before, rank_after_ocr, "
+        "(session_id, detected_at, result, rank_before, rank_before_ocr, rank_after_ocr, "
         "mine_team_color, opponent_team_color, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             session_id,
             match.detected_at.isoformat(),
             match.result,
+            rank_before,
             match.rank_before,
             match.rank_after,
             match.mine_team_color,
@@ -428,17 +527,28 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
     league_changedは対象試合のrank_beforeとの帯番号(int)比較から算出し、あわせて
     書き込む(state/match_state.pyの_finalize()と同じ、帯番号(整数)同士で比較する
     方式。小数のランク値同士で比較すると、帯自体は変わっていないのにゲージの
-    僅かな増減だけで誤判定するため)。対象の試合が存在しない、または
-    ランクを賭けていない試合(rank_beforeがNULL)の場合はValueErrorを送出する
+    僅かな増減だけで誤判定するため)。対象の試合が存在しない、またはランクを
+    賭けていない試合(rank_before_ocrがNULL)の場合はValueErrorを送出する
     (呼び出し元がfetch_oldest_pending_manual_rank_match()の結果のみを渡す前提のため、
     通常はここに到達しない想定の防御的チェック)。
+
+    Issue #308: rank_beforeのチェーンがまだ詰まっていて解決できていない
+    (rank_before_ocrは非NULLだがrank_beforeがまだNULL)試合もValueErrorを送出する
+    (fetch_oldest_pending_manual_rank_match()は通常この状態の試合を返さないはずだが、
+    直前の試合がまだ未確定のまま呼び出された場合の防御的チェック)。確定後は、
+    このrank_afterを引き継ぎ元として待っていた後続の試合のrank_beforeが
+    解決できないか確認する(_backfill_next_rank_before参照)。
     """
-    row = conn.execute("SELECT rank_before FROM matches WHERE id = ?", (match_id,)).fetchone()
+    row = conn.execute("SELECT rank_before, rank_before_ocr FROM matches WHERE id = ?", (match_id,)).fetchone()
     if row is None:
         raise ValueError(f"matches.id={match_id} が見つかりません")
+    if row["rank_before_ocr"] is None:
+        raise ValueError(f"matches.id={match_id} はランクを賭けていない試合です(rank_before_ocrがNULL)")
     rank_before = row["rank_before"]
     if rank_before is None:
-        raise ValueError(f"matches.id={match_id} はランクを賭けていない試合です(rank_beforeがNULL)")
+        raise ValueError(
+            f"matches.id={match_id} は直前の試合のrank_afterがまだ未確定のため、rank_beforeを解決できません"
+        )
 
     tier_before = int(rank_before)
     tier_after = int(rank_after)
@@ -462,18 +572,38 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
         rank_after,
         league_changed,
     )
+    _backfill_next_rank_before(conn, match_id, rank_after)
 
 
 def fetch_oldest_pending_manual_rank_match(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
     """rank_after未確定(手動入力待ち)の試合のうち、最も古い1件を返す(Issue #306)。
 
-    ランクを賭けた試合(rank_beforeが非NULL)かつrank_afterが未確定(NULL)の
-    ものが対象。ランクを賭けない試合はrank_before自体がNULLのため対象外
+    ランクを賭けた試合(rank_before_ocrが非NULL)かつrank_afterが未確定(NULL)の
+    ものが対象。ランクを賭けない試合はrank_before_ocr自体がNULLのため対象外
     (従来どおり)。1件も無ければNoneを返す。
+
+    Issue #308: 判定にはrank_before(チェーン導出値、まだ解決できておらずNULLの
+    ことがある)ではなくrank_before_ocr(自動検知値、ランクを賭けた試合なら
+    チェーンの解決状況に関わらず必ず入っている)を使う。古い順に確定させていく
+    運用であれば返す試合のrank_beforeは通常既に解決済みのはずだが、万一
+    (直前セッションの終わり際等)未解決のまま返ることもありうるため、
+    呼び出し側(web/server.py)でrank_beforeがNoneの場合の表示を用意している。
     """
     return conn.execute(
-        "SELECT * FROM matches WHERE rank_before IS NOT NULL AND rank_after IS NULL ORDER BY id ASC LIMIT 1"
+        "SELECT * FROM matches WHERE rank_before_ocr IS NOT NULL AND rank_after IS NULL ORDER BY id ASC LIMIT 1"
     ).fetchone()
+
+
+def fetch_pending_manual_rank_match_count(conn: sqlite3.Connection) -> int:
+    """rank_after未確定(手動入力待ち)の試合の件数を返す(Issue #308)。
+
+    /rank-entryページで「他に○件未確定です」という形の目安表示に使う
+    (fetch_oldest_pending_manual_rank_matchと同じ絞り込み条件)。
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM matches WHERE rank_before_ocr IS NOT NULL AND rank_after IS NULL"
+    ).fetchone()
+    return row["count"]
 
 
 def fetch_all_matches(conn: sqlite3.Connection) -> list[sqlite3.Row]:

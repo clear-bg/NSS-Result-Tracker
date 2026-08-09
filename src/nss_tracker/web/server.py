@@ -107,6 +107,7 @@ from nss_tracker.database.db import (
     fetch_latest_vs_rank_snapshot,
     fetch_matches_for_session,
     fetch_oldest_pending_manual_rank_match,
+    fetch_pending_manual_rank_match_count,
     fetch_recent_matches,
     fetch_vs_rank_snapshot_slots,
     save_manual_rank_after,
@@ -954,14 +955,21 @@ def _build_rank_entry_context(db_path: Path) -> dict:
     """/rank-entryページ用に、未確定(rank_after未入力)の最古の試合を1件取得する(Issue #306)。
 
     無ければmatch=Noneのcontextを返す(テンプレート側で「未確定の試合はありません」を表示)。
+
+    Issue #308: 他にも未確定の試合が溜まっている場合に気付けるよう件数
+    (pending_count、自分自身を含む)もあわせて返す。また、rank_beforeのチェーンが
+    まだ解決できていない(直前の試合が未確定の)試合が返ってきた場合
+    (通常は起きないはずだが、防御的に対応する)、入力フォームの代わりに
+    その旨を表示する(rank_before_pending)。
     """
     conn = _connect(db_path)
     try:
         row = fetch_oldest_pending_manual_rank_match(conn)
+        pending_count = fetch_pending_manual_rank_match_count(conn)
     finally:
         conn.close()
     if row is None:
-        return {"match": None}
+        return {"match": None, "pending_count": 0}
     detected_at = datetime.fromisoformat(row["detected_at"])
     return {
         "match": {
@@ -970,7 +978,8 @@ def _build_rank_entry_context(db_path: Path) -> dict:
             "result_text": _MATCH_RESULT_LABELS.get(row["result"], row["result"]),
             "rank_before": row["rank_before"],
             "rank_after_ocr": row["rank_after_ocr"],
-        }
+        },
+        "pending_count": pending_count,
     }
 
 

@@ -1790,6 +1790,63 @@ def test_rank_entry_post_with_unranked_match_shows_error(tmp_path: Path):
     assert response.headers["location"].startswith("/rank-entry?error=")
 
 
+def test_rank_entry_get_shows_pending_count_when_multiple_pending(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    for _ in range(3):
+        db.save_match_result(
+            conn,
+            MatchResult(result="win", rank_before=38.62, rank_after=38.50, league_changed=None, detected_at=now_jst()),
+        )
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/rank-entry")
+
+    assert "他に2件未確定です" in response.text
+
+
+def test_rank_entry_get_does_not_show_pending_count_when_only_one_pending(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=38.62, rank_after=38.50, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/rank-entry")
+
+    assert "未確定です" not in response.text
+
+
+def test_rank_entry_get_shows_blocked_message_when_rank_before_chain_unresolved(tmp_path: Path):
+    """Issue #308: rank_beforeのチェーンがまだ解決できていない試合が返ってきた
+    場合、入力フォームの代わりに案内文言を表示することを確認する。
+
+    通常の運用では「最古の未確定試合」のrank_beforeは常に解決済みのはずだが
+    (それより古い未確定試合が無いという前提が成り立つ)、念のための防御的
+    表示なので、直接DBを操作してこの状態を人為的に再現する。
+    """
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    conn.execute("UPDATE matches SET rank_before = NULL WHERE id = ?", (match_id,))
+    conn.commit()
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/rank-entry")
+
+    assert response.status_code == 200
+    assert "この試合は入力できません" in response.text
+    assert 'name="rank_after"' not in response.text
+
+
 def test_start_web_server_thread_serves_requests_and_stops_cleanly(tmp_path: Path):
     """Issue #80のPoC: 別スレッドで起動したuvicornが実際にHTTPリクエストに
     応答し、stop()でスレッドごと正常終了できることを確認する

@@ -33,6 +33,12 @@ h1 {
     color: #b3261e;
 }
 
+.rank-entry-pending-count {
+    font-size: 12px;
+    color: #888;
+    margin: 0 0 8px;
+}
+
 .rank-entry-match-info {
     border: 1px solid #e0e0e0;
     border-radius: 6px;
