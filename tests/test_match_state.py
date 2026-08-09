@@ -833,6 +833,11 @@ def test_track_rank_periodic_recheck_catches_tier_change(monkeypatch):
     result = None
     for _ in range(60):
         result = machine.process_frame(frame)
+        # Issue #303: 帯番号の定期再チェックが非同期(_tier_recheck_executor)に
+        # なったため、_vs_ocr_thread.join()と同じ考え方でテストの決定性のために
+        # 完了を待つ(結果の反映自体は次のprocess_frame()の_poll_tier_recheck()で行われる)
+        if machine._tier_recheck_future is not None:
+            machine._tier_recheck_future.result()
         if result is not None:
             break
 
