@@ -121,14 +121,35 @@ h1 {
     gap: 8px;
 }
 
+.rank-entry-input-row {
+    display: flex;
+    gap: 4px;
+}
+
 .rank-entry-input {
-    width: 100%;
+    flex: 1;
+    width: 0; /* flex: 1と併用して長い初期値でもはみ出させない */
     box-sizing: border-box;
     font-size: 14px;
     padding: 6px 8px;
     border: 1px solid #ccc;
     border-radius: 4px;
     text-align: center;
+}
+
+.rank-entry-copy-button {
+    font-size: 11px;
+    padding: 0 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fff;
+    color: #555;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.rank-entry-copy-button:hover {
+    background: #f0f0f0;
 }
 
 .rank-entry-form button[type="submit"] {

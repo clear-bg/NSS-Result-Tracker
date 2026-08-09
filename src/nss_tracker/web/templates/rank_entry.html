@@ -103,6 +103,9 @@
     hidden.value = clip.match_id;
     form.appendChild(hidden);
 
+    const inputRow = document.createElement("div");
+    inputRow.className = "rank-entry-input-row";
+
     const input = document.createElement("input");
     input.type = "text";
     input.inputMode = "decimal";
@@ -111,9 +114,33 @@
     input.className = "rank-entry-input";
     input.autocomplete = "off";
     if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
+      // 初回表示時の初期値としてのみ使う。定期更新のたびにここへ来ても
+      // (renderLeftPanelは同じ試合を選んだままの間は呼ばれないため)入力中の
+      // 内容を勝手に上書きすることはない。値を戻したい場合は下の「推定値を使う」
+      // ボタンから明示的に取り込む(ユーザー確認済み、モジュールdocstring参照)
       input.value = clip.rank_after_ocr;
     }
-    form.appendChild(input);
+    // 入力欄を一度でも操作したら、以後の自動更新でこの試合から勝手に
+    // 離れないようにする(定期更新中に別の試合の動画へ切り替わって
+    // 入力内容を見失わないようにするため)
+    input.addEventListener("focus", function () { userSelected = true; });
+    input.addEventListener("input", function () { userSelected = true; });
+    inputRow.appendChild(input);
+
+    if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
+      const copyButton = document.createElement("button");
+      copyButton.type = "button";
+      copyButton.className = "rank-entry-copy-button";
+      copyButton.textContent = "推定値を使う";
+      copyButton.addEventListener("click", function () {
+        input.value = clip.rank_after_ocr;
+        input.focus();
+        input.select();
+      });
+      inputRow.appendChild(copyButton);
+    }
+
+    form.appendChild(inputRow);
 
     const button = document.createElement("button");
     button.type = "submit";
@@ -145,14 +172,22 @@
     if (!clip) {
       return;
     }
+    // Issue #307のフィードバック: 定期更新(refresh)のたびにこの関数が同じ試合へ
+    // 呼ばれ続けると、そのたびにrenderLeftPanel()が入力欄を推定値で上書きして
+    // しまい、入力中の内容が消えてしまう不具合があった。既に選択済みの試合と
+    // 同じ場合は左パネルを再描画しない(動画srcの再設定も、再生位置が
+    // 巻き戻る副作用があるため同様にスキップする)
+    const isSameMatch = matchId === selectedMatchId;
     selectedMatchId = matchId;
-    renderLeftPanel(clip);
-    if (clip.has_clip) {
-      video.style.display = "";
-      video.src = "/rank-entry/clips/" + matchId + ".mp4?t=" + Date.now();
-    } else {
-      video.style.display = "none";
-      video.removeAttribute("src");
+    if (!isSameMatch) {
+      renderLeftPanel(clip);
+      if (clip.has_clip) {
+        video.style.display = "";
+        video.src = "/rank-entry/clips/" + matchId + ".mp4?t=" + Date.now();
+      } else {
+        video.style.display = "none";
+        video.removeAttribute("src");
+      }
     }
     renderSelector();
   }
@@ -173,8 +208,9 @@
         if (!userSelected || !stillAvailable) {
           selectClip(clips[0].match_id);
         } else {
-          // 選択中の試合は変えず、内容(確定状況等)だけ最新化する
-          selectClip(selectedMatchId);
+          // 選択中の試合はそのまま(入力中の内容を保持する)。ボタンの並び・
+          // ラベル(最新/1つ前等の繰り上がり)だけ最新化する
+          renderSelector();
         }
       })
       .catch(function () {});
