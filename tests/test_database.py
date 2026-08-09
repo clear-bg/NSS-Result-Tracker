@@ -14,6 +14,7 @@ from nss_tracker.database.db import (
     fetch_latest_vs_rank_snapshot,
     fetch_matches_for_session,
     fetch_oldest_pending_manual_rank_match,
+    fetch_pending_manual_rank_match_count,
     fetch_recent_matches,
     fetch_vs_rank_snapshot_slots,
     fetch_vs_slot_ranks,
@@ -442,6 +443,219 @@ def test_fetch_oldest_pending_manual_rank_match_returns_none_when_none_pending()
     assert fetch_oldest_pending_manual_rank_match(conn) is None
 
 
+def test_save_match_result_resolves_rank_before_from_ocr_when_no_prior_ranked_match():
+    """Issue #308: DB内に直近のランクを賭けた試合が無い(初回)場合、
+    rank_beforeはこの試合自身のOCR実測値(rank_before_ocr)をそのまま使う。
+    """
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["rank_before"] == 38.62
+    assert row["rank_before_ocr"] == 38.62
+
+
+def test_save_match_result_chains_rank_before_from_confirmed_previous_rank_after():
+    """Issue #308: 直近のランクを賭けた試合のrank_afterが確定済みなら、
+    その値をそのまま今回のrank_beforeとして引き継ぐ(OCR実測値は無視する)。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    first_id = save_match_result(conn, first)
+    save_manual_rank_after(conn, first_id, 39.10)
+
+    second = MatchResult(
+        result="lose",
+        rank_before=38.90,  # OCR実測値は多少ズレているが、チェーンではこちらは使われない
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    second_id = save_match_result(conn, second)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (second_id,)).fetchone()
+    assert row["rank_before"] == 39.10
+    assert row["rank_before_ocr"] == 38.90
+
+
+def test_save_match_result_leaves_rank_before_none_when_previous_rank_after_unconfirmed():
+    """Issue #308: 直近のランクを賭けた試合のrank_afterがまだ未確定の場合、
+    今回のrank_beforeもNoneのまま(手動入力待ち)にする(チェーンが詰まる)。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    save_match_result(conn, first)
+
+    second = MatchResult(
+        result="lose", rank_before=38.90, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    second_id = save_match_result(conn, second)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (second_id,)).fetchone()
+    assert row["rank_before"] is None
+    assert row["rank_before_ocr"] == 38.90
+
+
+def test_save_match_result_skips_rank_before_chain_for_unranked_match():
+    """ランクを賭けない試合(rank_before_ocrがNone)は、直近の試合の確定状況に
+    関わらずrank_beforeも常にNoneのままであることを確認する。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    first_id = save_match_result(conn, first)
+    save_manual_rank_after(conn, first_id, 39.10)
+
+    unranked = MatchResult(
+        result="draw", rank_before=None, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    unranked_id = save_match_result(conn, unranked)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (unranked_id,)).fetchone()
+    assert row["rank_before"] is None
+    assert row["rank_before_ocr"] is None
+
+
+def test_save_manual_rank_after_backfills_next_blocked_rank_before():
+    """Issue #308: 未確定だった試合のrank_afterを確定すると、それを引き継ぎ元として
+    待っていた次の試合のrank_beforeが自動的に埋まることを確認する。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    first_id = save_match_result(conn, first)
+    second = MatchResult(
+        result="lose", rank_before=38.90, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    second_id = save_match_result(conn, second)
+    row = conn.execute("SELECT rank_before FROM matches WHERE id = ?", (second_id,)).fetchone()
+    assert row["rank_before"] is None, "前提: この時点ではまだチェーンが詰まっているはず"
+
+    save_manual_rank_after(conn, first_id, 39.10)
+
+    row = conn.execute("SELECT rank_before FROM matches WHERE id = ?", (second_id,)).fetchone()
+    assert row["rank_before"] == 39.10
+
+
+def test_save_manual_rank_after_cascades_backfill_across_multiple_blocked_matches():
+    """Issue #308: 2件以上まとめて未確定のまま溜まっていた場合でも、古い順に
+    確定させるたびにチェーンが1件ずつ連鎖的に解決されることを確認する。
+    """
+    conn = connect(":memory:")
+    ids = []
+    for i, rank_before_ocr in enumerate([38.62, 38.90, 39.20]):
+        match = MatchResult(
+            result="win",
+            rank_before=rank_before_ocr,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        )
+        ids.append(save_match_result(conn, match))
+
+    def get_rank_before(match_id):
+        return conn.execute("SELECT rank_before FROM matches WHERE id = ?", (match_id,)).fetchone()["rank_before"]
+
+    assert get_rank_before(ids[1]) is None
+    assert get_rank_before(ids[2]) is None
+
+    save_manual_rank_after(conn, ids[0], 39.00)
+    assert get_rank_before(ids[1]) == 39.00
+    assert get_rank_before(ids[2]) is None, "ids[1]自体がまだ未確定のため、ids[2]まではまだ連鎖しないはず"
+
+    save_manual_rank_after(conn, ids[1], 38.50)
+    assert get_rank_before(ids[2]) == 38.50
+
+
+def test_save_manual_rank_after_raises_for_chain_blocked_match():
+    """rank_beforeがまだチェーンで解決できていない(直前の試合が未確定の)試合に
+    対してsave_manual_rank_after()を呼ぶとValueErrorになることを確認する
+    (fetch_oldest_pending_manual_rank_match()は通常この状態の試合を返さない
+    はずだが、防御的チェックとして確認する)。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    save_match_result(conn, first)
+    second = MatchResult(
+        result="lose", rank_before=38.90, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    second_id = save_match_result(conn, second)
+
+    with pytest.raises(ValueError):
+        save_manual_rank_after(conn, second_id, 39.00)
+
+
+def test_fetch_pending_manual_rank_match_count():
+    conn = connect(":memory:")
+    unranked = MatchResult(
+        result="draw", rank_before=None, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    save_match_result(conn, unranked)
+    for _ in range(3):
+        pending = MatchResult(
+            result="win", rank_before=38.62, rank_after=38.50, league_changed=None, detected_at=datetime.now(timezone.utc)
+        )
+        save_match_result(conn, pending)
+
+    assert fetch_pending_manual_rank_match_count(conn) == 3
+
+
+def test_connect_migrates_legacy_matches_without_rank_before_ocr(tmp_path):
+    """Issue #308: rank_before_ocr列が無い移行前のDBファイル(#306より前、または
+    #306直後で#308より前のDB)に対しても、connect()を呼ぶだけで列が追加され、
+    既存のrank_beforeの値がrank_before_ocrへコピーされることを確認する。
+    """
+    db_path = tmp_path / "legacy.db"
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.executescript(
+        """
+        CREATE TABLE matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            result TEXT NOT NULL,
+            rank_before REAL,
+            rank_after REAL,
+            rank_after_ocr REAL,
+            league_changed TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO matches (detected_at, result, rank_before, created_at, updated_at)
+            VALUES ('2026-07-01T00:00:00+09:00', 'win', 38.62, '2026-07-01T00:00:00+09:00', '2026-07-01T00:00:00+09:00');
+        INSERT INTO matches (detected_at, result, created_at, updated_at)
+            VALUES ('2026-07-01T00:01:00+09:00', 'draw', '2026-07-01T00:01:00+09:00', '2026-07-01T00:01:00+09:00');
+        """
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    conn = connect(db_path)
+
+    rows = fetch_all_matches(conn)
+    assert len(rows) == 2
+    assert rows[0]["rank_before_ocr"] == 38.62  # 既存rank_beforeからコピーされる
+    assert rows[1]["rank_before_ocr"] is None  # 元々rank_beforeがNULLの行はNULLのまま
+
+
+def test_connect_migrates_legacy_matches_without_rank_before_ocr_is_idempotent(tmp_path):
+    db_path = tmp_path / "test.db"
+    connect(db_path).close()
+
+    connect(db_path).close()  # 2回目もエラーにならない
+
+
 def test_connect_migrates_legacy_matches_without_session_id(tmp_path):
     """Issue #93: session_id列が無い移行前のDBファイルに対しても、connect()を
     呼ぶだけで列が追加され、既存データを保持したまま新しいmatchesを
@@ -766,7 +980,9 @@ def test_fetch_recent_matches_returns_last_n_in_ascending_order():
 
     rows = fetch_recent_matches(conn, limit=3)
 
-    assert [row["rank_before"] for row in rows] == [2, 3, 4]
+    # Issue #308: rank_beforeはチェーン導出値になったため、順序検証にはmatchごとに
+    # 一意な値のまま残るrank_before_ocr(自動検知値)を使う
+    assert [row["rank_before_ocr"] for row in rows] == [2, 3, 4]
 
 
 def test_fetch_recent_matches_returns_all_when_fewer_than_limit():
