@@ -97,7 +97,8 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     assert not captured["handle"].thread.is_alive()
     assert db_path.exists()
     # Issue #129: 設定画面(/admin)を起動時に自動的に開くことを確認する
-    assert opened_urls == ["http://127.0.0.1:8768/admin"]
+    # Issue #306: ランク手動入力画面(/rank-entry)も同様に自動的に開く
+    assert opened_urls == ["http://127.0.0.1:8768/admin", "http://127.0.0.1:8768/rank-entry"]
 
 
 def test_main_continues_when_browser_cannot_be_opened(monkeypatch, tmp_path):
@@ -242,7 +243,10 @@ def test_run_wires_capture_state_and_database(videos_dir, monkeypatch):
         row = rows[0]
         assert row["result"] == "lose"
         assert row["rank_before"] is not None
-        assert row["rank_after"] is not None
+        # Issue #306: rank_afterは手動入力専用になったため、自動検知だけでは
+        # NULLのまま(手動入力待ち)。自動検知の読み取り値はrank_after_ocrで確認する
+        assert row["rank_after"] is None
+        assert row["rank_after_ocr"] is not None
         assert row["created_at"] is not None
         assert row["updated_at"] is not None
         assert row["session_id"] == session_id

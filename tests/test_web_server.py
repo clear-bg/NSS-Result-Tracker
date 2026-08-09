@@ -46,6 +46,24 @@ from nss_tracker.web.server import (
 )
 
 
+def _save_match_result(conn, match: MatchResult, session_id=None) -> int:
+    """Issue #306: db.save_match_result()はrank_after/league_changedを書かなく
+    なった(手動入力専用、rank_after_ocrへ移動)ため、このモジュールの既存テストが
+    前提としていた「MatchResultに渡した値がそのままrank_after/league_changedに
+    入る」という挙動をテスト側で再現するヘルパー。save_manual_rank_after()は
+    帯番号比較でleague_changedを再計算してしまうため使わず、match側の値を
+    そのままUPDATEする(意図的に不整合な値を使うテストの意図を変えないため)。
+    """
+    match_id = db.save_match_result(conn, match, session_id=session_id)
+    if match.rank_after is not None:
+        conn.execute(
+            "UPDATE matches SET rank_after = ?, league_changed = ? WHERE id = ?",
+            (match.rank_after, match.league_changed, match_id),
+        )
+        conn.commit()
+    return match_id
+
+
 def test_health_endpoint(tmp_path: Path):
     app = create_app(tmp_path / "test.db")
     client = TestClient(app)
@@ -60,7 +78,7 @@ def test_matches_count_reflects_db_contents(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for result in ["win", "win", "lose", "draw"]:
-        db.save_match_result(
+        _save_match_result(
             conn,
             MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
         )
@@ -89,7 +107,7 @@ def test_index_page_shows_match_counts(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for result in ["win", "win", "lose"]:
-        db.save_match_result(
+        _save_match_result(
             conn,
             MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
         )
@@ -110,7 +128,7 @@ def test_index_page_shows_match_counts(tmp_path: Path):
 def test_winrate_with_no_sessions_returns_empty_session_counts(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
     )
@@ -131,14 +149,14 @@ def test_winrate_splits_session_and_cumulative_counts(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     first_session_id = db.create_session(conn)
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="lose", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
         session_id=first_session_id,
     )
     second_session_id = db.create_session(conn)
     for result in ["win", "win"]:
-        db.save_match_result(
+        _save_match_result(
             conn,
             MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
             session_id=second_session_id,
@@ -161,7 +179,7 @@ def test_overlay_winrate_page_shows_readable_summary(tmp_path: Path):
     conn = db.connect(db_path)
     session_id = db.create_session(conn)
     for result in ["win", "win", "lose"]:
-        db.save_match_result(
+        _save_match_result(
             conn,
             MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
             session_id=session_id,
@@ -214,7 +232,7 @@ def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path, monkey
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for i, league_changed in enumerate([None, "up", None]):
-        db.save_match_result(
+        _save_match_result(
             conn,
             MatchResult(
                 result="win",
@@ -244,7 +262,7 @@ def test_rank_history_skips_matches_without_rank_after(tmp_path: Path, monkeypat
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="draw", rank_before=None, rank_after=None, league_changed=None, detected_at=now_jst()),
     )
@@ -320,7 +338,7 @@ def test_rank_history_returns_all_matches_when_limit_env_is_all(tmp_path: Path, 
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for i in range(35):
-        db.save_match_result(
+        _save_match_result(
             conn,
             MatchResult(result="win", rank_before=i, rank_after=i + 1, league_changed=None, detected_at=now_jst()),
         )
@@ -338,7 +356,7 @@ def test_rank_history_respects_limit_env_value(tmp_path: Path, monkeypatch):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for i in range(5):
-        db.save_match_result(
+        _save_match_result(
             conn,
             MatchResult(result="win", rank_before=i, rank_after=i + 1, league_changed=None, detected_at=now_jst()),
         )
@@ -563,7 +581,7 @@ def test_overlay_rank_graph_page_links_transparent_background_stylesheet(tmp_pat
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="win", rank_before=1, rank_after=2, league_changed=None, detected_at=now_jst()),
     )
@@ -630,7 +648,7 @@ def test_goal_stats_endpoint_scoped_to_current_session(tmp_path: Path, monkeypat
     conn = db.connect(db_path)
 
     old_session_id = db.create_session(conn)
-    old_match_id = db.save_match_result(
+    old_match_id = _save_match_result(
         conn,
         MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
         session_id=old_session_id,
@@ -638,7 +656,7 @@ def test_goal_stats_endpoint_scoped_to_current_session(tmp_path: Path, monkeypat
     db.save_goal(conn, old_match_id, "Alice", None, now_jst())
 
     current_session_id = db.create_session(conn)
-    current_match_id = db.save_match_result(
+    current_match_id = _save_match_result(
         conn,
         MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
         session_id=current_session_id,
@@ -690,7 +708,7 @@ def test_overlay_goal_stats_page_shows_readable_summary(tmp_path: Path, monkeypa
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     session_id = db.create_session(conn)
-    match_id = db.save_match_result(
+    match_id = _save_match_result(
         conn,
         MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
         session_id=session_id,
@@ -717,7 +735,7 @@ def test_overlay_goal_stats_page_hides_name_when_single_allowed_player(tmp_path:
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     session_id = db.create_session(conn)
-    match_id = db.save_match_result(
+    match_id = _save_match_result(
         conn,
         MatchResult(result="win", rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
         session_id=session_id,
@@ -764,7 +782,7 @@ def test_match_log_returns_recent_results_oldest_first(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for result in ["win", "lose", "draw", "win"]:
-        db.save_match_result(
+        _save_match_result(
             conn,
             MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
         )
@@ -782,7 +800,7 @@ def test_match_log_limited_to_fixed_recent_count(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for i in range(15):
-        db.save_match_result(
+        _save_match_result(
             conn,
             MatchResult(result="win", rank_before=i, rank_after=i, league_changed=None, detected_at=now_jst()),
         )
@@ -839,7 +857,7 @@ def test_overlay_match_log_page_shows_win_lose_draw_badges(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for result in ["win", "win", "lose", "draw"]:
-        db.save_match_result(
+        _save_match_result(
             conn,
             MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
         )
@@ -1144,22 +1162,22 @@ def test_rank_delta_distribution_endpoint_separates_win_and_lose_and_excludes_dr
     session_id = db.create_session(conn)
     # Issue #253: 直前の試合のrank_afterは次の試合のrank_beforeで常に補正されるため、
     # 試合間の連続性を保った値にする(そうしないと後続の補正で意図したdeltaが崩れる)
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="win", rank_before=10, rank_after=12, league_changed=None, detected_at=now_jst()),
         session_id=session_id,
     )
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="lose", rank_before=12, rank_after=10, league_changed=None, detected_at=now_jst()),
         session_id=session_id,
     )
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="draw", rank_before=10, rank_after=10, league_changed=None, detected_at=now_jst()),
         session_id=session_id,
     )
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="win", rank_before=None, rank_after=None, league_changed=None, detected_at=now_jst()),
         session_id=session_id,
@@ -1179,7 +1197,7 @@ def test_rank_delta_distribution_endpoint_scoped_to_current_session(tmp_path: Pa
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     old_session_id = db.create_session(conn)
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="win", rank_before=10, rank_after=15, league_changed=None, detected_at=now_jst()),
         session_id=old_session_id,
@@ -1211,7 +1229,7 @@ def test_rank_delta_distribution_endpoint_uses_all_matches_when_scope_is_all(tmp
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     old_session_id = db.create_session(conn)
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="win", rank_before=10, rank_after=13, league_changed=None, detected_at=now_jst()),
         session_id=old_session_id,
@@ -1219,7 +1237,7 @@ def test_rank_delta_distribution_endpoint_uses_all_matches_when_scope_is_all(tmp
     current_session_id = db.create_session(conn)
     # Issue #253: rank_after補正はセッションを跨いでも常に働くため、直前の試合の
     # rank_after(13)と連続するrank_beforeにする
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="lose", rank_before=13, rank_after=12, league_changed=None, detected_at=now_jst()),
         session_id=current_session_id,
@@ -1306,7 +1324,7 @@ def test_overlay_rank_delta_distribution_page_links_transparent_background_style
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     session_id = db.create_session(conn)
-    db.save_match_result(
+    _save_match_result(
         conn,
         MatchResult(result="win", rank_before=10, rank_after=12, league_changed=None, detected_at=now_jst()),
         session_id=session_id,
@@ -1679,6 +1697,97 @@ def test_admin_post_logs_warning_message_on_invalid_value(tmp_path: Path, monkey
 
     messages = [record.message for record in caplog.records if record.name == "nss_tracker.web"]
     assert any("GOAL_RECORD_MODE" in message for message in messages)
+
+
+def test_rank_entry_get_shows_no_pending_message_when_nothing_pending(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/rank-entry")
+
+    assert response.status_code == 200
+    assert "未確定の試合はありません" in response.text
+
+
+def test_rank_entry_get_shows_oldest_pending_match(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    db.save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=38.62, rank_after=38.40, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/rank-entry")
+
+    assert response.status_code == 200
+    assert "負け" in response.text
+    assert "38.62" in response.text
+    assert 'value="38.4"' in response.text  # rank_after_ocrが入力欄の初期値になる
+
+
+def test_rank_entry_post_saves_rank_after_and_league_changed(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.post("/rank-entry", data={"match_id": str(match_id), "rank_after": "39.10"}, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/rank-entry?status=saved"
+    conn = db.connect(db_path)
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    conn.close()
+    assert row["rank_after"] == 39.10
+    assert row["league_changed"] == "up"
+
+
+def test_rank_entry_post_with_non_numeric_value_shows_error(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.post(
+        "/rank-entry", data={"match_id": str(match_id), "rank_after": "not-a-number"}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/rank-entry?error=")
+    conn = db.connect(db_path)
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    conn.close()
+    assert row["rank_after"] is None
+
+
+def test_rank_entry_post_with_unranked_match_shows_error(tmp_path: Path):
+    """ランクを賭けていない試合(rank_beforeがNULL)のmatch_idを指定した場合、
+    save_manual_rank_after()のValueErrorがエラー文言として表示されることを確認する。
+    """
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=None, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.post("/rank-entry", data={"match_id": str(match_id), "rank_after": "39.10"}, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/rank-entry?error=")
 
 
 def test_start_web_server_thread_serves_requests_and_stops_cleanly(tmp_path: Path):

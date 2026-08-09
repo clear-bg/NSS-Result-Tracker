@@ -1,0 +1,93 @@
+/* Issue #306: ランク手動入力ページ(/rank-entry)専用のスタイル。/adminと同じく
+   OBSへの配置を想定しないため透過にはせず、通常のページとして組む。配信中は
+   2画面のうち1画面がゲーム画面、もう1画面もOBS等で埋まっていることが多いため、
+   小さいウィンドウでも収まるようコンパクトにする(ユーザー確認済み)。入力欄・
+   ボタンの文字サイズは他の項目(.rank-entry-match-row、14px)と揃える。 */
+body {
+    margin: 0;
+    padding: 16px;
+    max-width: 280px;
+    font-family: sans-serif;
+    color: #222;
+    background: #fff;
+}
+
+h1 {
+    font-size: 16px;
+    margin: 0 0 12px;
+}
+
+.rank-entry-message {
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin: 0 0 16px;
+}
+
+.rank-entry-message-success {
+    background: #e6f4ea;
+    color: #1e7a34;
+}
+
+.rank-entry-message-error {
+    background: #fbe9e7;
+    color: #b3261e;
+}
+
+.rank-entry-match-info {
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 20px;
+}
+
+.rank-entry-match-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 14px;
+    padding: 4px 0;
+    color: #444;
+}
+
+.rank-entry-match-row span:first-child {
+    color: #888;
+}
+
+.rank-entry-match-row-hint {
+    border-top: 1px dashed #e0e0e0;
+    margin-top: 4px;
+    padding-top: 8px;
+}
+
+.rank-entry-form {
+    display: flex;
+    gap: 8px;
+}
+
+.rank-entry-input {
+    flex: 1;
+    width: 0; /* flex: 1と併用して長い初期値でもはみ出させない */
+    font-size: 14px;
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    text-align: center;
+}
+
+.rank-entry-form button[type="submit"] {
+    font-size: 14px;
+    padding: 6px 16px;
+    border: none;
+    border-radius: 4px;
+    background: #1a73e8;
+    color: #fff;
+    cursor: pointer;
+}
+
+.rank-entry-form button[type="submit"]:hover {
+    background: #1558b0;
+}
+
+.rank-entry-empty {
+    color: #666;
+    font-size: 14px;
+}

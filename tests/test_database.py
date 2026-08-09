@@ -1,6 +1,8 @@
 import sqlite3
 from datetime import datetime, timezone
 
+import pytest
+
 from nss_tracker.database.db import (
     connect,
     create_session,
@@ -11,10 +13,12 @@ from nss_tracker.database.db import (
     fetch_goals_for_session,
     fetch_latest_vs_rank_snapshot,
     fetch_matches_for_session,
+    fetch_oldest_pending_manual_rank_match,
     fetch_recent_matches,
     fetch_vs_rank_snapshot_slots,
     fetch_vs_slot_ranks,
     save_goal,
+    save_manual_rank_after,
     save_match_result,
     save_vs_rank_snapshot,
     save_vs_slot_ranks,
@@ -131,7 +135,7 @@ def test_save_match_result_corrects_previous_rank_after_with_small_diff(caplog, 
     row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
     assert row["rank_after"] == 38.41
     assert f"matches.id={first_id}" in caplog.text
-    assert "補正しました" in caplog.text
+    assert "補完しました" in caplog.text
 
 
 def test_save_match_result_corrects_previous_rank_after_even_when_diff_is_large(caplog, monkeypatch):
@@ -162,7 +166,7 @@ def test_save_match_result_corrects_previous_rank_after_even_when_diff_is_large(
     row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
     assert row["rank_after"] == 39.50
     assert f"matches.id={first_id}" in caplog.text
-    assert "補正しました" in caplog.text
+    assert "補完しました" in caplog.text
 
 
 def test_save_match_result_backfills_when_previous_rank_after_is_none(caplog, monkeypatch):
@@ -194,12 +198,16 @@ def test_save_match_result_backfills_when_previous_rank_after_is_none(caplog, mo
     row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
     assert row["rank_after"] == 38.62
     assert f"matches.id={first_id}" in caplog.text
-    assert "補正しました" in caplog.text
+    assert "補完しました" in caplog.text
 
 
 def test_save_match_result_does_not_correct_when_current_rank_before_is_none(monkeypatch):
     """今回の試合のrank_beforeがNoneの場合は補正の基準にできないため
     何もしないことを確認する。
+
+    Issue #306: save_match_result()はrank_afterを書き込まなくなった(手動入力
+    専用、rank_after_ocrへ移動)ため、補正が起きなければfirstのrank_afterは
+    常にNULLのまま(補正はまだ一度も起きていない状態)。
     """
     monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", "true")
     conn = connect(":memory:")
@@ -222,12 +230,16 @@ def test_save_match_result_does_not_correct_when_current_rank_before_is_none(mon
     save_match_result(conn, second)
 
     row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
-    assert row["rank_after"] == 38.60
+    assert row["rank_after"] is None
+    assert row["rank_after_ocr"] == 38.60
 
 
 def test_save_match_result_does_not_correct_first_match_in_db(monkeypatch):
     """DB内に1件も試合が無い状態で最初の試合を保存する場合、直前の試合が
     存在しないため補正処理自体が何もしないことを確認する(エラーにならない)。
+
+    Issue #306: rank_afterは手動入力専用になったため、match.rank_after(OCR推定値)は
+    rank_after_ocr列に保存され、rank_after自体はNULLのまま(手動入力待ち)になる。
     """
     monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", "true")
     conn = connect(":memory:")
@@ -242,13 +254,17 @@ def test_save_match_result_does_not_correct_first_match_in_db(monkeypatch):
     match_id = save_match_result(conn, match)
 
     row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
-    assert row["rank_after"] == 38.80
+    assert row["rank_after"] is None
+    assert row["rank_after_ocr"] == 38.80
 
 
 def test_save_match_result_skips_correction_when_disabled(monkeypatch):
     """Issue #295: RANK_AFTER_CORRECTION_ENABLED=falseの場合、直前の試合の
     rank_afterを一切書き換えないことを確認する(仕組み自体は残しつつ、実機データで
     見つかった副作用のため一時的に無効化できるようにした)。
+
+    Issue #306: rank_afterは手動入力専用になったため、firstのrank_afterはもともと
+    NULL(手動入力待ち)であり、補正が無効化されている間はその状態のまま変わらない。
     """
     monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", "false")
     conn = connect(":memory:")
@@ -271,7 +287,159 @@ def test_save_match_result_skips_correction_when_disabled(monkeypatch):
     save_match_result(conn, second)
 
     row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
-    assert row["rank_after"] == 38.60, "無効化されている間は直前の試合のrank_afterを書き換えないはず"
+    assert row["rank_after"] is None, "無効化されている間は直前の試合のrank_afterを書き換えないはず"
+
+
+def test_maybe_correct_previous_match_rank_after_does_not_overwrite_manual_value(monkeypatch):
+    """Issue #306: 手動確定済み(rank_afterが非NULL)のrank_afterは、
+    RANK_AFTER_CORRECTION_ENABLED=trueであっても補正(上書き)されないことを確認する。
+    """
+    monkeypatch.setenv("RANK_AFTER_CORRECTION_ENABLED", "true")
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="lose",
+        rank_before=38.62,
+        rank_after=38.60,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    first_id = save_match_result(conn, first)
+    save_manual_rank_after(conn, first_id, 38.55)
+
+    second = MatchResult(
+        result="win",
+        rank_before=39.50,  # firstのrank_afterと大きく異なる値でも上書きされないはず
+        rank_after=39.70,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    save_match_result(conn, second)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (first_id,)).fetchone()
+    assert row["rank_after"] == 38.55
+
+
+def test_save_manual_rank_after_computes_league_changed_up():
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=38.62,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    match_id = save_match_result(conn, match)
+
+    save_manual_rank_after(conn, match_id, 39.10)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["rank_after"] == 39.10
+    assert row["league_changed"] == "up"
+
+
+def test_save_manual_rank_after_computes_league_changed_down():
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="lose",
+        rank_before=38.62,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    match_id = save_match_result(conn, match)
+
+    save_manual_rank_after(conn, match_id, 37.90)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["rank_after"] == 37.90
+    assert row["league_changed"] == "down"
+
+
+def test_save_manual_rank_after_computes_league_changed_none_when_tier_unchanged():
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=38.62,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    match_id = save_match_result(conn, match)
+
+    save_manual_rank_after(conn, match_id, 38.95)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["rank_after"] == 38.95
+    assert row["league_changed"] is None
+
+
+def test_save_manual_rank_after_raises_for_missing_match():
+    conn = connect(":memory:")
+
+    with pytest.raises(ValueError):
+        save_manual_rank_after(conn, 999, 40.0)
+
+
+def test_save_manual_rank_after_raises_for_unranked_match():
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    match_id = save_match_result(conn, match)
+
+    with pytest.raises(ValueError):
+        save_manual_rank_after(conn, match_id, 40.0)
+
+
+def test_fetch_oldest_pending_manual_rank_match_returns_oldest_unconfirmed():
+    conn = connect(":memory:")
+    unranked = MatchResult(
+        result="win", rank_before=None, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    save_match_result(conn, unranked)
+    oldest_pending = MatchResult(
+        result="lose", rank_before=38.62, rank_after=38.50, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    oldest_pending_id = save_match_result(conn, oldest_pending)
+    newer_pending = MatchResult(
+        result="win", rank_before=38.55, rank_after=39.00, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    save_match_result(conn, newer_pending)
+
+    row = fetch_oldest_pending_manual_rank_match(conn)
+
+    assert row["id"] == oldest_pending_id
+
+
+def test_fetch_oldest_pending_manual_rank_match_excludes_confirmed_matches():
+    conn = connect(":memory:")
+    confirmed = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    confirmed_id = save_match_result(conn, confirmed)
+    save_manual_rank_after(conn, confirmed_id, 39.00)
+    pending = MatchResult(
+        result="lose", rank_before=39.00, rank_after=38.80, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    pending_id = save_match_result(conn, pending)
+
+    row = fetch_oldest_pending_manual_rank_match(conn)
+
+    assert row["id"] == pending_id
+
+
+def test_fetch_oldest_pending_manual_rank_match_returns_none_when_none_pending():
+    conn = connect(":memory:")
+    unranked = MatchResult(
+        result="draw", rank_before=None, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    save_match_result(conn, unranked)
+
+    assert fetch_oldest_pending_manual_rank_match(conn) is None
 
 
 def test_connect_migrates_legacy_matches_without_session_id(tmp_path):
@@ -462,6 +630,10 @@ def test_connect_matches_team_color_migration_is_idempotent_for_already_migrated
 
 
 def test_save_and_fetch_match_result():
+    """Issue #306: save_match_result()はrank_after/league_changedをもう書かない
+    (手動入力専用に変更、rank_after_ocrへ移動)。match.rank_afterの値は
+    rank_after_ocrへそのまま保存されることを確認する。
+    """
     conn = connect(":memory:")
     match = MatchResult(
         result="win",
@@ -481,8 +653,9 @@ def test_save_and_fetch_match_result():
     assert row["detected_at"] == "2026-07-16T12:00:00+00:00"
     assert row["result"] == "win"
     assert row["rank_before"] == 39.0
-    assert row["rank_after"] == 40.0
-    assert row["league_changed"] == "up"
+    assert row["rank_after"] is None
+    assert row["rank_after_ocr"] == 40.0
+    assert row["league_changed"] is None
     assert row["created_at"] is not None
     assert row["updated_at"] is not None
     assert row["created_at"] == row["updated_at"]

@@ -42,6 +42,16 @@ Issue #257: `/admin`には上記設定フォームに加え、各`/overlay/xxx`�
 overlayルートを追加した際にラベルの追記を忘れるとアプリ起動時にRuntimeErrorで
 気づける設計にした。
 
+Issue #306: `matches.rank_after`(ランク変動確定後の値)は、GRACEフェーズの
+自動OCR(`detection/rank_ocr.py`)の精度・パフォーマンス面の限界(Issue #287〜#303
+参照)から、手動入力に切り替えた。`/rank-entry`は`/admin`とは別ページとして
+用意し(`main.py`起動時に別ブラウザで自動的に開く想定)、未確定(`rank_after`が
+NULL)の試合のうち最も古い1件を表示・入力させる(`database.db.
+fetch_oldest_pending_manual_rank_match`)。`/admin`と同じPRGパターンで実装する。
+未確定一覧のキュー表示・rank_beforeのチェーン解決等は範囲外(Issue #308で扱う)。
+自動検知(OCR)自体は引き続きバックグラウンドで動き続け、読み取れた値は
+比較用の`rank_after_ocr`列に保存される(`database.db.save_match_result`参照)。
+
 エンドポイントごとに新規のsqlite3コネクションを開いて処理後すぐ閉じる。
 sqlite3のコネクションはデフォルトでは開いたスレッド以外から使えず
 (check_same_thread=True)、FastAPI/uvicornは同期defのエンドポイントを
@@ -70,6 +80,7 @@ Issue #259: 全`/overlay/xxx`ページは、クエリパラメータ`?debug_bg=1
 import logging
 import math
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -95,8 +106,10 @@ from nss_tracker.database.db import (
     fetch_goals_for_session,
     fetch_latest_vs_rank_snapshot,
     fetch_matches_for_session,
+    fetch_oldest_pending_manual_rank_match,
     fetch_recent_matches,
     fetch_vs_rank_snapshot_slots,
+    save_manual_rank_after,
 )
 
 _WEB_DIR = Path(__file__).parent
@@ -934,6 +947,33 @@ def _overlay_debug_bg_style(request: Request) -> str:
     return ""
 
 
+_MATCH_RESULT_LABELS = {"win": "勝ち", "lose": "負け", "draw": "引き分け"}
+
+
+def _build_rank_entry_context(db_path: Path) -> dict:
+    """/rank-entryページ用に、未確定(rank_after未入力)の最古の試合を1件取得する(Issue #306)。
+
+    無ければmatch=Noneのcontextを返す(テンプレート側で「未確定の試合はありません」を表示)。
+    """
+    conn = _connect(db_path)
+    try:
+        row = fetch_oldest_pending_manual_rank_match(conn)
+    finally:
+        conn.close()
+    if row is None:
+        return {"match": None}
+    detected_at = datetime.fromisoformat(row["detected_at"])
+    return {
+        "match": {
+            "id": row["id"],
+            "detected_at_text": detected_at.strftime("%m/%d %H:%M"),
+            "result_text": _MATCH_RESULT_LABELS.get(row["result"], row["result"]),
+            "rank_before": row["rank_before"],
+            "rank_after_ocr": row["rank_after_ocr"],
+        }
+    }
+
+
 def create_app(db_path: Path) -> FastAPI:
     app = FastAPI()
     app.mount("/static", StaticFiles(directory=_WEB_DIR / "static"), name="static")
@@ -988,6 +1028,28 @@ def create_app(db_path: Path) -> FastAPI:
             return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
         _logger.info("設定画面(/admin)から設定を更新しました: %s -> %s", old_values, new_values)
         return RedirectResponse("/admin?status=updated", status_code=303)
+
+    @app.get("/rank-entry")
+    def rank_entry(request: Request, status: Optional[str] = None, error: Optional[str] = None):
+        context = {**_build_rank_entry_context(db_path), "status": status, "error": error}
+        return _TEMPLATES.TemplateResponse(request, "rank_entry.html", context)
+
+    @app.post("/rank-entry")
+    def rank_entry_submit(match_id: int = Form(...), rank_after: str = Form(...)):
+        try:
+            rank_after_value = float(rank_after)
+        except ValueError:
+            return RedirectResponse(f"/rank-entry?error={quote('数値を入力してください')}", status_code=303)
+        conn = _connect(db_path)
+        try:
+            save_manual_rank_after(conn, match_id, rank_after_value)
+        except ValueError as exc:
+            _logger.warning("手動ランク入力(/rank-entry)からの更新が拒否されました: %s", exc)
+            return RedirectResponse(f"/rank-entry?error={quote(str(exc))}", status_code=303)
+        finally:
+            conn.close()
+        _logger.info("手動ランク入力(/rank-entry)からrank_afterを記録しました: match_id=%d rank_after=%s", match_id, rank_after_value)
+        return RedirectResponse("/rank-entry?status=saved", status_code=303)
 
     @app.get("/overlay/winrate")
     def overlay_winrate(request: Request):
