@@ -15,14 +15,20 @@
 {% endif %}
 
 {% if match %}
+{% if pending_count > 1 %}
+<p class="rank-entry-pending-count">他に{{ pending_count - 1 }}件未確定です(古い順に表示しています)</p>
+{% endif %}
 <div class="rank-entry-match-info">
   <div class="rank-entry-match-row"><span>試合終了</span><span>{{ match.detected_at_text }}</span></div>
   <div class="rank-entry-match-row"><span>結果</span><span>{{ match.result_text }}</span></div>
-  <div class="rank-entry-match-row"><span>試合前ランク</span><span>{{ match.rank_before }}</span></div>
+  <div class="rank-entry-match-row"><span>試合前ランク</span><span>{{ match.rank_before if match.rank_before is not none else "未解決" }}</span></div>
   {% if match.rank_after_ocr is not none %}
   <div class="rank-entry-match-row rank-entry-match-row-hint"><span>自動検知(参考)</span><span>{{ match.rank_after_ocr }}</span></div>
   {% endif %}
 </div>
+{% if match.rank_before is none %}
+<p class="rank-entry-empty">直前の試合のランクがまだ確定していないため、この試合は入力できません。先に直前の試合を確定させてください。</p>
+{% else %}
 <form method="post" action="/rank-entry" class="rank-entry-form">
   <input type="hidden" name="match_id" value="{{ match.id }}">
   <input
@@ -44,6 +50,7 @@
     input.select();
   }
 </script>
+{% endif %}
 {% else %}
 <p class="rank-entry-empty">未確定の試合はありません。</p>
 {% endif %}
