@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ランク手動入力</title>
+<link rel="stylesheet" href="/static/rank_entry.css">
+</head>
+<body>
+<h1>ランク手動入力</h1>
+{% if status == "saved" %}
+<p class="rank-entry-message rank-entry-message-success">記録しました。</p>
+{% endif %}
+{% if error %}
+<p class="rank-entry-message rank-entry-message-error">{{ error }}</p>
+{% endif %}
+
+{% if match %}
+<div class="rank-entry-match-info">
+  <div class="rank-entry-match-row"><span>試合終了</span><span>{{ match.detected_at_text }}</span></div>
+  <div class="rank-entry-match-row"><span>結果</span><span>{{ match.result_text }}</span></div>
+  <div class="rank-entry-match-row"><span>試合前ランク</span><span>{{ match.rank_before }}</span></div>
+  {% if match.rank_after_ocr is not none %}
+  <div class="rank-entry-match-row rank-entry-match-row-hint"><span>自動検知(参考)</span><span>{{ match.rank_after_ocr }}</span></div>
+  {% endif %}
+</div>
+<form method="post" action="/rank-entry" class="rank-entry-form">
+  <input type="hidden" name="match_id" value="{{ match.id }}">
+  <input
+    type="text"
+    inputmode="decimal"
+    name="rank_after"
+    id="rank_after"
+    class="rank-entry-input"
+    value="{{ match.rank_after_ocr if match.rank_after_ocr is not none else '' }}"
+    autocomplete="off"
+    autofocus
+  >
+  <button type="submit">記録</button>
+</form>
+<script>
+  const input = document.getElementById("rank_after");
+  if (input) {
+    input.focus();
+    input.select();
+  }
+</script>
+{% else %}
+<p class="rank-entry-empty">未確定の試合はありません。</p>
+{% endif %}
+</body>
+</html>

@@ -208,15 +208,17 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
 
 def _record_match_result(conn: sqlite3.Connection, session_id: Optional[int], result: MatchResult) -> None:
     match_id = db.save_match_result(conn, result, session_id=session_id)
+    # Issue #306: rank_after/league_changedは手動入力が確定させるまでDBにはNULLの
+    # ままのため、ここでのresult.rank_after/league_changedはあくまで自動検知(OCR)の
+    # 参考値であることが分かるようにログの文言を変える(rank_after_ocr参照)
     logger.info(
-        "%d試合目 試合結果を記録しました: id=%d result=%s rank=%s->%s league_changed=%s goals=%d "
-        "team_color=%s->%s",
+        "%d試合目 試合結果を記録しました: id=%d result=%s rank_before=%s rank_after_ocr=%s(参考、正の値は手動入力待ち) "
+        "goals=%d team_color=%s->%s",
         result.session_match_no,
         match_id,
         result.result,
         result.rank_before,
         result.rank_after,
-        result.league_changed,
         len(result.goals),
         result.mine_team_color,
         result.opponent_team_color,
@@ -452,6 +454,14 @@ def main() -> None:
         webbrowser.open(admin_url)
     except Exception:
         logger.warning("設定画面を自動的に開けませんでした。手動で開いてください: %s", admin_url)
+    # Issue #306: ランク確定値(rank_after)の手動入力ページも、/adminと同様に
+    # 起動時に自動的に別ブラウザで開く(いずれ同一画面に統合する可能性はあるが、
+    # 現段階では別ページのまま、ユーザー確認済み)
+    rank_entry_url = f"http://{web_host}:{web_port}/rank-entry"
+    try:
+        webbrowser.open(rank_entry_url)
+    except Exception:
+        logger.warning("ランク手動入力画面を自動的に開けませんでした。手動で開いてください: %s", rank_entry_url)
     obs_controller = ObsSceneController(
         host=obs_host,
         port=obs_port,
