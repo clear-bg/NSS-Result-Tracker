@@ -6,7 +6,12 @@
 
    Issue #307: 右側に動画(直近3試合を切替表示)、左側に試合情報・入力フォームを
    置く2カラムレイアウトにした(ユーザー確認済み)。左側は選択中の動画に連動して
-   内容が切り替わる(rank_entry.htmlのJS参照)。 */
+   内容が切り替わる(rank_entry.htmlのJS参照)。
+
+   Issue #312: 右側にゲージ拡大(目盛り付き)クリップ用の2本目の<video>を追加。
+   幅は通常動画と同じ100%(親要素basis)で揃え、ブラウザが表示サイズに合わせて
+   縮小するため、素材側の実解像度(GAUGE_TARGET_WIDTH=1160)を気にする必要はない。
+   has_gauge_clipがfalseの試合(録画が無い/未対応)ではラベルごと非表示にする。 */
 body {
     margin: 0;
     padding: 16px;
@@ -100,6 +105,19 @@ h1 {
 }
 
 .rank-entry-video {
+    width: 100%;
+    border-radius: 6px;
+    background: #000;
+    display: block;
+}
+
+.rank-entry-gauge-label {
+    font-size: 11px;
+    color: #888;
+    margin: 8px 0 4px;
+}
+
+.rank-entry-gauge-video {
     width: 100%;
     border-radius: 6px;
     background: #000;

@@ -2067,6 +2067,66 @@ def test_rank_entry_clip_file_404_when_missing(tmp_path: Path, monkeypatch):
     assert response.status_code == 404
 
 
+def test_rank_entry_clips_api_marks_has_gauge_clip_when_present(tmp_path: Path, monkeypatch):
+    """Issue #312: 画面全体クリップとゲージクローズアップ動画は別ファイル・別ディレクトリ
+    のため、has_gauge_clipは対応するゲージ動画が実際に存在する場合のみtrueになる。
+    """
+    clips_dir = tmp_path / "clips"
+    gauge_clips_dir = tmp_path / "gauge_clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    monkeypatch.setattr(server_module, "GAUGE_CLIPS_DIR", gauge_clips_dir)
+    clips_dir.mkdir()
+    gauge_clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    with_gauge_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=38.62, rank_after=38.50, league_changed=None, detected_at=now_jst()),
+    )
+    without_gauge_id = db.save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=38.62, rank_after=38.10, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    (clips_dir / f"{with_gauge_id}.mp4").write_bytes(b"dummy")
+    (clips_dir / f"{without_gauge_id}.mp4").write_bytes(b"dummy")
+    (gauge_clips_dir / f"{with_gauge_id}.mp4").write_bytes(b"dummy")
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-entry-clips")
+
+    clips_by_id = {clip["match_id"]: clip for clip in response.json()["clips"]}
+    assert clips_by_id[with_gauge_id]["has_gauge_clip"] is True
+    assert clips_by_id[without_gauge_id]["has_gauge_clip"] is False
+
+
+def test_rank_entry_gauge_clip_file_serves_existing_file(tmp_path: Path, monkeypatch):
+    gauge_clips_dir = tmp_path / "gauge_clips"
+    monkeypatch.setattr(server_module, "GAUGE_CLIPS_DIR", gauge_clips_dir)
+    gauge_clips_dir.mkdir()
+    (gauge_clips_dir / "5.mp4").write_bytes(b"dummy gauge video bytes")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/rank-entry/gauge-clips/5.mp4")
+
+    assert response.status_code == 200
+    assert response.content == b"dummy gauge video bytes"
+    assert response.headers["content-type"] == "video/mp4"
+
+
+def test_rank_entry_gauge_clip_file_404_when_missing(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(server_module, "GAUGE_CLIPS_DIR", tmp_path / "gauge_clips")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/rank-entry/gauge-clips/5.mp4")
+
+    assert response.status_code == 404
+
+
 def test_start_web_server_thread_serves_requests_and_stops_cleanly(tmp_path: Path):
     """Issue #80のPoC: 別スレッドで起動したuvicornが実際にHTTPリクエストに
     応答し、stop()でスレッドごと正常終了できることを確認する
