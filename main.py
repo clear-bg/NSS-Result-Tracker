@@ -24,11 +24,13 @@ import sqlite3
 import sys
 import time
 import webbrowser
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import cv2
+import numpy as np
 
 from nss_tracker.capture.ffmpeg_capture import FfmpegFrameReader
 from nss_tracker.config import (
@@ -56,7 +58,7 @@ from nss_tracker.config import (
 from nss_tracker.database import db
 from nss_tracker.detection.goal import _get_name_reader
 from nss_tracker.detection.motion import StabilityMonitor
-from nss_tracker.detection.rank_ocr import RANK_ROI, _get_reader
+from nss_tracker.detection.rank_ocr import RANK_NUMBER_ROI_ENLARGED, RANK_ROI, _get_reader, read_rank
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
 from nss_tracker.obs_control import ObsSceneController
 from nss_tracker.state.match_state import (
@@ -156,6 +158,14 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     state/match_state.pyのdocstring・クラスのデフォルト値は30fps想定のため、
     60fps等の入力ではここで呼び出し側からスケーリングする必要がある
     (CLAUDE.md・tests/test_match_state.pyの_run_state_machineと同じ考え方)。
+
+    Issue #303: 帯番号の定期再チェック(PaddleOCR)用に、ここでProcessPoolExecutorを
+    明示的に渡す。MatchStateMachine側のデフォルト(ThreadPoolExecutor)はGILの制約で
+    CPUバウンドなPaddleOCR推論の間メインループを道連れでブロックしてしまうため、
+    本番実行では別プロセスで真に並列実行する必要がある(state/match_state.pyの
+    モジュールdocstring参照)。ワーカープロセスは`MatchStateMachine`のライフタイム
+    (=アプリのセッション全体)を通じて使い回されるため、モデル読み込みのコールド
+    スタートは実質的に最初の1回だけで済む。
     """
     confirm_frames = round(fps * 1.0)
     # Issue #67: 通常プレイ中の背景誤検知(実測1.3秒程度持続)がデバウンス(1秒)を
@@ -168,6 +178,13 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     # 7フレーム(60fps)程度しか綺麗に表示されないことがあるため、色候補判定を
     # 満たした最初のフレームで即OCR確認する(state/match_state.py参照)
     match_end_confirm_frames = 1
+    tier_recheck_executor = ProcessPoolExecutor(max_workers=1)
+    # Issue #303: ワーカープロセス側のPaddleOCRモデル読み込み(コールドスタート、
+    # 実測3.8〜7秒程度)を、実際に必要になる前(=最初のランクを賭けた試合の
+    # GRACEフェーズ)に前倒しで済ませておく。結果は使わず投げっぱなしでよい
+    # (_warmup_ocr_engines()と同じ狙いだが、こちらは別プロセスで実行されるため
+    # メインプロセス側のフレーム取得を一切妨げない)
+    tier_recheck_executor.submit(read_rank, np.zeros((1080, 1920, 3), dtype=np.uint8), RANK_NUMBER_ROI_ENLARGED)
     return MatchStateMachine(
         banner_confirm_frames=banner_confirm_frames,
         banner_confirm_frames_after_match_end=confirm_frames,
@@ -179,6 +196,7 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
         vs_screen_lockout_frames=round(fps * VS_SCREEN_LOCKOUT_SECONDS),
         match_end_confirm_frames=match_end_confirm_frames,
         demotion_label_confirm_frames=confirm_frames,
+        tier_recheck_executor=tier_recheck_executor,
         league_change_grace_frames=round(fps * 5.0),
         rank_recheck_interval_frames=round(fps * 0.25),
         rank_tier_rescan_wait_frames=round(fps / 6),

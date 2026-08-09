@@ -307,6 +307,40 @@ PaddleOCR推論)が原因と判明した。実測でCPU上9〜16秒かかり、�
 呼ばれる)と書き込み側(バックグラウンドスレッド)が並行アクセスするため、
 `_vs_screen_event_lock`で保護する。
 
+Issue #303: Issue #189と同じクラスの不具合が、TRACKING_RANK(GRACEフェーズ)側の
+帯番号定期再チェックでも見つかった。`_track_rank()`は`rank_recheck_interval_frames`
+(ゲージ塗りつぶしのデバウンス用に設計された間隔、既定0.25秒)おきに`read_rank()`で
+帯番号を読み直していたが、Issue #288で`read_rank()`をEasyOCR→PaddleOCRに変更した
+ことで1回あたり約1.2〜1.6秒(実測)かかるようになった。`league_change_grace_frames`
+(既定5秒)に達するまでに20回再チェックが走るため、実時間で最大約28秒
+`process_frame()`全体がブロックされ、OBSシーン切替も同じだけ遅延する事象が
+2026-08-09の実機動画・ログで確認された。
+
+当初`_run_vs_ocr`(Issue #189)と同じくバックグラウンドスレッドに逃がす対策を
+試したが、実測でPythonのGIL(Global Interpreter Lock)がPaddleOCRの推論中
+(CPUバウンドなネイティブ計算)は長時間(実測で1秒以上連続することがある)
+解放されないことが判明し、別スレッドに切り出してもメインスレッドが定期的に
+道連れでブロックされてしまうことを確認した(Issue #189のVS画面OCRはおそらく
+I/Oバウンドな区間が多くGILを頻繁に手放すため、この問題が表面化しなかったと
+推測される)。スレッドではGILの制約を回避できないため、`concurrent.futures`の
+`Executor`(本番では`ProcessPoolExecutor`)を介して別プロセスで`read_rank()`を
+実行するよう変更した(`_submit_tier_recheck()`/`_poll_tier_recheck()`)。
+GRACEフェーズの軽量なゲージ判定・猶予期間の満了判定自体はワーカープロセスの
+完了を待たずに進行する。前回投げた再チェックが実行中の間は多重に投げない。
+Issue #189のVS画面OCRとは異なり、`_finalize()`側で完了を待つことはしない
+(帯番号は既にGRACE突入直後の同期読み取りで暫定値を持っているため、待ってまで
+最新化する必要はないという判断。ユーザー確認済み)。そのため、再チェックの結果が
+`_finalize()`より後に届いた場合はそのまま読み捨てられ、ランクへの反映が数フレーム
+(実時間で最大約2秒程度)遅れることがあるが、シーン切替自体を遅らせない方を優先した。
+
+`tier_recheck_executor`はコンストラクタ引数として注入可能にした(未指定時は
+`ThreadPoolExecutor`を遅延生成する)。本番では`main.py`が`ProcessPoolExecutor`を
+明示的に渡す(_make_match_state_machine参照)。テスト側は既存どおり
+`read_rank`をモンキーパッチするだけで動作する(未指定時のデフォルトが
+同一プロセス内で動く`ThreadPoolExecutor`のため、モンキーパッチが素直に効く。
+`ProcessPoolExecutor`はワーカーが別プロセスでモジュールを新規importするため
+モンキーパッチが効かず、本番用途のみに限定する理由でもある)。
+
 Issue #224: 試合終了時のOBSシーン切替(in_match=False)が、結果画面から離脱する
 フェード演出とタイミングが重なり、体感上早すぎるタイミングで発生する事象が
 実配信で確認された(Issue #223の調査中に発見)。実測(is_full_blackoutの
@@ -437,6 +471,7 @@ Falseに戻った瞬間、つまりVS画面が視覚的に消えて数フレー�
   その試合は記録されなくなる
 """
 
+import concurrent.futures
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -624,6 +659,7 @@ class MatchStateMachine:
         demotion_label_confirm_frames: int = DEFAULT_DEMOTION_LABEL_CONFIRM_FRAMES,
         obs_switch_delay_after_blackout_frames: int = DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_FRAMES,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
+        tier_recheck_executor: Optional["concurrent.futures.Executor"] = None,
     ) -> None:
         self._banner_confirm_frames = banner_confirm_frames
         self._banner_confirm_frames_after_match_end = banner_confirm_frames_after_match_end
@@ -638,6 +674,14 @@ class MatchStateMachine:
         self._demotion_label_confirm_frames = demotion_label_confirm_frames
         self._obs_switch_delay_after_blackout_frames = obs_switch_delay_after_blackout_frames
         self._rank_monitor = rank_stability_monitor or StabilityMonitor(roi=rank_roi)
+        # Issue #303: 未指定時はThreadPoolExecutorを使う(同一プロセス内で動くため
+        # テストのread_rankモンキーパッチがそのまま効く)。本番はmain.pyが
+        # ProcessPoolExecutorを明示的に渡す(モジュールdocstring参照)
+        self._tier_recheck_executor: concurrent.futures.Executor = (
+            tier_recheck_executor
+            if tier_recheck_executor is not None
+            else concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="tier-recheck")
+        )
 
         self._state = _State.WATCHING
         self._rank_phase = _RankPhase.WAITING_STABLE
@@ -662,6 +706,10 @@ class MatchStateMachine:
         # 一時的なノイズが_latest_gauge_fillへ混入するのを防ぐためのデバウンス用
         self._pending_gauge_fill: Optional[float] = None
         self._pending_gauge_streak = 0
+        # Issue #303: 帯番号の定期再チェック(read_rank())を_tier_recheck_executorで
+        # 非同期実行するための状態(モジュールdocstring参照)。_tier_recheck_futureが
+        # 非Noneの間は多重に投げない
+        self._tier_recheck_future: Optional["concurrent.futures.Future"] = None
         # Issue #136: 昇格演出(is_league_change_screen)がこの試合中に一度でも
         # 観測されたか。帯番号の急変を検証する際、昇格側はこの独立信号で
         # 確認できていない限り認めない
@@ -1114,6 +1162,7 @@ class MatchStateMachine:
             self._latest_gauge_fill = None
             self._pending_gauge_fill = None
             self._pending_gauge_streak = 0
+            self._tier_recheck_future = None
             self._promotion_confirmed_this_match = False
             self._demotion_confirmed_this_match = False
             self._demotion_label_streak = 0
@@ -1232,18 +1281,49 @@ class MatchStateMachine:
 
         # ピクセル差分では検知できない緩やかな帯番号の変化を見逃さないよう、
         # 一定間隔で読み直して候補の帯番号が古くなっていないか確認する
-        # (数値OCRは重いためここだけ間引く。ゲージ小数部は上記で毎フレーム追跡済み)
+        # (ゲージ小数部は上記で毎フレーム追跡済み)。
+        # Issue #303: read_rank()はIssue #288でPaddleOCRに切り替わり1回1.2〜1.6秒
+        # (実測)かかるようになった。ここを同期的に呼ぶとその間process_frame()全体が
+        # ブロックされ、グレース期間の満了判定・OBSシーン切替が実時間で最大約28秒
+        # 遅延することが実配信で確認された。スレッド化だけではPythonのGILの制約で
+        # 解決しないため_tier_recheck_executor(本番はProcessPoolExecutor)経由で
+        # 別プロセスに逃がし、結果は次フレーム以降_poll_tier_recheck()で
+        # 非ブロッキングに取り込む(モジュールdocstring参照)
+        self._poll_tier_recheck()
         if self._grace_counter % self._rank_recheck_interval_frames == 0:
-            tier = read_rank(frame, RANK_NUMBER_ROI_ENLARGED)
-            if tier is not None and tier != self._grace_candidate_rank_tier:
-                self._grace_candidate_rank_tier = tier
-                self._grace_counter = 0
-                return None
+            self._submit_tier_recheck(frame)
 
         if self._grace_counter < self._league_change_grace_frames:
             return None
         self._fill_grace_candidate_if_missing(frame)
         return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank())
+
+    def _submit_tier_recheck(self, frame: np.ndarray) -> None:
+        """帯番号OCR(read_rank())を_tier_recheck_executorで非同期実行する(Issue #303)。
+
+        前回投げた再チェックがまだ完了していない間は多重に投げない
+        (_poll_tier_recheck()が完了を確認して_tier_recheck_futureをNoneに
+        戻すまで、次の投入はスキップされる)。
+        """
+        if self._tier_recheck_future is not None:
+            return
+        self._tier_recheck_future = self._tier_recheck_executor.submit(read_rank, frame, RANK_NUMBER_ROI_ENLARGED)
+
+    def _poll_tier_recheck(self) -> None:
+        """_submit_tier_recheck()の結果が届いていれば、ブロックせずに取り込む(Issue #303)。
+
+        帯番号が実際に変わっていた場合のみ_grace_candidate_rank_tierを更新し、
+        猶予期間をやり直す(以前の同期呼び出し時と同じ挙動)。まだ実行中の間は
+        何もしない。結果が_finalize()より後に届いた場合は単に読み捨てられる
+        (ランクへの反映が数フレーム遅れる程度は許容する設計、モジュールdocstring参照)。
+        """
+        if self._tier_recheck_future is None or not self._tier_recheck_future.done():
+            return
+        tier = self._tier_recheck_future.result()
+        self._tier_recheck_future = None
+        if tier is not None and tier != self._grace_candidate_rank_tier:
+            self._grace_candidate_rank_tier = tier
+            self._grace_counter = 0
 
     def _check_for_demotion_label(self, frame: np.ndarray) -> None:
         """降格ラベル(「降格」の吹き出し)を検知する(Issue #176)。
