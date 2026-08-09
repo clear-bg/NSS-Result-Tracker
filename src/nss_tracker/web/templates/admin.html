@@ -6,19 +6,21 @@
 <link rel="stylesheet" href="/static/admin.css">
 </head>
 <body>
-<h1>配信中の設定</h1>
+<h1>配信ダッシュボード</h1>
+<h2>配信ウィジェット一覧</h2>
+<ul class="admin-overlay-links">
+  {% for link in overlay_links %}
+  <li><a href="{{ link.path }}?debug_bg=1" target="_blank" rel="noopener">{{ link.label }}</a></li>
+  {% endfor %}
+  <li><a href="/rank-entry" target="_blank" rel="noopener">ランク手動入力</a></li>
+</ul>
+<h2>配信中の設定</h2>
 {% if status == "updated" %}
 <p class="admin-message admin-message-success">更新しました。</p>
 {% endif %}
 {% if error %}
 <p class="admin-message admin-message-error">{{ error }}</p>
 {% endif %}
-<h2>配信ウィジェット一覧</h2>
-<ul class="admin-overlay-links">
-  {% for link in overlay_links %}
-  <li><a href="{{ link.path }}?debug_bg=1" target="_blank" rel="noopener">{{ link.label }}</a></li>
-  {% endfor %}
-</ul>
 <form method="post" action="/admin">
   <div class="admin-field">
     <label for="allowed_players">許可リスト(得点・アシストを記録する対象のプレイヤー名、カンマ区切り)</label>
