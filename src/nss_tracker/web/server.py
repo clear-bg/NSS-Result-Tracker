@@ -85,8 +85,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import RedirectResponse
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -105,6 +105,7 @@ from nss_tracker.database.db import (
     fetch_current_session_id,
     fetch_goals_for_session,
     fetch_latest_vs_rank_snapshot,
+    fetch_match,
     fetch_matches_for_session,
     fetch_oldest_pending_manual_rank_match,
     fetch_pending_manual_rank_match_count,
@@ -112,6 +113,7 @@ from nss_tracker.database.db import (
     fetch_vs_rank_snapshot_slots,
     save_manual_rank_after,
 )
+from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR
 
 _WEB_DIR = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=_WEB_DIR / "templates")
@@ -951,36 +953,74 @@ def _overlay_debug_bg_style(request: Request) -> str:
 _MATCH_RESULT_LABELS = {"win": "勝ち", "lose": "負け", "draw": "引き分け"}
 
 
+def _rank_entry_recency_label(index: int) -> str:
+    """新しい順に並んだクリップ一覧内での位置から、選択ボタンの見出し文言を作る(Issue #307)。
+
+    ユーザーとの相談で、単なる日時ラベルだけでなく「どれが最新か」を一目で
+    分かるようにする要望があったため、「最新」「1つ前」「2つ前」の形にする。
+    """
+    return "最新" if index == 0 else f"{index}つ前"
+
+
+def _build_rank_entry_clip_info(row: sqlite3.Row, index: int, has_clip: bool) -> dict:
+    detected_at = datetime.fromisoformat(row["detected_at"])
+    return {
+        "match_id": row["id"],
+        "recency_label": _rank_entry_recency_label(index),
+        "detected_at_text": detected_at.strftime("%m/%d %H:%M"),
+        "result_text": _MATCH_RESULT_LABELS.get(row["result"], row["result"]),
+        "rank_before": row["rank_before"],
+        "rank_after_ocr": row["rank_after_ocr"],
+        "rank_after": row["rank_after"],
+        "has_clip": has_clip,
+    }
+
+
 def _build_rank_entry_context(db_path: Path) -> dict:
-    """/rank-entryページ用に、未確定(rank_after未入力)の最古の試合を1件取得する(Issue #306)。
+    """/rank-entryページ用に、直近の動画クリップ(最大3件、Issue #307)とそれぞれに
+    対応する試合情報を新しい順に返す。
 
-    無ければmatch=Noneのcontextを返す(テンプレート側で「未確定の試合はありません」を表示)。
+    テンプレート側は先頭(最新)をデフォルト選択として表示し、JS側で選択を
+    切り替えるたびに同じ形のデータで左側の試合情報・入力フォームを差し替える
+    (動画の切り替えと連動させたいというユーザー要望、Issue #307)。
 
-    Issue #308: 他にも未確定の試合が溜まっている場合に気付けるよう件数
-    (pending_count、自分自身を含む)もあわせて返す。また、rank_beforeのチェーンが
-    まだ解決できていない(直前の試合が未確定の)試合が返ってきた場合
-    (通常は起きないはずだが、防御的に対応する)、入力フォームの代わりに
-    その旨を表示する(rank_before_pending)。
+    クリップが1件も無い場合(Issue #307導入前からの未確定分、またはまだ
+    エンコードが完了していない直後等)は、Issue #306/#308までの表示に
+    フォールバックし、最古の未確定試合を動画無し(has_clip=False)の1件として返す。
+    1件も試合が無ければ空リストを返す(テンプレート側で「未確定の試合はありません」
+    を表示)。
+
+    他にも未確定の試合が溜まっている場合に気付けるよう件数(pending_count、
+    表示中の分を含む全件)もあわせて返す(Issue #308)。
     """
     conn = _connect(db_path)
     try:
-        row = fetch_oldest_pending_manual_rank_match(conn)
         pending_count = fetch_pending_manual_rank_match_count(conn)
+        clip_ids = _list_clip_match_ids(DEFAULT_CLIPS_DIR)
+        clips = []
+        for match_id in clip_ids:
+            row = fetch_match(conn, match_id)
+            if row is None:
+                # 通常は起きないはずだが、DBをリセットした場合等の防御的スキップ
+                continue
+            clips.append(_build_rank_entry_clip_info(row, len(clips), has_clip=True))
+        if not clips:
+            row = fetch_oldest_pending_manual_rank_match(conn)
+            if row is not None:
+                clips = [_build_rank_entry_clip_info(row, 0, has_clip=False)]
     finally:
         conn.close()
-    if row is None:
-        return {"match": None, "pending_count": 0}
-    detected_at = datetime.fromisoformat(row["detected_at"])
-    return {
-        "match": {
-            "id": row["id"],
-            "detected_at_text": detected_at.strftime("%m/%d %H:%M"),
-            "result_text": _MATCH_RESULT_LABELS.get(row["result"], row["result"]),
-            "rank_before": row["rank_before"],
-            "rank_after_ocr": row["rank_after_ocr"],
-        },
-        "pending_count": pending_count,
-    }
+    return {"clips": clips, "pending_count": pending_count}
+
+
+def _list_clip_match_ids(clips_dir: Path) -> list[int]:
+    """保存済みの動画クリップファイル名(`{match_id}.mp4`)から、match_idを新しい順に返す。"""
+    if not clips_dir.is_dir():
+        return []
+    return sorted(
+        (int(p.stem) for p in clips_dir.glob("*.mp4") if p.stem.isdigit()),
+        reverse=True,
+    )
 
 
 def create_app(db_path: Path) -> FastAPI:
@@ -1059,6 +1099,17 @@ def create_app(db_path: Path) -> FastAPI:
             conn.close()
         _logger.info("手動ランク入力(/rank-entry)からrank_afterを記録しました: match_id=%d rank_after=%s", match_id, rank_after_value)
         return RedirectResponse("/rank-entry?status=saved", status_code=303)
+
+    @app.get("/api/rank-entry-clips")
+    def rank_entry_clips() -> dict:
+        return _build_rank_entry_context(db_path)
+
+    @app.get("/rank-entry/clips/{match_id}.mp4")
+    def rank_entry_clip_file(match_id: int):
+        clip_path = DEFAULT_CLIPS_DIR / f"{match_id}.mp4"
+        if not clip_path.is_file():
+            raise HTTPException(status_code=404, detail="クリップが見つかりません")
+        return FileResponse(clip_path, media_type="video/mp4")
 
     @app.get("/overlay/winrate")
     def overlay_winrate(request: Request):

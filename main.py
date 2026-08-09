@@ -57,10 +57,11 @@ from nss_tracker.config import (
 )
 from nss_tracker.database import db
 from nss_tracker.detection.goal import _get_name_reader
-from nss_tracker.detection.motion import StabilityMonitor
+from nss_tracker.detection.motion import StabilityMonitor, is_full_blackout
 from nss_tracker.detection.rank_ocr import RANK_NUMBER_ROI_ENLARGED, RANK_ROI, _get_reader, read_rank
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
 from nss_tracker.obs_control import ObsSceneController
+from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR, RankEntryClipRecorder
 from nss_tracker.state.match_state import (
     VS_SCREEN_LOCKOUT_SECONDS,
     MatchResult,
@@ -206,7 +207,7 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     )
 
 
-def _record_match_result(conn: sqlite3.Connection, session_id: Optional[int], result: MatchResult) -> None:
+def _record_match_result(conn: sqlite3.Connection, session_id: Optional[int], result: MatchResult) -> int:
     match_id = db.save_match_result(conn, result, session_id=session_id)
     # Issue #306: rank_after/league_changedは手動入力が確定させるまでDBにはNULLの
     # ままのため、ここでのresult.rank_after/league_changedはあくまで自動検知(OCR)の
@@ -259,6 +260,8 @@ def _record_match_result(conn: sqlite3.Connection, session_id: Optional[int], re
         # 表示を前の試合の値のまま残さず、none/noneにリセットする(db._recordの
         # モジュールdocstring参照)
         db.save_vs_rank_snapshot(conn, session_id, [], [], None, None, result.detected_at)
+
+    return match_id
 
 
 def _record_vs_screen_event(conn: sqlite3.Connection, session_id: Optional[int], event: VsScreenEvent) -> None:
@@ -314,12 +317,18 @@ def run(
     conn: sqlite3.Connection,
     session_id: Optional[int],
     obs_controller: ObsSceneController,
+    fps: float,
+    clip_recorder: RankEntryClipRecorder,
 ) -> None:
     prev_state = machine.current_state
     prev_in_match = machine.in_match
     frame_read_timeout_seconds = get_frame_read_timeout_seconds()
     # Issue #71: Ctrl+C受信時にセッションサマリを出すための内訳カウンタ
     session_results = {"win": 0, "lose": 0, "draw": 0}
+    # Issue #307: 録画中の区間に対応する試合のID。試合結果確定(_record_match_result)
+    # の時点で判明するまではNone(録画自体はそれより前、tracking_rank突入時点で
+    # 始まっているため)。clip_recorder.is_recordingがFalseの間は常にNone
+    pending_clip_match_id: Optional[int] = None
 
     _warmup_ocr_engines()
 
@@ -349,6 +358,12 @@ def run(
                 _record_vs_screen_event(conn, session_id, vs_screen_event)
 
             if machine.current_state != prev_state:
+                # Issue #307: ランクを賭けた試合の結果バナー確定〜GRACEフェーズ突入の
+                # 瞬間(モジュールdocstring参照、ランクを賭けない試合はこの遷移自体が
+                # 起こらないため自然に録画対象外になる)
+                if prev_state == "watching" and machine.current_state == "tracking_rank":
+                    clip_recorder.start(fps)
+                    pending_clip_match_id = None
                 # 処理落ち(フレーム抜け)の実測用。この累計値を状態遷移のたびに出すことで、
                 # 例えばtracking_rank突入〜離脱の間の差分から、ランク確定処理中に
                 # どれだけフレームを読み捨てたかを事後に追えるようにする
@@ -366,8 +381,23 @@ def run(
                 prev_in_match = machine.in_match
 
             if result is not None:
-                _record_match_result(conn, session_id, result)
+                match_id = _record_match_result(conn, session_id, result)
                 session_results[result.result] += 1
+                if clip_recorder.is_recording:
+                    pending_clip_match_id = match_id
+
+            if clip_recorder.is_recording:
+                # Issue #307: 暗転を検知した時点、または録画が異常に長引いた場合の
+                # 安全策(MAX_DURATION_SECONDS)のどちらかで区間を終える
+                duration_exceeded = clip_recorder.add_frame(frame)
+                if pending_clip_match_id is not None and (duration_exceeded or is_full_blackout(frame)):
+                    clip_recorder.finish(pending_clip_match_id)
+                    pending_clip_match_id = None
+                elif duration_exceeded:
+                    # match_id判明前に上限に達した(通常は起こらないはずの異常系)。
+                    # クリップを生成せず録画をリセットして無限に溜め込まないようにする
+                    logger.warning("動画クリップの録画がmatch_id判明前に上限時間へ達したため、リセットします")
+                    clip_recorder.start(fps)
     except KeyboardInterrupt:
         total = sum(session_results.values())
         logger.info(
@@ -474,8 +504,9 @@ def main() -> None:
     if youtube_chat_dive_time_enabled:
         dive_time_watcher = DiveTimeWatcher()
         dive_time_watcher.start()
+    clip_recorder = RankEntryClipRecorder(output_dir=DEFAULT_CLIPS_DIR)
     try:
-        run(reader, machine, conn, session_id, obs_controller)
+        run(reader, machine, conn, session_id, obs_controller, fps, clip_recorder)
     finally:
         if dive_time_watcher is not None:
             dive_time_watcher.stop()

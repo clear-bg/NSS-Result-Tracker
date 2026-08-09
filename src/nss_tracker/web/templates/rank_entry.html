@@ -14,45 +14,177 @@
 <p class="rank-entry-message rank-entry-message-error">{{ error }}</p>
 {% endif %}
 
-{% if match %}
-{% if pending_count > 1 %}
-<p class="rank-entry-pending-count">他に{{ pending_count - 1 }}件未確定です(古い順に表示しています)</p>
+{% if clips %}
+{% if pending_count > 0 %}
+<p class="rank-entry-pending-count">未確定の試合: {{ pending_count }}件</p>
 {% endif %}
-<div class="rank-entry-match-info">
-  <div class="rank-entry-match-row"><span>試合終了</span><span>{{ match.detected_at_text }}</span></div>
-  <div class="rank-entry-match-row"><span>結果</span><span>{{ match.result_text }}</span></div>
-  <div class="rank-entry-match-row"><span>試合前ランク</span><span>{{ match.rank_before if match.rank_before is not none else "未解決" }}</span></div>
-  {% if match.rank_after_ocr is not none %}
-  <div class="rank-entry-match-row rank-entry-match-row-hint"><span>自動検知(参考)</span><span>{{ match.rank_after_ocr }}</span></div>
-  {% endif %}
+<div class="rank-entry-layout">
+  <div class="rank-entry-left" id="rank-entry-left"></div>
+  <div class="rank-entry-right">
+    <video id="rank-entry-video" class="rank-entry-video" controls muted playsinline></video>
+    <div id="rank-entry-clip-selector" class="rank-entry-clip-selector"></div>
+  </div>
 </div>
-{% if match.rank_before is none %}
-<p class="rank-entry-empty">直前の試合のランクがまだ確定していないため、この試合は入力できません。先に直前の試合を確定させてください。</p>
-{% else %}
-<form method="post" action="/rank-entry" class="rank-entry-form">
-  <input type="hidden" name="match_id" value="{{ match.id }}">
-  <input
-    type="text"
-    inputmode="decimal"
-    name="rank_after"
-    id="rank_after"
-    class="rank-entry-input"
-    value="{{ match.rank_after_ocr if match.rank_after_ocr is not none else '' }}"
-    autocomplete="off"
-    autofocus
-  >
-  <button type="submit">記録</button>
-</form>
-<script>
-  const input = document.getElementById("rank_after");
-  if (input) {
-    input.focus();
-    input.select();
-  }
-</script>
-{% endif %}
 {% else %}
 <p class="rank-entry-empty">未確定の試合はありません。</p>
 {% endif %}
+
+<script id="rank-entry-clips-data" type="application/json">{{ clips | tojson }}</script>
+<script>
+(function () {
+  const dataEl = document.getElementById("rank-entry-clips-data");
+  if (!dataEl) {
+    return;
+  }
+  let clips = JSON.parse(dataEl.textContent);
+  const video = document.getElementById("rank-entry-video");
+  const selector = document.getElementById("rank-entry-clip-selector");
+  const left = document.getElementById("rank-entry-left");
+  let selectedMatchId = null;
+  let userSelected = false;
+
+  function findClip(matchId) {
+    return clips.find(function (c) { return c.match_id === matchId; }) || null;
+  }
+
+  function formatRank(value) {
+    return value === null || value === undefined ? "未解決" : value;
+  }
+
+  function addRow(container, label, value, extraClass) {
+    const row = document.createElement("div");
+    row.className = "rank-entry-match-row" + (extraClass ? " " + extraClass : "");
+    const labelSpan = document.createElement("span");
+    labelSpan.textContent = label;
+    const valueSpan = document.createElement("span");
+    valueSpan.textContent = value;
+    row.appendChild(labelSpan);
+    row.appendChild(valueSpan);
+    container.appendChild(row);
+  }
+
+  function renderLeftPanel(clip) {
+    left.innerHTML = "";
+
+    const info = document.createElement("div");
+    info.className = "rank-entry-match-info";
+    addRow(info, "試合終了", clip.detected_at_text);
+    addRow(info, "結果", clip.result_text);
+    addRow(info, "試合前ランク", formatRank(clip.rank_before));
+    if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
+      addRow(info, "自動検知(参考)", clip.rank_after_ocr, "rank-entry-match-row-hint");
+    }
+    left.appendChild(info);
+
+    if (clip.rank_after !== null && clip.rank_after !== undefined) {
+      const confirmed = document.createElement("p");
+      confirmed.className = "rank-entry-confirmed";
+      confirmed.textContent = "確定済み: " + clip.rank_after;
+      left.appendChild(confirmed);
+      return;
+    }
+
+    if (clip.rank_before === null || clip.rank_before === undefined) {
+      const blocked = document.createElement("p");
+      blocked.className = "rank-entry-empty";
+      blocked.textContent = "直前の試合のランクがまだ確定していないため、この試合は入力できません。先に直前の試合を確定させてください。";
+      left.appendChild(blocked);
+      return;
+    }
+
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = "/rank-entry";
+    form.className = "rank-entry-form";
+
+    const hidden = document.createElement("input");
+    hidden.type = "hidden";
+    hidden.name = "match_id";
+    hidden.value = clip.match_id;
+    form.appendChild(hidden);
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.inputMode = "decimal";
+    input.name = "rank_after";
+    input.id = "rank_after";
+    input.className = "rank-entry-input";
+    input.autocomplete = "off";
+    if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
+      input.value = clip.rank_after_ocr;
+    }
+    form.appendChild(input);
+
+    const button = document.createElement("button");
+    button.type = "submit";
+    button.textContent = "記録";
+    form.appendChild(button);
+
+    left.appendChild(form);
+    input.focus();
+    input.select();
+  }
+
+  function renderSelector() {
+    selector.innerHTML = "";
+    clips.forEach(function (clip) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "rank-entry-clip-button" + (clip.match_id === selectedMatchId ? " rank-entry-clip-button-active" : "");
+      button.textContent = clip.recency_label;
+      button.addEventListener("click", function () {
+        userSelected = true;
+        selectClip(clip.match_id);
+      });
+      selector.appendChild(button);
+    });
+  }
+
+  function selectClip(matchId) {
+    const clip = findClip(matchId);
+    if (!clip) {
+      return;
+    }
+    selectedMatchId = matchId;
+    renderLeftPanel(clip);
+    if (clip.has_clip) {
+      video.style.display = "";
+      video.src = "/rank-entry/clips/" + matchId + ".mp4?t=" + Date.now();
+    } else {
+      video.style.display = "none";
+      video.removeAttribute("src");
+    }
+    renderSelector();
+  }
+
+  function refresh() {
+    fetch("/api/rank-entry-clips")
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        clips = data.clips || [];
+        if (clips.length === 0) {
+          selector.innerHTML = "";
+          left.innerHTML = "";
+          video.removeAttribute("src");
+          selectedMatchId = null;
+          return;
+        }
+        const stillAvailable = findClip(selectedMatchId) !== null;
+        if (!userSelected || !stillAvailable) {
+          selectClip(clips[0].match_id);
+        } else {
+          // 選択中の試合は変えず、内容(確定状況等)だけ最新化する
+          selectClip(selectedMatchId);
+        }
+      })
+      .catch(function () {});
+  }
+
+  if (clips.length > 0) {
+    selectClip(clips[0].match_id);
+  }
+  setInterval(refresh, 5000);
+})();
+</script>
 </body>
 </html>

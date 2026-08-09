@@ -16,6 +16,7 @@ import pytest
 from conftest import requires_video_fixtures
 from nss_tracker.database import db
 from nss_tracker.detection.vs_rank import SlotRank
+from nss_tracker.rank_entry_clips import RankEntryClipRecorder
 from nss_tracker.state.match_state import MatchResult, VsScreenEvent
 from nss_tracker.timeutil import JST, now_jst
 
@@ -55,7 +56,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     呼び、finallyでweb_handle.stop()を呼ぶこと)だけを軽量に検証する。
     """
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller: None)
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder: None)
 
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
@@ -104,7 +105,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
 def test_main_continues_when_browser_cannot_be_opened(monkeypatch, tmp_path):
     """Issue #129: ブラウザが無い環境等で設定画面の自動起動に失敗しても、アプリ全体は止めない。"""
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller: None)
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder: None)
 
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
@@ -212,7 +213,7 @@ def test_record_match_result_resets_snapshot_when_vs_screen_missed(tmp_path):
 
 @pytest.mark.slow
 @requires_video_fixtures
-def test_run_wires_capture_state_and_database(videos_dir, monkeypatch):
+def test_run_wires_capture_state_and_database(videos_dir, monkeypatch, tmp_path):
     # 得点者名は実名を含みうるため、許可リストを空にしてgoalsへの記録内容を
     # テストの関心から外す(配線確認のみが目的。名前は検証しない)
     monkeypatch.setenv("ALLOWED_PLAYERS", "")
@@ -236,7 +237,8 @@ def test_run_wires_capture_state_and_database(videos_dir, monkeypatch):
             def set_in_match(self, in_match: bool) -> None:
                 pass
 
-        main.run(reader, machine, conn, session_id, _NoOpObsController())
+        clip_recorder = RankEntryClipRecorder(output_dir=tmp_path / "rank_entry_clips")
+        main.run(reader, machine, conn, session_id, _NoOpObsController(), fps, clip_recorder)
 
         rows = db.fetch_all_matches(conn)
         assert len(rows) == 1, f"記録された試合数が{len(rows)}件(期待は1件)"
