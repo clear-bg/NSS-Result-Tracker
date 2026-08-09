@@ -86,6 +86,18 @@ from nss_tracker.timeutil import now_jst
 
 logger = logging.getLogger("nss_tracker.database")
 
+# Issue #305系(手動入力への移行)の会話で決定: matches.rank_before/rank_after/
+# rank_before_ocr/rank_after_ocrは小数第2位までに丸めて保存する(小数第3位を
+# 四捨五入)。以前はCLAUDE.md記載どおり「DBには生の小数値をそのまま記録し、
+# 丸めは表示層の責務とする」方針だったが、ゲージ由来の小数値(例:
+# 41.11724137931034)がそのままDB・手動入力の推定値に出てしまい読みにくい
+# ため、書き込み時点で丸める方針に変更した(state/match_state.pyのMatchResult
+# 自体は引き続き生の精度を保持する。丸めるのはこのモジュールがDBへ書き込む
+# 直前のみ)。_SCHEMAのCHECK制約は丸め漏れの保険。
+def _round_rank(value: Optional[float]) -> Optional[float]:
+    return None if value is None else round(value, 2)
+
+
 # Issue #179/#253: 試合と試合の間でランクは変動しない(勝敗が付いた試合でしか
 # 変わらない、ユーザー確認済み)ため、ある試合のrank_afterは次の試合のrank_before
 # と本来一致するはず。rank_afterには読み取りアニメーション由来の残差が残りうる
@@ -117,17 +129,24 @@ CREATE TABLE IF NOT EXISTS matches (
     session_id INTEGER REFERENCES sessions(id), -- 検知時点の配信セッション。Issue #93より前の既存行はNULL
     detected_at TEXT NOT NULL,      -- 結果バナー検知時刻(ISO8601, JST)
     result TEXT NOT NULL,           -- 'win' / 'lose' / 'draw'
-    rank_before REAL,               -- 試合開始時点のランク値。Issue #308以降は、直近の
+    -- rank_before/rank_after/rank_before_ocr/rank_after_ocrはいずれも小数第2位まで
+    -- (db.py の_round_rank参照、書き込み前に丸める)。CHECK制約は書き込み漏れの
+    -- 保険として置く(ユーザー確認済み、Issue #305系の会話で決定)
+    rank_before REAL CHECK (rank_before IS NULL OR ROUND(rank_before, 2) = rank_before),
+                                     -- 試合開始時点のランク値。Issue #308以降は、直近の
                                      -- ランクを賭けた試合のrank_after(確定済みのもの)を
                                      -- そのまま引き継ぐ値(チェーン)。まだ引き継ぎ元が
                                      -- 未確定の場合はNULLのまま(rank_before_ocr参照)
-    rank_after REAL,                -- ランク変動確定後の値。Issue #306以降は手動入力専用
+    rank_after REAL CHECK (rank_after IS NULL OR ROUND(rank_after, 2) = rank_after),
+                                     -- ランク変動確定後の値。Issue #306以降は手動入力専用
                                      -- (自動検知はこの列に書き込まず、手動入力されるまでNULLのまま)
-    rank_before_ocr REAL,           -- 自動検知(OCR/VS画面)が読み取った試合開始時点のランク値。
+    rank_before_ocr REAL CHECK (rank_before_ocr IS NULL OR ROUND(rank_before_ocr, 2) = rank_before_ocr),
+                                     -- 自動検知(OCR/VS画面)が読み取った試合開始時点のランク値。
                                      -- Issue #308。比較用、および直近の確定済み試合が無い場合
                                      -- (セッション最初のランクを賭けた試合等)のrank_beforeの
                                      -- フォールバック値としても使う
-    rank_after_ocr REAL,            -- 自動検知(OCR)が読み取ったランク変動確定後の値。Issue #306。
+    rank_after_ocr REAL CHECK (rank_after_ocr IS NULL OR ROUND(rank_after_ocr, 2) = rank_after_ocr),
+                                     -- 自動検知(OCR)が読み取ったランク変動確定後の値。Issue #306。
                                      -- 比較・将来のOCR精度検証用で、rank_afterのように表示・
                                      -- league_changed算出には使わない
     league_changed TEXT,            -- 'up' / 'down' / NULL
@@ -400,6 +419,7 @@ def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_r
     if previous_rank_after is not None:
         # Issue #306: 非NULLは手動確定済みを意味するため上書きしない(docstring参照)
         return
+    current_rank_before = _round_rank(current_rank_before)
     now = now_jst().isoformat()
     conn.execute(
         "UPDATE matches SET rank_after = ?, updated_at = ? WHERE id = ?",
@@ -428,6 +448,10 @@ def _resolve_rank_before(conn: sqlite3.Connection, rank_before_ocr: Optional[flo
       ため、この試合のrank_beforeもNoneのまま(手動入力待ち)にする。直近の試合が
       確定した時点でsave_manual_rank_after()がこの試合のrank_beforeを遡って
       埋める(_backfill_next_rank_before参照)
+
+    戻り値は_round_rank()で丸め済み(フォールバックのrank_before_ocrは呼び出し元の
+    生の値のため、ここで丸める。チェーン由来のrank_afterは既に丸め済みのはずだが
+    念のため通す)。
     """
     if rank_before_ocr is None:
         return None
@@ -435,8 +459,8 @@ def _resolve_rank_before(conn: sqlite3.Connection, rank_before_ocr: Optional[flo
         "SELECT rank_after FROM matches WHERE rank_before_ocr IS NOT NULL ORDER BY id DESC LIMIT 1"
     ).fetchone()
     if row is None:
-        return rank_before_ocr
-    return row["rank_after"]
+        return _round_rank(rank_before_ocr)
+    return _round_rank(row["rank_after"])
 
 
 def _backfill_next_rank_before(conn: sqlite3.Connection, confirmed_match_id: int, rank_after: float) -> None:
@@ -509,8 +533,8 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
             match.detected_at.isoformat(),
             match.result,
             rank_before,
-            match.rank_before,
-            match.rank_after,
+            _round_rank(match.rank_before),
+            _round_rank(match.rank_after),
             match.mine_team_color,
             match.opponent_team_color,
             now,
@@ -550,6 +574,7 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
             f"matches.id={match_id} は直前の試合のrank_afterがまだ未確定のため、rank_beforeを解決できません"
         )
 
+    rank_after = _round_rank(rank_after)
     tier_before = int(rank_before)
     tier_after = int(rank_after)
     if tier_after > tier_before:
