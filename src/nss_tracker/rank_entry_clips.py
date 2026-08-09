@@ -53,13 +53,38 @@ ffmpeg本体のパスを取得し、サブプロセスへ生フレーム(bgr24, 
 (mtimeより確実なため)。rank_afterの確定状況とは無関係に「直近3試合分」を
 機械的に保持する(ユーザー確認済み、確定したら消すのではなく単純なローリング
 ウィンドウ)。
+
+## ゲージクローズアップ動画(Issue #312)
+
+上記の画面全体クリップと全く同じ録画区間・トリガー(main.pyから同じ
+start()/add_frame()/finish()呼び出し)を使い、`RankEntryClipRecorder`を
+もう1つ(`crop_roi`/`overlay_fn`付きで)構築するだけで、ランクゲージ部分
+だけを切り出した別動画も並行して生成できるようにした。`crop_roi`が
+指定されている場合、`add_frame()`は各サンプリングフレームからそのROIを
+切り出してから(`_resize`によるサイズ調整・`overlay_fn`によるオーバーレイ
+合成を経て)バッファする。`_resize`は当初「大きい画面全体フレームを
+`TARGET_WIDTH`まで縮小する」用途のみだったが、ゲージのROI(実測290x32px程度、
+`detection/rank_ocr.py`の`GAUGE_ROI_ENLARGED`参照)は逆に「小さい切り出しを
+見やすく拡大する」必要があるため、拡大方向にも対応させた(`vs_rank.py`の
+数字OCR前処理と同じ、`cv2.INTER_CUBIC`で拡大する考え方)。
+
+`overlay_fn`(`_draw_gauge_ticks`)は、ゲージ幅を20分割(0.5刻みで0〜10まで、
+Issue #312のIssue本文で決定)する目盛り線を各フレームに描画する。ゲージは
+横方向に左から右へ塗りつぶされる仕様(`read_rank_gauge_fill`参照)のため、
+目盛りは縦線として引く。手入力時にゲージの溜まり具合(小数部)を目視で
+より精密に読み取れるようにするための補助線で、1.0刻み(偶数番目の線)は
+少し太く目立たせている。
+
+`crop_roi`/`overlay_fn`を伴うフレーム処理で例外が起きても検知ループ全体を
+止めないよう、`add_frame()`内で例外を握りつぶしログに残すだけにしている
+(ユーザー確認済み。キャプチャループへの影響を最小限にする設計方針)。
 """
 
 import logging
 import subprocess
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import cv2
 import imageio_ffmpeg
@@ -71,11 +96,34 @@ logger = logging.getLogger("nss_tracker.rank_entry_clips")
 # 保存先ディレクトリ。tmp/配下は.gitignore対象かつ、ユーザーが手動キャプチャした
 # 動画等を置く場所でもあるため、専用のサブディレクトリに分ける
 DEFAULT_CLIPS_DIR = Path("tmp/rank_entry_clips")
+# Issue #312: ゲージクローズアップ動画の保存先(画面全体クリップとは別ディレクトリ)
+GAUGE_CLIPS_DIR = Path("tmp/rank_gauge_clips")
 
 TARGET_SAMPLE_FPS = 8.0
 TARGET_WIDTH = 960
 MAX_DURATION_SECONDS = 60.0
 DEFAULT_MAX_CLIPS = 3
+# Issue #312: ゲージのROI(実測290x32px程度)をどの幅まで拡大して見せるか
+GAUGE_TARGET_WIDTH = 1160
+GAUGE_TICK_SEGMENTS = 20
+
+
+def _draw_gauge_ticks(frame: np.ndarray) -> np.ndarray:
+    """ゲージクローズアップ動画に0.5刻み(0〜10、計20分割)の目盛り線を合成する(Issue #312)。
+
+    ゲージは横方向(左から右)に塗りつぶされる仕様のため、目盛りは縦線で引く。
+    1.0刻みに相当する線(偶数番目)は少し太くして目立たせ、大まかな位置の
+    目安にしやすくしている。
+    """
+    frame = frame.copy()
+    height, width = frame.shape[:2]
+    color = (0, 255, 255)  # BGR: 黄色系。塗りつぶし部分(明るい)・未塗りつぶし部分
+    # (暗い)のどちらの上でも視認しやすい色として選んだ
+    for i in range(1, GAUGE_TICK_SEGMENTS):  # 両端(0, 20)には線を引かない
+        x = round(width * i / GAUGE_TICK_SEGMENTS)
+        thickness = 2 if i % 2 == 0 else 1
+        cv2.line(frame, (x, 0), (x, height), color, thickness)
+    return frame
 
 
 class RankEntryClipRecorder:
@@ -85,6 +133,10 @@ class RankEntryClipRecorder:
         recorder.start(source_fps)          # "watching" -> "tracking_rank"遷移時
         recorder.add_frame(frame)            # 録画中は毎フレーム呼ぶ(内部で間引く)
         recorder.finish(match_id)            # is_full_blackout(frame)がTrueになった時点
+
+    `crop_roi`/`overlay_fn`(Issue #312)を指定すると、画面全体ではなく指定した
+    ROIを切り出し、必要な拡大・縮小と任意のオーバーレイ合成を行ってから
+    バッファする(モジュールdocstring参照)。
     """
 
     def __init__(
@@ -95,6 +147,8 @@ class RankEntryClipRecorder:
         target_width: int = TARGET_WIDTH,
         max_duration_seconds: float = MAX_DURATION_SECONDS,
         ffmpeg_path: Optional[str] = None,
+        crop_roi: Optional[tuple[int, int, int, int]] = None,
+        overlay_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     ) -> None:
         self._output_dir = output_dir
         self._max_clips = max_clips
@@ -102,6 +156,8 @@ class RankEntryClipRecorder:
         self._target_width = target_width
         self._max_duration_seconds = max_duration_seconds
         self._ffmpeg_path = ffmpeg_path or imageio_ffmpeg.get_ffmpeg_exe()
+        self._crop_roi = crop_roi
+        self._overlay_fn = overlay_fn
 
         self._frames: list[np.ndarray] = []
         self._sample_interval = 1
@@ -127,21 +183,38 @@ class RankEntryClipRecorder:
     def add_frame(self, frame: np.ndarray) -> bool:
         """録画中でなければ何もしない。MAX_DURATION_SECONDS相当のフレーム数を
         超えた場合はTrueを返す(呼び出し側はこれを合図に強制的にfinish()すること)。
+
+        Issue #312: crop_roi/overlay_fnによるフレーム加工で例外が起きても
+        検知ループを止めないよう、この1フレーム分だけ読み捨ててログに残す
+        (モジュールdocstring参照)。
         """
         if not self._recording:
             return False
         if self._frame_counter % self._sample_interval == 0:
-            self._frames.append(self._resize(frame))
+            try:
+                self._frames.append(self._process(frame))
+            except Exception:
+                logger.exception("動画クリップ用フレームの加工に失敗したため、このフレームを読み捨てます")
         self._frame_counter += 1
         elapsed_sampled_seconds = len(self._frames) / self._target_sample_fps
         return elapsed_sampled_seconds >= self._max_duration_seconds
 
+    def _process(self, frame: np.ndarray) -> np.ndarray:
+        if self._crop_roi is not None:
+            x1, y1, x2, y2 = self._crop_roi
+            frame = frame[y1:y2, x1:x2]
+        frame = self._resize(frame)
+        if self._overlay_fn is not None:
+            frame = self._overlay_fn(frame)
+        return frame
+
     def _resize(self, frame: np.ndarray) -> np.ndarray:
         height, width = frame.shape[:2]
-        if width <= self._target_width:
+        if width == self._target_width:
             return frame.copy()
         target_height = round(height * self._target_width / width)
-        return cv2.resize(frame, (self._target_width, target_height), interpolation=cv2.INTER_AREA)
+        interpolation = cv2.INTER_AREA if width > self._target_width else cv2.INTER_CUBIC
+        return cv2.resize(frame, (self._target_width, target_height), interpolation=interpolation)
 
     def finish(self, match_id: int) -> None:
         """録画を終え、バックグラウンドスレッドでエンコード・保持数管理を行う。"""

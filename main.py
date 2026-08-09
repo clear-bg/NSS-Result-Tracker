@@ -58,10 +58,22 @@ from nss_tracker.config import (
 from nss_tracker.database import db
 from nss_tracker.detection.goal import _get_name_reader
 from nss_tracker.detection.motion import StabilityMonitor, is_full_blackout
-from nss_tracker.detection.rank_ocr import RANK_NUMBER_ROI_ENLARGED, RANK_ROI, _get_reader, read_rank
+from nss_tracker.detection.rank_ocr import (
+    GAUGE_ROI_ENLARGED,
+    RANK_NUMBER_ROI_ENLARGED,
+    RANK_ROI,
+    _get_reader,
+    read_rank,
+)
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
 from nss_tracker.obs_control import ObsSceneController
-from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR, RankEntryClipRecorder
+from nss_tracker.rank_entry_clips import (
+    DEFAULT_CLIPS_DIR,
+    GAUGE_CLIPS_DIR,
+    GAUGE_TARGET_WIDTH,
+    RankEntryClipRecorder,
+    _draw_gauge_ticks,
+)
 from nss_tracker.state.match_state import (
     VS_SCREEN_LOCKOUT_SECONDS,
     MatchResult,
@@ -319,13 +331,19 @@ def run(
     obs_controller: ObsSceneController,
     fps: float,
     clip_recorder: RankEntryClipRecorder,
+    gauge_clip_recorder: RankEntryClipRecorder,
 ) -> None:
     prev_state = machine.current_state
     prev_in_match = machine.in_match
     frame_read_timeout_seconds = get_frame_read_timeout_seconds()
     # Issue #71: Ctrl+C受信時にセッションサマリを出すための内訳カウンタ
     session_results = {"win": 0, "lose": 0, "draw": 0}
-    # Issue #307: 録画中の区間に対応する試合のID。試合結果確定(_record_match_result)
+    # Issue #307/#312: 画面全体・ゲージクローズアップの2本を、全く同じ録画区間
+    # (トリガー・タイミング)で並行して生成する(rank_entry_clips.pyのモジュール
+    # docstring参照)。両方とも同じ試合の録画のため、対応するmatch_idは共通の
+    # 1変数で管理する
+    clip_recorders = [clip_recorder, gauge_clip_recorder]
+    # 録画中の区間に対応する試合のID。試合結果確定(_record_match_result)
     # の時点で判明するまではNone(録画自体はそれより前、tracking_rank突入時点で
     # 始まっているため)。clip_recorder.is_recordingがFalseの間は常にNone
     pending_clip_match_id: Optional[int] = None
@@ -362,7 +380,8 @@ def run(
                 # 瞬間(モジュールdocstring参照、ランクを賭けない試合はこの遷移自体が
                 # 起こらないため自然に録画対象外になる)
                 if prev_state == "watching" and machine.current_state == "tracking_rank":
-                    clip_recorder.start(fps)
+                    for recorder in clip_recorders:
+                        recorder.start(fps)
                     pending_clip_match_id = None
                 # 処理落ち(フレーム抜け)の実測用。この累計値を状態遷移のたびに出すことで、
                 # 例えばtracking_rank突入〜離脱の間の差分から、ランク確定処理中に
@@ -389,15 +408,20 @@ def run(
             if clip_recorder.is_recording:
                 # Issue #307: 暗転を検知した時点、または録画が異常に長引いた場合の
                 # 安全策(MAX_DURATION_SECONDS)のどちらかで区間を終える
-                duration_exceeded = clip_recorder.add_frame(frame)
+                # 各recorderのadd_frame()には毎フレームバッファする副作用があるため、
+                # any()に生成式を渡して短絡評価させない(片方だけ呼ばれず
+                # フレームが抜けるバグを避けるため、リスト内包表記で全て評価する)
+                duration_exceeded = any([recorder.add_frame(frame) for recorder in clip_recorders])
                 if pending_clip_match_id is not None and (duration_exceeded or is_full_blackout(frame)):
-                    clip_recorder.finish(pending_clip_match_id)
+                    for recorder in clip_recorders:
+                        recorder.finish(pending_clip_match_id)
                     pending_clip_match_id = None
                 elif duration_exceeded:
                     # match_id判明前に上限に達した(通常は起こらないはずの異常系)。
                     # クリップを生成せず録画をリセットして無限に溜め込まないようにする
                     logger.warning("動画クリップの録画がmatch_id判明前に上限時間へ達したため、リセットします")
-                    clip_recorder.start(fps)
+                    for recorder in clip_recorders:
+                        recorder.start(fps)
     except KeyboardInterrupt:
         total = sum(session_results.values())
         logger.info(
@@ -505,8 +529,17 @@ def main() -> None:
         dive_time_watcher = DiveTimeWatcher()
         dive_time_watcher.start()
     clip_recorder = RankEntryClipRecorder(output_dir=DEFAULT_CLIPS_DIR)
+    # Issue #312: ゲージのROI(GAUGE_ROI_ENLARGED)だけを切り出し、目盛り線を
+    # 合成したクローズアップ動画を並行して生成する(rank_entry_clips.pyの
+    # モジュールdocstring参照)
+    gauge_clip_recorder = RankEntryClipRecorder(
+        output_dir=GAUGE_CLIPS_DIR,
+        target_width=GAUGE_TARGET_WIDTH,
+        crop_roi=GAUGE_ROI_ENLARGED,
+        overlay_fn=_draw_gauge_ticks,
+    )
     try:
-        run(reader, machine, conn, session_id, obs_controller, fps, clip_recorder)
+        run(reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder)
     finally:
         if dive_time_watcher is not None:
             dive_time_watcher.stop()
