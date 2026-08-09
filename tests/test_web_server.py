@@ -1741,7 +1741,8 @@ def test_admin_post_logs_warning_message_on_invalid_value(tmp_path: Path, monkey
     assert any("GOAL_RECORD_MODE" in message for message in messages)
 
 
-def test_rank_entry_get_shows_no_pending_message_when_nothing_pending(tmp_path: Path):
+def test_rank_entry_get_shows_no_pending_message_when_nothing_pending(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
     client = TestClient(create_app(db_path))
@@ -1764,10 +1765,14 @@ def test_rank_entry_get_shows_admin_link(tmp_path: Path):
     assert '<a href="/admin" target="_blank" rel="noopener">' in response.text
 
 
-def test_rank_entry_get_shows_oldest_pending_match(tmp_path: Path):
+def test_rank_entry_get_shows_oldest_pending_match(tmp_path: Path, monkeypatch):
     """クリップが1件も無い場合、Issue #306/#308までと同じくfetch_oldest_pending_manual_rank_match()
     の結果1件(has_clip=False)が埋め込みJSONに含まれることを確認する。
+
+    DEFAULT_CLIPS_DIRを空のtmp_pathに差し替えて隔離する(実際にmain.pyで生成された
+    本物のクリップ(tmp/rank_entry_clips/配下)を誤って拾わないようにするため)。
     """
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     db.save_match_result(
@@ -1851,7 +1856,8 @@ def test_rank_entry_post_with_unranked_match_shows_error(tmp_path: Path):
     assert response.headers["location"].startswith("/rank-entry?error=")
 
 
-def test_rank_entry_get_shows_pending_count_when_multiple_pending(tmp_path: Path):
+def test_rank_entry_get_shows_pending_count_when_multiple_pending(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     for _ in range(3):
@@ -1867,7 +1873,8 @@ def test_rank_entry_get_shows_pending_count_when_multiple_pending(tmp_path: Path
     assert "未確定の試合: 3件" in response.text
 
 
-def test_rank_entry_get_does_not_show_pending_count_when_nothing_pending(tmp_path: Path):
+def test_rank_entry_get_does_not_show_pending_count_when_nothing_pending(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     match_id = db.save_match_result(
@@ -1883,7 +1890,7 @@ def test_rank_entry_get_does_not_show_pending_count_when_nothing_pending(tmp_pat
     assert "未確定の試合:" not in response.text
 
 
-def test_rank_entry_get_shows_blocked_message_when_rank_before_chain_unresolved(tmp_path: Path):
+def test_rank_entry_get_shows_blocked_message_when_rank_before_chain_unresolved(tmp_path: Path, monkeypatch):
     """Issue #308: rank_beforeのチェーンがまだ解決できていない試合が返ってきた
     場合、入力フォームの代わりに案内文言を表示することを確認する。
 
@@ -1891,6 +1898,7 @@ def test_rank_entry_get_shows_blocked_message_when_rank_before_chain_unresolved(
     (それより古い未確定試合が無いという前提が成り立つ)、念のための防御的
     表示なので、直接DBを操作してこの状態を人為的に再現する。
     """
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     match_id = db.save_match_result(

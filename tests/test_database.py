@@ -443,6 +443,67 @@ def test_fetch_oldest_pending_manual_rank_match_returns_none_when_none_pending()
     assert fetch_oldest_pending_manual_rank_match(conn) is None
 
 
+def test_save_match_result_rounds_rank_before_ocr_and_rank_after_ocr():
+    """Issue #305系の会話で決定: rank_before_ocr/rank_after_ocrは小数第2位までに
+    丸めて保存する(小数第3位を四捨五入)。
+    """
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=38.626,
+        rank_after=39.124,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["rank_before_ocr"] == 38.63
+    assert row["rank_after_ocr"] == 39.12
+
+
+def test_save_match_result_rounds_bootstrap_rank_before():
+    """前例が無いフォールバック(_resolve_rank_before)経由のrank_beforeも丸められることを確認する。"""
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win", rank_before=38.626, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["rank_before"] == 38.63
+
+
+def test_save_manual_rank_after_rounds_value():
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    match_id = save_match_result(conn, match)
+
+    save_manual_rank_after(conn, match_id, 39.127)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["rank_after"] == 39.13
+
+
+def test_matches_check_constraint_rejects_unrounded_rank_after(monkeypatch):
+    """Issue #305系の会話で決定: db.pyの丸め処理をすり抜けて(バグ等で)小数第3位まで
+    ある値を直接書き込もうとした場合、CHECK制約でIntegrityErrorになることを
+    保険として確認する(db.py関数を経由しない、生のSQLでの検証)。
+    """
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    match_id = save_match_result(conn, match)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE matches SET rank_after = 39.127 WHERE id = ?", (match_id,))
+
+
 def test_save_match_result_resolves_rank_before_from_ocr_when_no_prior_ranked_match():
     """Issue #308: DB内に直近のランクを賭けた試合が無い(初回)場合、
     rank_beforeはこの試合自身のOCR実測値(rank_before_ocr)をそのまま使う。
