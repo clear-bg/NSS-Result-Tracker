@@ -23,11 +23,21 @@
   <div class="rank-entry-left" id="rank-entry-left"></div>
   <div class="rank-entry-right">
     <div class="rank-entry-video-wrap rank-entry-video-wrap-main">
-      <video id="rank-entry-video" class="rank-entry-video" controls muted playsinline></video>
+      <video id="rank-entry-video" class="rank-entry-video" muted playsinline></video>
+    </div>
+    <div class="rank-entry-video-controls">
+      <button type="button" id="rank-entry-video-play-btn" class="rank-entry-video-play-btn">&#9654;</button>
+      <input type="range" id="rank-entry-video-seek" class="rank-entry-video-seek" min="0" max="1000" value="0">
+      <span id="rank-entry-video-time" class="rank-entry-video-time">0:00 / 0:00</span>
     </div>
     <p class="rank-entry-gauge-label">ゲージ拡大(目盛り付き)</p>
     <div class="rank-entry-video-wrap rank-entry-video-wrap-gauge">
-      <video id="rank-entry-gauge-video" class="rank-entry-gauge-video" controls muted playsinline></video>
+      <video id="rank-entry-gauge-video" class="rank-entry-gauge-video" muted playsinline></video>
+    </div>
+    <div class="rank-entry-video-controls">
+      <button type="button" id="rank-entry-gauge-video-play-btn" class="rank-entry-video-play-btn">&#9654;</button>
+      <input type="range" id="rank-entry-gauge-video-seek" class="rank-entry-video-seek" min="0" max="1000" value="0">
+      <span id="rank-entry-gauge-video-time" class="rank-entry-video-time">0:00 / 0:00</span>
     </div>
     <div id="rank-entry-clip-selector" class="rank-entry-clip-selector"></div>
   </div>
@@ -53,6 +63,71 @@
   const left = document.getElementById("rank-entry-left");
   let selectedMatchId = null;
   let userSelected = false;
+
+  // Issue #325: ブラウザ標準の<video controls>はコントロールを映像の下端に
+  // 重ねて表示するため、映像内容(ランクバッジ・ゲージ)と重なってしまう問題があった
+  // (#323/#324で試した「コントロール分の余白を確保する」対策では解消しなかった)。
+  // <video>の外側の実DOM要素として再生ボタン・シークバーを自前で組むことで、
+  // ブラウザのネイティブコントロール描画の実装に関わらず重なりを起こさないようにする。
+  function formatTime(seconds) {
+    if (!isFinite(seconds) || seconds < 0) {
+      return "0:00";
+    }
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return m + ":" + String(s).padStart(2, "0");
+  }
+
+  function attachCustomControls(mediaVideo, playBtn, seekInput, timeLabel) {
+    let seeking = false;
+
+    playBtn.addEventListener("click", function () {
+      if (mediaVideo.paused) {
+        mediaVideo.play();
+      } else {
+        mediaVideo.pause();
+      }
+    });
+    mediaVideo.addEventListener("play", function () { playBtn.innerHTML = "&#10074;&#10074;"; });
+    mediaVideo.addEventListener("pause", function () { playBtn.innerHTML = "&#9654;"; });
+
+    mediaVideo.addEventListener("loadedmetadata", function () {
+      timeLabel.textContent = formatTime(mediaVideo.currentTime) + " / " + formatTime(mediaVideo.duration);
+    });
+    mediaVideo.addEventListener("timeupdate", function () {
+      if (!seeking && isFinite(mediaVideo.duration) && mediaVideo.duration > 0) {
+        seekInput.value = String(Math.round((mediaVideo.currentTime / mediaVideo.duration) * 1000));
+      }
+      timeLabel.textContent = formatTime(mediaVideo.currentTime) + " / " + formatTime(mediaVideo.duration);
+    });
+
+    seekInput.addEventListener("pointerdown", function () { seeking = true; });
+    seekInput.addEventListener("input", function () {
+      if (isFinite(mediaVideo.duration) && mediaVideo.duration > 0) {
+        mediaVideo.currentTime = (Number(seekInput.value) / 1000) * mediaVideo.duration;
+      }
+    });
+    seekInput.addEventListener("pointerup", function () { seeking = false; });
+
+    return function reset() {
+      playBtn.innerHTML = "&#9654;";
+      seekInput.value = "0";
+      timeLabel.textContent = "0:00 / 0:00";
+    };
+  }
+
+  const resetVideoControls = attachCustomControls(
+    video,
+    document.getElementById("rank-entry-video-play-btn"),
+    document.getElementById("rank-entry-video-seek"),
+    document.getElementById("rank-entry-video-time")
+  );
+  const resetGaugeVideoControls = attachCustomControls(
+    gaugeVideo,
+    document.getElementById("rank-entry-gauge-video-play-btn"),
+    document.getElementById("rank-entry-gauge-video-seek"),
+    document.getElementById("rank-entry-gauge-video-time")
+  );
 
   function findClip(matchId) {
     return clips.find(function (c) { return c.match_id === matchId; }) || null;
@@ -192,6 +267,7 @@
     selectedMatchId = matchId;
     if (!isSameMatch) {
       renderLeftPanel(clip);
+      resetVideoControls();
       if (clip.has_clip) {
         videoWrap.style.display = "";
         video.src = "/rank-entry/clips/" + matchId + ".mp4?t=" + Date.now();
@@ -202,6 +278,7 @@
       // Issue #312: ゲージ動画もこのガードの外で毎回srcを再設定すると、定期更新
       // (5秒おき)のたびに読み込みが中断(abort)され続けて再生できなくなる不具合が
       // あった(通常動画と同じ理由でここに含める)
+      resetGaugeVideoControls();
       if (clip.has_gauge_clip) {
         gaugeLabel.style.display = "";
         gaugeVideoWrap.style.display = "";
@@ -223,8 +300,10 @@
         if (clips.length === 0) {
           selector.innerHTML = "";
           left.innerHTML = "";
+          resetVideoControls();
           video.removeAttribute("src");
           videoWrap.style.display = "none";
+          resetGaugeVideoControls();
           gaugeVideo.removeAttribute("src");
           gaugeLabel.style.display = "none";
           gaugeVideoWrap.style.display = "none";
