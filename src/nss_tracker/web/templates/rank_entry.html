@@ -22,9 +22,13 @@
 <div class="rank-entry-layout">
   <div class="rank-entry-left" id="rank-entry-left"></div>
   <div class="rank-entry-right">
-    <video id="rank-entry-video" class="rank-entry-video" controls muted playsinline></video>
+    <div class="rank-entry-video-wrap rank-entry-video-wrap-main">
+      <video id="rank-entry-video" class="rank-entry-video" controls muted playsinline></video>
+    </div>
     <p class="rank-entry-gauge-label">ゲージ拡大(目盛り付き)</p>
-    <video id="rank-entry-gauge-video" class="rank-entry-gauge-video" controls muted playsinline></video>
+    <div class="rank-entry-video-wrap rank-entry-video-wrap-gauge">
+      <video id="rank-entry-gauge-video" class="rank-entry-gauge-video" controls muted playsinline></video>
+    </div>
     <div id="rank-entry-clip-selector" class="rank-entry-clip-selector"></div>
   </div>
 </div>
@@ -41,7 +45,9 @@
   }
   let clips = JSON.parse(dataEl.textContent);
   const video = document.getElementById("rank-entry-video");
+  const videoWrap = document.querySelector(".rank-entry-video-wrap-main");
   const gaugeVideo = document.getElementById("rank-entry-gauge-video");
+  const gaugeVideoWrap = document.querySelector(".rank-entry-video-wrap-gauge");
   const gaugeLabel = document.querySelector(".rank-entry-gauge-label");
   const selector = document.getElementById("rank-entry-clip-selector");
   const left = document.getElementById("rank-entry-left");
@@ -187,20 +193,20 @@
     if (!isSameMatch) {
       renderLeftPanel(clip);
       if (clip.has_clip) {
-        video.style.display = "";
+        videoWrap.style.display = "";
         video.src = "/rank-entry/clips/" + matchId + ".mp4?t=" + Date.now();
       } else {
-        video.style.display = "none";
+        videoWrap.style.display = "none";
         video.removeAttribute("src");
       }
     }
     if (clip.has_gauge_clip) {
       gaugeLabel.style.display = "";
-      gaugeVideo.style.display = "";
+      gaugeVideoWrap.style.display = "";
       gaugeVideo.src = "/rank-entry/gauge-clips/" + matchId + ".mp4?t=" + Date.now();
     } else {
       gaugeLabel.style.display = "none";
-      gaugeVideo.style.display = "none";
+      gaugeVideoWrap.style.display = "none";
       gaugeVideo.removeAttribute("src");
     }
     renderSelector();
@@ -215,9 +221,10 @@
           selector.innerHTML = "";
           left.innerHTML = "";
           video.removeAttribute("src");
+          videoWrap.style.display = "none";
           gaugeVideo.removeAttribute("src");
           gaugeLabel.style.display = "none";
-          gaugeVideo.style.display = "none";
+          gaugeVideoWrap.style.display = "none";
           selectedMatchId = null;
           return;
         }

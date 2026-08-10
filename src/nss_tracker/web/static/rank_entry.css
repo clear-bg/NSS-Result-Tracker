@@ -11,7 +11,15 @@
    Issue #312: 右側にゲージ拡大(目盛り付き)クリップ用の2本目の<video>を追加。
    幅は通常動画と同じ100%(親要素basis)で揃え、ブラウザが表示サイズに合わせて
    縮小するため、素材側の実解像度(GAUGE_TARGET_WIDTH=1160)を気にする必要はない。
-   has_gauge_clipがfalseの試合(録画が無い/未対応)ではラベルごと非表示にする。 */
+   has_gauge_clipがfalseの試合(録画が無い/未対応)ではラベルごと非表示にする。
+
+   Issue #323: ブラウザ標準の<video controls>は、コントロール(シークバー等)を
+   映像の下端に半透明で重ねて表示するため、そのままだと通常動画側は左下の
+   ランクバッジが、ゲージ動画側(縦幅が極端に薄い素材)はゲージそのものが
+   ほぼ隠れてしまっていた(実際の表示で確認済み)。.rank-entry-video-wrapで
+   本来の縦横比よりコントロール分(44px)だけ高さを余分に確保し、中の<video>は
+   object-fit: contain + object-position: topで上詰め表示することで、
+   はみ出した分の余白(黒帯)にコントロールだけが収まるようにしている。 */
 body {
     margin: 0;
     padding: 16px;
@@ -104,11 +112,17 @@ h1 {
     padding-top: 8px;
 }
 
-.rank-entry-video {
+.rank-entry-video-wrap {
+    position: relative;
     width: 100%;
-    border-radius: 6px;
     background: #000;
-    display: block;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+/* 本来の縦横比(16:9)にコントロール分の高さを足して確保する */
+.rank-entry-video-wrap-main {
+    padding-bottom: calc(56.25% + 44px);
 }
 
 .rank-entry-gauge-label {
@@ -117,10 +131,21 @@ h1 {
     margin: 8px 0 4px;
 }
 
+/* ゲージ動画の縦横比(GAUGE_TARGET_WIDTH=1160に対し高さ約128px)に
+   コントロール分の高さを足して確保する */
+.rank-entry-video-wrap-gauge {
+    padding-bottom: calc(11.03% + 44px);
+}
+
+.rank-entry-video,
 .rank-entry-gauge-video {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
-    border-radius: 6px;
-    background: #000;
+    height: 100%;
+    object-fit: contain;
+    object-position: top;
     display: block;
 }
 
