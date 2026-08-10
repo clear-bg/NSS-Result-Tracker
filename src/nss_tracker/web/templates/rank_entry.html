@@ -193,15 +193,18 @@
         video.style.display = "none";
         video.removeAttribute("src");
       }
-    }
-    if (clip.has_gauge_clip) {
-      gaugeLabel.style.display = "";
-      gaugeVideo.style.display = "";
-      gaugeVideo.src = "/rank-entry/gauge-clips/" + matchId + ".mp4?t=" + Date.now();
-    } else {
-      gaugeLabel.style.display = "none";
-      gaugeVideo.style.display = "none";
-      gaugeVideo.removeAttribute("src");
+      // Issue #312: ゲージ動画もこのガードの外で毎回srcを再設定すると、定期更新
+      // (5秒おき)のたびに読み込みが中断(abort)され続けて再生できなくなる不具合が
+      // あった(通常動画と同じ理由でここに含める)
+      if (clip.has_gauge_clip) {
+        gaugeLabel.style.display = "";
+        gaugeVideo.style.display = "";
+        gaugeVideo.src = "/rank-entry/gauge-clips/" + matchId + ".mp4?t=" + Date.now();
+      } else {
+        gaugeLabel.style.display = "none";
+        gaugeVideo.style.display = "none";
+        gaugeVideo.removeAttribute("src");
+      }
     }
     renderSelector();
   }
