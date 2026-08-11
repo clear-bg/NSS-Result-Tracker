@@ -78,6 +78,31 @@ Issue #312のIssue本文で決定)する目盛り線を各フレームに描画�
 `crop_roi`/`overlay_fn`を伴うフレーム処理で例外が起きても検知ループ全体を
 止めないよう、`add_frame()`内で例外を握りつぶしログに残すだけにしている
 (ユーザー確認済み。キャプチャループへの影響を最小限にする設計方針)。
+
+### 目盛り線の見やすさ改善(Issue #334)
+
+実際の配信環境で見ると、当初の黄色の目盛り線(0.5刻み・1.0刻みとも実線)は
+見にくいというフィードバックを受けて改善した。
+
+- 色は黄色からマゼンタ(`GAUGE_TICK_COLOR`)に変更した。ゲージは明るい
+  塗りつぶし部分(グラデーション)と暗い未塗りつぶし部分の両方を持つため、
+  単色だと片方の背景でコントラストが弱くなる問題があった(黒は暗い背景で
+  ほぼ同化、白は明るい背景で弱いことを実データで確認済み)。マゼンタは
+  どちらの背景でもはっきり視認できたため、複数の候補色をユーザーと
+  見比べて選んだ。線の太さ自体(0.5刻み1px・1.0刻み2px)は変更していない
+- 0.5刻みの補助線は実線から点線(`_draw_dashed_vline`)に変更した。この
+  点線はゲージ本体の高さ内にとどめ、下記の白い余白側へは伸ばさない
+  (ゲージ内部の目安であり、軸目盛りではないため)
+- 1.0刻みの線は実線のまま維持し、ゲージ本体の下に追加した白い余白
+  (`GAUGE_LABEL_PADDING_HEIGHT`)側へ`GAUGE_TICK_LABEL_EXTENSION`分だけ
+  短く伸ばした上で、その下に整数の目盛り数値(0〜10)を黒字で描画する。
+  数値をゲージ本体に重ねると溜まり具合の色と被って見えづらいため、
+  余白側に逃がした(Issue本文の対応方針どおり)。ゲージ本体の左右の端
+  (0・10)には元々線を引いていない(境界線と紛らわしいため)が、数値
+  ラベル自体は0・10とも表示する
+- 余白の高さ・点線の間隔・数値の文字サイズは具体的な数値が決め切れて
+  いなかったため(Issue本文の未確定事項)、まず実装した上でユーザーに
+  実際の見た目を確認してもらいながら調整する想定
 """
 
 import logging
@@ -106,6 +131,42 @@ DEFAULT_MAX_CLIPS = 3
 # Issue #312: ゲージのROI(実測290x32px程度)をどの幅まで拡大して見せるか
 GAUGE_TARGET_WIDTH = 1160
 GAUGE_TICK_SEGMENTS = 20
+# Issue #334: 黄色は明るい塗りつぶし部分・暗い未塗りつぶし部分の両方で見にくかった
+# ため、どちらの背景でもはっきり視認できたマゼンタに変更した(複数候補をユーザーと
+# 見比べて選んだ、モジュールdocstring参照)
+GAUGE_TICK_COLOR = (255, 0, 255)  # BGR: マゼンタ
+# Issue #334: 0.5刻みの点線の、線分の長さ・隙間の長さ(px)。具体的な数値は未確定
+# だったため、実装時点ではひとまずこの値を使う(ユーザー確認後に調整する想定)
+GAUGE_TICK_DASH_LENGTH = 6
+GAUGE_TICK_DASH_GAP = 4
+# Issue #334: 整数の目盛り数値(0〜10)を描画するため、ゲージ本体の下に追加する
+# 白い余白の高さ(px)。具体的な数値は未確定だったため、ひとまずこの値を使う
+GAUGE_LABEL_PADDING_HEIGHT = 40
+# Issue #334: 1.0刻みの目盛り線を、上記の白い余白側へどれだけ伸ばすか(px)。
+# 線をそのまま数値まで伸ばすとうるさいため、短い「目盛り」として少しだけ伸ばす
+GAUGE_TICK_LABEL_EXTENSION = 8
+GAUGE_LABEL_FONT = cv2.FONT_HERSHEY_SIMPLEX
+GAUGE_LABEL_FONT_SCALE = 0.5
+GAUGE_LABEL_FONT_THICKNESS = 1
+GAUGE_LABEL_COLOR = (0, 0, 0)  # BGR: 黒
+
+
+def _draw_dashed_vline(
+    frame: np.ndarray,
+    x: int,
+    y_start: int,
+    y_end: int,
+    color: tuple[int, int, int],
+    thickness: int,
+    dash_length: int,
+    gap_length: int,
+) -> None:
+    """(x, y_start)から(x, y_end)まで、破線の縦線をframeに直接描画する(in-place)。"""
+    y = y_start
+    while y < y_end:
+        segment_end = min(y + dash_length, y_end)
+        cv2.line(frame, (x, y), (x, segment_end), color, thickness)
+        y += dash_length + gap_length
 
 
 def _draw_gauge_ticks(frame: np.ndarray) -> np.ndarray:
@@ -114,16 +175,45 @@ def _draw_gauge_ticks(frame: np.ndarray) -> np.ndarray:
     ゲージは横方向(左から右)に塗りつぶされる仕様のため、目盛りは縦線で引く。
     1.0刻みに相当する線(偶数番目)は少し太くして目立たせ、大まかな位置の
     目安にしやすくしている。
+
+    Issue #334: 0.5刻みの線は点線に、色はマゼンタに変更した。ゲージ本体の下に
+    白い余白を追加し、1.0刻みの線をそこへ少し伸ばした上で整数の目盛り数値(0〜10)を
+    黒字で描画する(詳細はモジュールdocstring参照)。戻り値はframeより縦に大きくなる。
     """
-    frame = frame.copy()
     height, width = frame.shape[:2]
-    color = (0, 255, 255)  # BGR: 黄色系。塗りつぶし部分(明るい)・未塗りつぶし部分
-    # (暗い)のどちらの上でも視認しやすい色として選んだ
+    canvas = np.full((height + GAUGE_LABEL_PADDING_HEIGHT, width, 3), 255, dtype=np.uint8)
+    canvas[:height, :] = frame
+
     for i in range(1, GAUGE_TICK_SEGMENTS):  # 両端(0, 20)には線を引かない
         x = round(width * i / GAUGE_TICK_SEGMENTS)
-        thickness = 2 if i % 2 == 0 else 1
-        cv2.line(frame, (x, 0), (x, height), color, thickness)
-    return frame
+        if i % 2 == 0:
+            cv2.line(canvas, (x, 0), (x, height + GAUGE_TICK_LABEL_EXTENSION), GAUGE_TICK_COLOR, 2)
+        else:
+            _draw_dashed_vline(
+                canvas, x, 0, height, GAUGE_TICK_COLOR, 1, GAUGE_TICK_DASH_LENGTH, GAUGE_TICK_DASH_GAP
+            )
+
+    for value in range(0, 11):
+        x = round(width * value / 10)
+        text = str(value)
+        (text_width, text_height), _ = cv2.getTextSize(
+            text, GAUGE_LABEL_FONT, GAUGE_LABEL_FONT_SCALE, GAUGE_LABEL_FONT_THICKNESS
+        )
+        # 両端(0・10)は文字が枠外にはみ出さないよう、中央寄せの位置をframe内に収める
+        text_x = min(max(x - text_width // 2, 0), width - text_width)
+        text_y = height + GAUGE_TICK_LABEL_EXTENSION + text_height + 4
+        cv2.putText(
+            canvas,
+            text,
+            (text_x, text_y),
+            GAUGE_LABEL_FONT,
+            GAUGE_LABEL_FONT_SCALE,
+            GAUGE_LABEL_COLOR,
+            GAUGE_LABEL_FONT_THICKNESS,
+            cv2.LINE_AA,
+        )
+
+    return canvas
 
 
 class RankEntryClipRecorder:
