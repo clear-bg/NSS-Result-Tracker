@@ -638,6 +638,113 @@ def test_save_manual_rank_after_cascades_backfill_across_multiple_blocked_matche
     assert get_rank_before(ids[2]) == 38.50
 
 
+def test_save_manual_rank_after_correction_updates_value_and_league_changed():
+    """Issue #338: 既に確定済みの試合に対してsave_manual_rank_after()を再度呼ぶと
+    (=修正)、エラーにならずrank_after・league_changedが新しい値で上書きされる
+    ことを確認する。
+    """
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    match_id = save_match_result(conn, match)
+    save_manual_rank_after(conn, match_id, 38.90)
+
+    save_manual_rank_after(conn, match_id, 39.10)
+
+    row = conn.execute("SELECT rank_after, league_changed FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["rank_after"] == 39.10
+    assert row["league_changed"] == "up"
+
+
+def test_save_manual_rank_after_correction_force_overwrites_next_pending_rank_before():
+    """Issue #338: 確定済みの試合を修正すると、次の試合(まだ未確定)のrank_beforeが
+    既にチェーンで埋まっていても、修正後の値で連動更新されることを確認する。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    first_id = save_match_result(conn, first)
+    save_manual_rank_after(conn, first_id, 39.10)
+
+    second = MatchResult(
+        result="lose", rank_before=38.90, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    second_id = save_match_result(conn, second)
+    assert conn.execute(
+        "SELECT rank_before FROM matches WHERE id = ?", (second_id,)
+    ).fetchone()["rank_before"] == 39.10
+
+    save_manual_rank_after(conn, first_id, 39.50)  # 修正
+
+    row = conn.execute("SELECT rank_before FROM matches WHERE id = ?", (second_id,)).fetchone()
+    assert row["rank_before"] == 39.50
+
+
+def test_save_manual_rank_after_correction_force_overwrites_next_confirmed_rank_before_and_warns(caplog):
+    """Issue #338: 修正した試合の次の試合が既に確定済み(別途rank_afterも手動確定
+    済み)だった場合でも、rank_beforeは無条件で連動更新する(ユーザー確認済みの
+    仕様)。ただしその試合自身のrank_after・league_changedには手を付けず、
+    不整合の可能性をWARNINGログで可視化することを確認する。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    first_id = save_match_result(conn, first)
+    save_manual_rank_after(conn, first_id, 39.10)
+
+    second = MatchResult(
+        result="win", rank_before=39.10, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    second_id = save_match_result(conn, second)
+    save_manual_rank_after(conn, second_id, 39.30)  # 次の試合自身も別途確定済み
+
+    with caplog.at_level("WARNING", logger="nss_tracker.database"):
+        save_manual_rank_after(conn, first_id, 39.50)  # 修正
+
+    row = conn.execute(
+        "SELECT rank_before, rank_after, league_changed FROM matches WHERE id = ?", (second_id,)
+    ).fetchone()
+    assert row["rank_before"] == 39.50, "rank_beforeは無条件で連動更新される"
+    assert row["rank_after"] == 39.30, "次の試合自身が確定した値は変更しない"
+    assert f"matches.id={second_id}" in caplog.text
+    assert "要手動確認" in caplog.text
+
+
+def test_save_manual_rank_after_correction_does_not_cascade_beyond_immediate_next_match():
+    """Issue #338: 連動更新は直後の1件のみが対象で、さらにその先の試合までは
+    連鎖しないことを確認する(その先の試合のrank_beforeは、直後の試合自身が
+    確定した実際のrank_afterに基づいたままでよいため)。
+    """
+    conn = connect(":memory:")
+    ids = []
+    prev_rank_after = None
+    for i, rank_before_ocr in enumerate([38.62, 38.90, 39.20]):
+        match = MatchResult(
+            result="win",
+            rank_before=rank_before_ocr,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        )
+        match_id = save_match_result(conn, match)
+        ids.append(match_id)
+        save_manual_rank_after(conn, match_id, rank_before_ocr + 0.20)
+
+    third_rank_before_original = conn.execute(
+        "SELECT rank_before FROM matches WHERE id = ?", (ids[2],)
+    ).fetchone()["rank_before"]
+
+    save_manual_rank_after(conn, ids[0], 40.00)  # 修正
+
+    second_row = conn.execute("SELECT rank_before FROM matches WHERE id = ?", (ids[1],)).fetchone()
+    third_row = conn.execute("SELECT rank_before FROM matches WHERE id = ?", (ids[2],)).fetchone()
+    assert second_row["rank_before"] == 40.00
+    assert third_row["rank_before"] == third_rank_before_original
+
+
 def test_save_manual_rank_after_raises_for_chain_blocked_match():
     """rank_beforeがまだチェーンで解決できていない(直前の試合が未確定の)試合に
     対してsave_manual_rank_after()を呼ぶとValueErrorになることを確認する
