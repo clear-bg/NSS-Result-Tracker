@@ -864,8 +864,9 @@ _BOX_PLOT_VIEWBOX_HEIGHT = 160
 # Issue #336: 「増加」「減少」ラベル(24px)とプロット領域の間が窮屈に見えるという
 # フィードバックを受け、ラベルの右端からプロット領域左端までの間隔を8px→18pxに広げた
 # (_BOX_PLOT_ROW_LABEL_GAP参照)。ラベル文字自体が左にはみ出さないよう、
-# MARGIN_LEFTも60→70に広げている
-_BOX_PLOT_MARGIN_LEFT = 70
+# MARGIN_LEFTも60→70に広げている。さらに実配信画面での確認を経て、パネル背景の
+# 左端からラベルまでの余白も窮屈というフィードバックを受け70→90に広げた
+_BOX_PLOT_MARGIN_LEFT = 90
 _BOX_PLOT_MARGIN_RIGHT = 30
 # タイトル分の余白を含む(_BOX_PLOT_TITLE参照)。Issue #336でタイトルの文字サイズを
 # 拡大したことに合わせて49→53に広げた
