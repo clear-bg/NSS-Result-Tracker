@@ -368,7 +368,12 @@ class RankEntryClipRecorder:
         assert process.stdin is not None
         for frame in frames:
             process.stdin.write(frame.tobytes())
-        process.stdin.close()
+        # Issue #350: ここでprocess.stdin.close()を自前で呼んでしまうと、直後の
+        # communicate()(POSIX実装)が未クローズ前提でstdinをflushしようとして
+        # `ValueError: flush of closed file`になる(Windowsでは表面化せず、
+        # Linux/CI環境で実際に発生することを確認済み)。フレームの書き込みまでは
+        # 自前で行い、flush・close・stdout/stderr読み取り・終了待ちはcommunicate()に
+        # 任せる(input未指定で呼べば、書き込み済みのstdinをそのまま閉じてくれる)。
         _stdout, stderr = process.communicate()
         if process.returncode != 0:
             raise RuntimeError(f"ffmpegがエラー終了しました(returncode={process.returncode}): {stderr.decode(errors='replace')}")
