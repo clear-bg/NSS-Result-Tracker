@@ -1945,7 +1945,7 @@ def test_rank_entry_get_shows_oldest_pending_match(tmp_path: Path, monkeypatch):
     の結果1件(has_clip=False)が埋め込みJSONに含まれることを確認する。
 
     DEFAULT_CLIPS_DIRを空のtmp_pathに差し替えて隔離する(実際にmain.pyで生成された
-    本物のクリップ(tmp/rank_entry_clips/配下)を誤って拾わないようにするため)。
+    本物のクリップ(clips/rank_entry_clips/配下)を誤って拾わないようにするため)。
     """
     monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
     db_path = tmp_path / "test.db"

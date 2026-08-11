@@ -118,11 +118,14 @@ import numpy as np
 logger = logging.getLogger("nss_tracker.rank_entry_clips")
 
 # main.py(生成側)・web/server.py(配信側)の両方から参照する、クリップの
-# 保存先ディレクトリ。tmp/配下は.gitignore対象かつ、ユーザーが手動キャプチャした
-# 動画等を置く場所でもあるため、専用のサブディレクトリに分ける
-DEFAULT_CLIPS_DIR = Path("tmp/rank_entry_clips")
+# 保存先ディレクトリ。リポジトリルート直下の専用ディレクトリ(.gitignore対象)を使う。
+# 当初はtmp/配下の専用サブディレクトリだったが、tmp/はユーザーが手動キャプチャした
+# 動画等も置く共有の作業用フォルダでもあり、ユーザーがtmp/を整理した際に誤って
+# クリップごと削除してしまう事故が起きたため、Issue #342でtmp/の外(clips/)に
+# 独立させた(ユーザーとの相談で決定、.envでの設定は行わず固定パスのままとする)
+DEFAULT_CLIPS_DIR = Path("clips/rank_entry_clips")
 # Issue #312: ゲージクローズアップ動画の保存先(画面全体クリップとは別ディレクトリ)
-GAUGE_CLIPS_DIR = Path("tmp/rank_gauge_clips")
+GAUGE_CLIPS_DIR = Path("clips/rank_gauge_clips")
 
 TARGET_SAMPLE_FPS = 8.0
 TARGET_WIDTH = 960
