@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/static/goal_stats_winrate.css">
 </head>
 <body{{ debug_bg_style | safe }}>
+<div class="goal-stats-winrate-panel">
 <div class="goal-stats-winrate-row">
   <div class="goal-stats-winrate-header">
     <span class="tag">今回</span>
@@ -64,6 +65,7 @@
   <p class="goal-stats-winrate-empty">データがありません</p>
 </div>
 {% endif %}
+</div>
 <script src="/static/overlay-refresh.js" data-interval-ms="{{ refresh_interval_ms }}"></script>
 </body>
 </html>

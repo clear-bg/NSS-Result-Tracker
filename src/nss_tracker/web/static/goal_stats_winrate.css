@@ -14,6 +14,21 @@
      自体を色付けする(G=#5ec8ff、A=#ffc247。ビビッドな色でゲーム画面上でも
      目立つよう選定) */
 
+/* Issue #355: 配信画面(暗い背景・試合中の映像)に重ねたときの視認性対策として、
+   半透明パネルを敷く。ランク推移グラフ・ランク増減分布のSVGパネル
+   (rank_graph.cssの.rank-graph-panel等、Issue #113/#336)と同じ色・不透明度を
+   踏襲した(あちらはSVGの<rect>、こちらは通常のHTML/CSSのため実装方法は異なる)。
+   勝率見出し行が右寄せ(margin-left: auto)でパネル幅いっぱいに広がる前提の
+   レイアウトのため、幅は固定する(モックアップで確定したウィジェット幅と揃えた)。 */
+.goal-stats-winrate-panel {
+    width: 620px;
+    box-sizing: border-box;
+    background: rgba(46, 53, 64, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    padding: 20px 26px;
+}
+
 .goal-stats-winrate-row + .goal-stats-winrate-row {
     margin-top: 22px;
 }

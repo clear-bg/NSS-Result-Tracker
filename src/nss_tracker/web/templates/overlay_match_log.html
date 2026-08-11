@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/static/match_log.css">
 </head>
 <body{{ debug_bg_style | safe }}>
+<div class="match-log-panel">
 {% if badges %}
 <div class="match-log-row">
 {% for badge in badges %}
@@ -16,6 +17,7 @@
 {% else %}
 <p>データがありません</p>
 {% endif %}
+</div>
 <script src="/static/overlay-refresh.js" data-interval-ms="{{ refresh_interval_ms }}"></script>
 </body>
 </html>
