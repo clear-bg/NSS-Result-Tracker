@@ -1,0 +1,145 @@
+/* Issue #339: 得点/アシスト・勝率ウィジェット(/overlay/goal-stats-winrate)専用の
+   スタイル。overlay.cssの透過背景・文字色(白)・ベースフォントサイズ(34px)は
+   共通で使う。
+
+   見た目はArtifactでのモックアップ比較を経てユーザーと確定した仕様:
+   - 勝率: 中心線から左=勝ち(緑)・右=負け(赤)に伸びるダイバージングバー。
+     塗り幅は「その結果の試合数 / 総試合数 * 50%」(片側最大50%、引き分けは
+     バーには描かず下のW/D/Lテキストのみで示す)
+   - 見出し行: 「今回/累計」+試合数(太字)+右寄せで勝率%
+   - バー下中央に「W2 D0 L1」形式でまとめる(勝ち=明るい緑、負け=明るい赤、
+     分け=白の半透明。既存の直近試合結果ログウィジェットの勝敗色
+     #0ca30c/#d03b3bをバー本体の色としてそのまま使う)
+   - 得点/アシストはウィジェット最下部・中央揃え。バッジは使わず、G/Aの文字
+     自体を色付けする(G=#5ec8ff、A=#ffc247。ビビッドな色でゲーム画面上でも
+     目立つよう選定) */
+
+.goal-stats-winrate-row + .goal-stats-winrate-row {
+    margin-top: 22px;
+}
+
+.goal-stats-winrate-header {
+    display: flex;
+    align-items: baseline;
+    margin-bottom: 10px;
+}
+
+.goal-stats-winrate-header .tag {
+    opacity: 0.8;
+    font-size: 0.55em;
+}
+
+.goal-stats-winrate-header .total {
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    margin-left: 8px;
+}
+
+.goal-stats-winrate-header .rate {
+    opacity: 0.85;
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.76em;
+}
+
+.goal-stats-winrate-track {
+    position: relative;
+    height: 9px;
+    background: rgba(255, 255, 255, 0.14);
+    border-radius: 999px;
+}
+
+.goal-stats-winrate-center {
+    position: absolute;
+    left: 50%;
+    top: -5px;
+    bottom: -5px;
+    width: 2px;
+    background: rgba(255, 255, 255, 0.5);
+}
+
+.goal-stats-winrate-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+}
+
+.goal-stats-winrate-fill.win {
+    right: 50%;
+    background: #0ca30c;
+    border-radius: 999px 0 0 999px;
+}
+
+.goal-stats-winrate-fill.lose {
+    left: 50%;
+    background: #d03b3b;
+    border-radius: 0 999px 999px 0;
+}
+
+.goal-stats-winrate-caption {
+    display: flex;
+    justify-content: center;
+    gap: 22px;
+    opacity: 0.9;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.71em;
+    margin-top: 8px;
+}
+
+.goal-stats-winrate-caption .w {
+    color: #7fe87f;
+    font-weight: 700;
+}
+
+.goal-stats-winrate-caption .l {
+    color: #ff9a9a;
+    font-weight: 700;
+}
+
+.goal-stats-winrate-caption .d {
+    opacity: 0.8;
+    font-weight: 700;
+}
+
+.goal-stats-winrate-players {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px dashed rgba(255, 255, 255, 0.22);
+}
+
+.goal-stats-winrate-player-row {
+    display: flex;
+    align-items: baseline;
+    gap: 26px;
+}
+
+.goal-stats-winrate-player-name {
+    opacity: 0.85;
+    font-size: 0.71em;
+}
+
+.goal-stats-winrate-stat {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.goal-stats-winrate-stat-label {
+    opacity: 0.9;
+    font-size: 0.71em;
+}
+
+.goal-stats-winrate-stat-num {
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.82em;
+}
+
+.goal-stats-winrate-empty {
+    font-size: 0.71em;
+    opacity: 0.75;
+}

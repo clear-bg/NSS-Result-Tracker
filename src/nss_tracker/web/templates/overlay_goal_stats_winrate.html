@@ -4,22 +4,66 @@
 <meta charset="utf-8">
 <title>ゴール/アシスト統計・勝率</title>
 <link rel="stylesheet" href="/static/overlay.css">
+<link rel="stylesheet" href="/static/goal_stats_winrate.css">
 </head>
 <body{{ debug_bg_style | safe }}>
+<div class="goal-stats-winrate-row">
+  <div class="goal-stats-winrate-header">
+    <span class="tag">今回</span>
+    <span class="total">{{ session.total }}試合</span>
+    <span class="rate">勝率{{ session_win_rate_text }}</span>
+  </div>
+  <div class="goal-stats-winrate-track">
+    <div class="goal-stats-winrate-center"></div>
+    <div class="goal-stats-winrate-fill win" style="width: {{ session_win_fill_pct }}%;"></div>
+    <div class="goal-stats-winrate-fill lose" style="width: {{ session_lose_fill_pct }}%;"></div>
+  </div>
+  <div class="goal-stats-winrate-caption">
+    <span class="w">W{{ session.win }}</span>
+    <span class="d">D{{ session.draw }}</span>
+    <span class="l">L{{ session.lose }}</span>
+  </div>
+</div>
+<div class="goal-stats-winrate-row">
+  <div class="goal-stats-winrate-header">
+    <span class="tag">累計</span>
+    <span class="total">{{ cumulative.total }}試合</span>
+    <span class="rate">勝率{{ cumulative_win_rate_text }}</span>
+  </div>
+  <div class="goal-stats-winrate-track">
+    <div class="goal-stats-winrate-center"></div>
+    <div class="goal-stats-winrate-fill win" style="width: {{ cumulative_win_fill_pct }}%;"></div>
+    <div class="goal-stats-winrate-fill lose" style="width: {{ cumulative_lose_fill_pct }}%;"></div>
+  </div>
+  <div class="goal-stats-winrate-caption">
+    <span class="w">W{{ cumulative.win }}</span>
+    <span class="d">D{{ cumulative.draw }}</span>
+    <span class="l">L{{ cumulative.lose }}</span>
+  </div>
+</div>
 {% if players %}
-{% if single_player_mode %}
-{% set player = players[0] %}
-<p>今回: 得点 {{ player.goals }} / アシスト {{ player.assists }} (関与 {{ player.involvement }})</p>
+<div class="goal-stats-winrate-players">
+  {% if single_player_mode %}
+  {% set player = players[0] %}
+  <div class="goal-stats-winrate-player-row">
+    <span class="goal-stats-winrate-stat"><span class="goal-stats-winrate-stat-label" style="color: #5ec8ff;">G</span><span class="goal-stats-winrate-stat-num" style="color: #5ec8ff;">{{ player.goals }}</span></span>
+    <span class="goal-stats-winrate-stat"><span class="goal-stats-winrate-stat-label" style="color: #ffc247;">A</span><span class="goal-stats-winrate-stat-num" style="color: #ffc247;">{{ player.assists }}</span></span>
+  </div>
+  {% else %}
+  {% for player in players %}
+  <div class="goal-stats-winrate-player-row">
+    <span class="goal-stats-winrate-player-name">{{ player.name }}</span>
+    <span class="goal-stats-winrate-stat"><span class="goal-stats-winrate-stat-label" style="color: #5ec8ff;">G</span><span class="goal-stats-winrate-stat-num" style="color: #5ec8ff;">{{ player.goals }}</span></span>
+    <span class="goal-stats-winrate-stat"><span class="goal-stats-winrate-stat-label" style="color: #ffc247;">A</span><span class="goal-stats-winrate-stat-num" style="color: #ffc247;">{{ player.assists }}</span></span>
+  </div>
+  {% endfor %}
+  {% endif %}
+</div>
 {% else %}
-{% for player in players %}
-<p>今回: {{ player.name }}: 得点 {{ player.goals }} / アシスト {{ player.assists }} (関与 {{ player.involvement }})</p>
-{% endfor %}
+<div class="goal-stats-winrate-players">
+  <p class="goal-stats-winrate-empty">データがありません</p>
+</div>
 {% endif %}
-{% else %}
-<p>データがありません</p>
-{% endif %}
-<p>今回: {{ session.total }}試合(win {{ session.win }} / lose {{ session.lose }} / draw {{ session.draw }}) 勝率 {{ session_win_rate_text }}</p>
-<p>累計: {{ cumulative.total }}試合(win {{ cumulative.win }} / lose {{ cumulative.lose }} / draw {{ cumulative.draw }}) 勝率 {{ cumulative_win_rate_text }}</p>
 <script src="/static/overlay-refresh.js" data-interval-ms="{{ refresh_interval_ms }}"></script>
 </body>
 </html>
