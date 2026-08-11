@@ -20,15 +20,12 @@ from nss_tracker.web.server import (
     _OVERLAY_REFRESH_INTERVAL_MS,
     _OVERLAY_WIDGET_LABELS,
     _RANK_GRAPH_LEFT_PADDING,
-    _RANK_GRAPH_MARGIN_BOTTOM,
     _RANK_GRAPH_MARGIN_LEFT,
     _RANK_GRAPH_MARGIN_RIGHT,
-    _RANK_GRAPH_MARGIN_TOP,
     _RANK_GRAPH_TITLE,
-    _RANK_GRAPH_VIEWBOX_HEIGHT_MAX,
-    _RANK_GRAPH_VIEWBOX_HEIGHT_MIN,
+    _RANK_GRAPH_VIEWBOX_HEIGHT,
+    _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE,
     _RANK_GRAPH_VIEWBOX_WIDTH,
-    _RANK_GRAPH_Y_PX_PER_UNIT,
     _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS,
     _aggregate_goal_stats,
     _build_match_log_badges,
@@ -39,7 +36,6 @@ from nss_tracker.web.server import (
     _overlay_widget_links,
     _percentile,
     _rank_delta_axis_max,
-    _rank_graph_height,
     _rank_graph_x_axis_max,
     _rank_graph_x_tick_step,
     _rank_graph_x_tick_values,
@@ -320,35 +316,21 @@ def test_rank_graph_y_tick_step_widens_for_outlier_range():
     assert _rank_graph_y_tick_step(0) == 1
 
 
-def test_rank_graph_height_stays_at_minimum_for_narrow_range():
-    """Issue #281: 通常運用の狭い範囲では、これまで通り220pxのまま変わらないことを確認する。"""
-    assert _rank_graph_height(4) == _RANK_GRAPH_VIEWBOX_HEIGHT_MIN
-
-
-def test_rank_graph_height_reaches_maximum_at_ten_ticks_with_step_one():
-    """Issue #281: 目盛り間隔1のまま10本に達するあたりでちょうど350pxに到達し、
-    それ以上は範囲が広がっても頭打ちになることを確認する(ユーザーとの相談で決定)。
+def test_render_rank_graph_svg_height_is_always_fixed():
+    """Issue #336: Issue #281で導入したaxis_rangeに応じた220px〜350pxの可変ロジックを
+    撤廃し、グラフ本体の縦幅は常に_RANK_GRAPH_VIEWBOX_HEIGHT(350px)固定になったことを
+    確認する(狭い範囲・外れ値で範囲が広い場合のいずれも同じ高さになる)。
     """
-    height_at_boundary = _rank_graph_height(9)
-    assert height_at_boundary == _RANK_GRAPH_VIEWBOX_HEIGHT_MAX
+    narrow_history = _continuous_history([10, 11, 12])
+    wide_history = _continuous_history([2, 411])
 
-    plot_height = height_at_boundary - _RANK_GRAPH_MARGIN_TOP - _RANK_GRAPH_MARGIN_BOTTOM
-    max_tick_count = plot_height / _RANK_GRAPH_Y_PX_PER_UNIT
-    assert _rank_graph_y_tick_step(9, max_tick_count) == 1
+    def _extract_height(svg: str) -> int:
+        match = re.search(r'viewBox="0 0 \d+ (\d+)"', svg)
+        assert match is not None
+        return int(match.group(1))
 
-    assert _rank_graph_height(100) == _RANK_GRAPH_VIEWBOX_HEIGHT_MAX
-
-
-def test_rank_graph_height_does_not_widen_tick_step_before_reaching_maximum():
-    """整数pxへの丸め方によっては、350pxに達する前の段階で目盛り本数の逆算値が
-    実際のaxis_rangeよりわずかに小さくなり、間隔が早まって広がってしまう境界ケースが
-    あったため、350pxに達するまでは常に間隔1のままであることを回帰確認する。
-    """
-    for axis_range in range(1, 10):
-        height = _rank_graph_height(axis_range)
-        plot_height = height - _RANK_GRAPH_MARGIN_TOP - _RANK_GRAPH_MARGIN_BOTTOM
-        max_tick_count = plot_height / _RANK_GRAPH_Y_PX_PER_UNIT
-        assert _rank_graph_y_tick_step(axis_range, max_tick_count) == 1
+    assert _extract_height(_render_rank_graph_svg(narrow_history)) == _RANK_GRAPH_VIEWBOX_HEIGHT
+    assert _extract_height(_render_rank_graph_svg(wide_history)) == _RANK_GRAPH_VIEWBOX_HEIGHT
 
 
 def test_rank_history_returns_all_matches_when_limit_env_is_all(tmp_path: Path, monkeypatch):
@@ -491,8 +473,9 @@ def test_render_rank_graph_svg_draws_vertical_gridlines_at_x_ticks():
 
 
 def test_render_rank_graph_svg_adds_half_step_minor_gridlines_when_step_is_one():
-    """Issue #146: 目盛り間隔が1(通常運用)のとき、整数目盛りの間に0.5刻みの
-    補助グリッド線を追加する。ラベル・目盛り線自体は増やさない。
+    """Issue #146: 目盛り間隔が1(通常運用)かつ、Issue #336の
+    _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGEより範囲が広いとき、整数目盛りの間に
+    0.5刻みの補助グリッド線を追加する。ラベル・目盛り線自体は増やさない。
     """
     history = _continuous_history([10, 12])
 
@@ -500,9 +483,25 @@ def test_render_rank_graph_svg_adds_half_step_minor_gridlines_when_step_is_one()
 
     axis_min, axis_max = _rank_graph_y_bounds(10, 12)
     assert _rank_graph_y_tick_step(axis_max - axis_min) == 1
+    assert axis_max - axis_min > _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE
     assert svg.count('class="rank-graph-gridline-minor"') == axis_max - axis_min
     # 0.5刻みの補助線に対応するラベル(小数)は追加しない
     assert ".5<" not in svg
+
+
+def test_render_rank_graph_svg_shows_half_step_labels_for_narrow_range():
+    """Issue #336: 縦軸の範囲が_RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE以下と狭いときは、
+    0.5刻みも(補助線ではなく)ラベル・短い目盛り線付きの通常の目盛りとして表示する。
+    """
+    history = _continuous_history([10, 11])
+
+    svg = _render_rank_graph_svg(history)
+
+    axis_min, axis_max = _rank_graph_y_bounds(10, 11)
+    assert axis_max - axis_min <= _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE
+    assert 'class="rank-graph-gridline-minor"' not in svg
+    for tick_value in range(axis_min, axis_max):
+        assert f'>{tick_value + 0.5:g}<' in svg
 
 
 def test_render_rank_graph_svg_omits_minor_gridlines_when_step_widens():
