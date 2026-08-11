@@ -305,13 +305,50 @@ h1 {
     background: #1558b0;
 }
 
+/* Issue #338: キャンセルボタンは他のボタンと同じく.rank-entry-formのflex
+   (column)に乗せて全幅で縦積みにする(左パネルが150px幅しかなく、横並びにすると
+   ボタン文字が縦一文字ずつ折り返ってしまうため) */
+.rank-entry-cancel-button {
+    font-size: 13px;
+    padding: 6px 12px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    background: #fff;
+    color: #555;
+    cursor: pointer;
+}
+
+.rank-entry-cancel-button:hover {
+    background: #f0f0f0;
+}
+
 .rank-entry-confirmed {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     font-size: 13px;
     color: #1e7a34;
     background: #e6f4ea;
     border-radius: 4px;
     padding: 6px 8px;
     margin: 0;
+}
+
+.rank-entry-edit-button {
+    flex: 0 0 auto;
+    font-size: 11px;
+    padding: 2px 8px;
+    border: 1px solid #1e7a34;
+    border-radius: 4px;
+    background: #fff;
+    color: #1e7a34;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.rank-entry-edit-button:hover {
+    background: #e6f4ea;
 }
 
 .rank-entry-empty {

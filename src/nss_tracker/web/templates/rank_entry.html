@@ -63,6 +63,11 @@
   const left = document.getElementById("rank-entry-left");
   let selectedMatchId = null;
   let userSelected = false;
+  // Issue #338: 確定済みの試合を「修正」ボタンで再度フォームを開いて上書きできる
+  // ようにするための編集中の試合ID(nullなら編集中の試合は無い)。定期更新
+  // (refresh)はuserSelectedがtrueの間はrenderLeftPanel自体を呼ばないため、
+  // このフラグが定期更新で勝手にリセットされることはない。
+  let editingMatchId = null;
 
   // Issue #325: ブラウザ標準の<video controls>はコントロールを映像の下端に
   // 重ねて表示するため、映像内容(ランクバッジ・ゲージ)と重なってしまう問題があった
@@ -162,10 +167,27 @@
     }
     left.appendChild(info);
 
-    if (clip.rank_after !== null && clip.rank_after !== undefined) {
+    const isConfirmed = clip.rank_after !== null && clip.rank_after !== undefined;
+    const isEditing = isConfirmed && editingMatchId === clip.match_id;
+
+    if (isConfirmed && !isEditing) {
       const confirmed = document.createElement("p");
       confirmed.className = "rank-entry-confirmed";
-      confirmed.textContent = "確定済み: " + clip.rank_after;
+      const confirmedText = document.createElement("span");
+      confirmedText.textContent = "確定済み: " + clip.rank_after;
+      confirmed.appendChild(confirmedText);
+
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.className = "rank-entry-edit-button";
+      editButton.textContent = "修正";
+      editButton.addEventListener("click", function () {
+        editingMatchId = clip.match_id;
+        userSelected = true;
+        renderLeftPanel(clip);
+      });
+      confirmed.appendChild(editButton);
+
       left.appendChild(confirmed);
       return;
     }
@@ -199,7 +221,12 @@
     input.id = "rank_after";
     input.className = "rank-entry-input";
     input.autocomplete = "off";
-    if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
+    if (isEditing) {
+      // Issue #338: 修正モードでは、確定済みの値を初期値にする(推定値ではなく
+      // 現在確定している値からの修正が自然なため)。推定値に戻したい場合は
+      // 下の「推定値を使う」ボタンから明示的に取り込める。
+      input.value = clip.rank_after;
+    } else if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
       // 初回表示時の初期値としてのみ使う。定期更新のたびにここへ来ても
       // (renderLeftPanelは同じ試合を選んだままの間は呼ばれないため)入力中の
       // 内容を勝手に上書きすることはない。値を戻したい場合は下の「推定値を使う」
@@ -230,8 +257,20 @@
 
     const button = document.createElement("button");
     button.type = "submit";
-    button.textContent = "記録";
+    button.textContent = isEditing ? "修正を保存" : "記録";
     form.appendChild(button);
+
+    if (isEditing) {
+      const cancelButton = document.createElement("button");
+      cancelButton.type = "button";
+      cancelButton.className = "rank-entry-cancel-button";
+      cancelButton.textContent = "キャンセル";
+      cancelButton.addEventListener("click", function () {
+        editingMatchId = null;
+        renderLeftPanel(clip);
+      });
+      form.appendChild(cancelButton);
+    }
 
     left.appendChild(form);
     input.focus();

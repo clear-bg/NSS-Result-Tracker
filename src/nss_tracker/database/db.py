@@ -501,6 +501,51 @@ def _backfill_next_rank_before(conn: sqlite3.Connection, confirmed_match_id: int
         current_rank_after = row["rank_after"]
 
 
+def _force_overwrite_next_rank_before(conn: sqlite3.Connection, corrected_match_id: int, rank_after: float) -> None:
+    """確定済みのrank_afterを後から修正した際(Issue #338)、直後の試合(1件のみ)の
+    rank_beforeを新しい値で連動更新する。
+
+    rank_beforeはユーザーが直接レビューする項目ではなく、常に前の試合のrank_after
+    から導出される値のため、直後の試合が既に確定済み(rank_afterも非NULL)であっても
+    無条件で上書きする(ユーザー確認済み)。ただしその場合、直後の試合自身の
+    rank_after・league_changedは(ユーザーが独立して確認した値のため)変更しない。
+    結果としてleague_changedが新しいrank_beforeと整合しなくなる可能性があるため、
+    気づけるようWARNINGログを出す(自動での再計算はしない)。
+
+    通常の初回確定時に使う_backfill_next_rank_before()(rank_beforeが未解決の間、
+    複数件を連鎖的に埋める)とは異なり、こちらは直後の1件のみを対象にした
+    片道の上書きで、そこから先へは連鎖しない。直後の試合よりさらに後の試合の
+    rank_beforeは、直後の試合自身が確定した実際のrank_afterに基づいているため、
+    今回の修正の影響を受けない。
+    """
+    row = conn.execute(
+        "SELECT id, rank_before, rank_after FROM matches "
+        "WHERE id > ? AND rank_before_ocr IS NOT NULL ORDER BY id ASC LIMIT 1",
+        (corrected_match_id,),
+    ).fetchone()
+    if row is None:
+        return
+    now = now_jst().isoformat()
+    conn.execute(
+        "UPDATE matches SET rank_before = ?, updated_at = ? WHERE id = ?",
+        (rank_after, now, row["id"]),
+    )
+    conn.commit()
+    logger.info(
+        "matches.id=%d のrank_beforeを、修正された試合(id=%d)のrank_after(%s)で連動更新しました",
+        row["id"],
+        corrected_match_id,
+        rank_after,
+    )
+    if row["rank_after"] is not None:
+        logger.warning(
+            "matches.id=%d は既にrank_afterが確定済み(%s)のままrank_beforeのみ連動更新したため、"
+            "league_changedの判定基準が古いrank_beforeのままになっている可能性があります(要手動確認)",
+            row["id"],
+            row["rank_after"],
+        )
+
+
 def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: Optional[int] = None) -> int:
     """MatchResultを1件matchesテーブルに保存し、挿入したレコードのidを返す。
 
@@ -562,8 +607,17 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
     直前の試合がまだ未確定のまま呼び出された場合の防御的チェック)。確定後は、
     このrank_afterを引き継ぎ元として待っていた後続の試合のrank_beforeが
     解決できないか確認する(_backfill_next_rank_before参照)。
+
+    Issue #338: 既にrank_afterが確定済みの試合に対して呼ばれた場合(値の修正)は、
+    通常の初回確定時とは連動更新の扱いを分ける。直後の試合が既に未確定→確定済み
+    どちらの状態でも構わず、rank_beforeだけを新しい値へ強制的に上書きする
+    (_force_overwrite_next_rank_before参照。通常の_backfill_next_rank_before()は
+    「まだ未確定の間だけ埋める」設計のため、修正時にそのまま使うと直後の試合が
+    既に確定済みの場合に連動が効かない)。
     """
-    row = conn.execute("SELECT rank_before, rank_before_ocr FROM matches WHERE id = ?", (match_id,)).fetchone()
+    row = conn.execute(
+        "SELECT rank_before, rank_before_ocr, rank_after FROM matches WHERE id = ?", (match_id,)
+    ).fetchone()
     if row is None:
         raise ValueError(f"matches.id={match_id} が見つかりません")
     if row["rank_before_ocr"] is None:
@@ -573,6 +627,7 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
         raise ValueError(
             f"matches.id={match_id} は直前の試合のrank_afterがまだ未確定のため、rank_beforeを解決できません"
         )
+    is_correction = row["rank_after"] is not None
 
     rank_after = _round_rank(rank_after)
     tier_before = int(rank_before)
@@ -591,13 +646,17 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
     )
     conn.commit()
     logger.info(
-        "matches.id=%d のrank_afterを手動入力で確定しました: rank=%s->%s league_changed=%s",
+        "matches.id=%d のrank_afterを手動入力で%s: rank=%s->%s league_changed=%s",
         match_id,
+        "修正しました" if is_correction else "確定しました",
         rank_before,
         rank_after,
         league_changed,
     )
-    _backfill_next_rank_before(conn, match_id, rank_after)
+    if is_correction:
+        _force_overwrite_next_rank_before(conn, match_id, rank_after)
+    else:
+        _backfill_next_rank_before(conn, match_id, rank_after)
 
 
 def fetch_oldest_pending_manual_rank_match(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
