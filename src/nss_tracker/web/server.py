@@ -295,6 +295,11 @@ _RANK_GRAPH_LEFT_PADDING = 24
 # (均等に割った本数で置く方式だと間隔が5,5,4,5のようにガタつくため、固定間隔にした。
 # ユーザーとの相談で決定)
 _RANK_GRAPH_X_TICK_STEP = 5
+# Issue #330: 試合数が多い(RANK_GRAPH_MATCH_LIMITを大きく/allにした)場合、5刻みのままだと
+# 目盛りの本数が増えすぎて見づらくなるため、試合数がこの件数以上になったら目盛り間隔を
+# 10刻みに広げる(ユーザーとの相談で決定)
+_RANK_GRAPH_X_TICK_STEP_WIDE = 10
+_RANK_GRAPH_X_TICK_STEP_WIDE_THRESHOLD = 70
 
 # Issue #123: 縦軸(ランク値)の目盛り間隔は横軸と異なり固定値にできない。OCR誤読等の
 # 外れ値がrank_afterに混ざると縦軸の範囲(_rank_graph_y_bounds)が数百に広がることがあり、
@@ -366,28 +371,41 @@ def _rank_graph_y_bounds(min_value: float, max_value: float) -> tuple[int, int]:
     return lower, upper
 
 
-def _rank_graph_x_axis_max(point_count: int) -> int:
+def _rank_graph_x_tick_step(point_count: int) -> int:
+    """横軸(試合番号)の目盛り間隔を、試合数に応じて決める(Issue #330)。
+
+    試合数がRANK_GRAPH_X_TICK_STEP_WIDE_THRESHOLD(70)以上になったら10刻みに
+    広げ、それ未満は従来通り5刻みのまま。
+    """
+    if point_count >= _RANK_GRAPH_X_TICK_STEP_WIDE_THRESHOLD:
+        return _RANK_GRAPH_X_TICK_STEP_WIDE
+    return _RANK_GRAPH_X_TICK_STEP
+
+
+def _rank_graph_x_axis_max(point_count: int, tick_step: int) -> int:
     """横軸(試合番号)の右端の値を返す(ユーザーとの相談で決定、縦軸のbounds拡張と同じ考え方)。
 
-    実際の試合数(point_count)を必ず上回る、_RANK_GRAPH_X_TICK_STEPの倍数にする
-    (例: 23試合なら25)。ちょうど倍数の試合数(例: 20試合)でも一番右の点が
-    軸の端に接してしまうため、その場合はさらに1段広げる。
+    実際の試合数(point_count)を上回る、tick_stepの倍数に切り上げる
+    (例: tick_step=5で23試合なら25)。
+
+    Issue #331: 以前はちょうど倍数の試合数(例: tick_step=5で20試合)でも
+    一番右の点が軸の端に接してしまうことを避けるため、その場合さらに1段
+    広げていたが、右側に丸々1目盛り分の空白ができて気になるというフィードバックを
+    受けて撤廃した(ユーザー確認済み)。ちょうど倍数の試合数では一番右の点が
+    枠の右端に接することを許容する。倍数でない試合数(例: 22試合)は、
+    ceil()により従来通り次の倍数まで拡張されるため挙動は変わらない。
     """
-    axis_max = math.ceil(point_count / _RANK_GRAPH_X_TICK_STEP) * _RANK_GRAPH_X_TICK_STEP
-    if axis_max <= point_count:
-        axis_max += _RANK_GRAPH_X_TICK_STEP
-    return axis_max
+    return math.ceil(point_count / tick_step) * tick_step
 
 
-def _rank_graph_x_tick_values(axis_max: int) -> list[int]:
+def _rank_graph_x_tick_values(axis_max: int, tick_step: int) -> list[int]:
     """横軸(試合番号)の目盛りとして表示する試合番号(1始まり)を返す。
 
-    最初の試合(1)を必ず含み(ユーザーとの相談で決定)、そこに_RANK_GRAPH_X_TICK_STEP
-    刻みの値をaxis_max(実際の試合数を上回るよう拡張した右端の値、
-    _rank_graph_x_axis_max参照)まで加える。
+    最初の試合(1)を必ず含み(ユーザーとの相談で決定)、そこにtick_step刻みの値を
+    axis_max(_rank_graph_x_axis_max参照)まで加える。
     """
     values = {1}
-    values.update(range(_RANK_GRAPH_X_TICK_STEP, axis_max + 1, _RANK_GRAPH_X_TICK_STEP))
+    values.update(range(tick_step, axis_max + 1, tick_step))
     return sorted(values)
 
 
@@ -493,7 +511,8 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None) 
     # (枠・グリッド線自体はplot_leftのまま、軸自体の見た目は変えない)
     points_left = plot_left + _RANK_GRAPH_LEFT_PADDING
 
-    x_axis_max = _rank_graph_x_axis_max(len(history))
+    x_tick_step = _rank_graph_x_tick_step(len(history))
+    x_axis_max = _rank_graph_x_axis_max(len(history), x_tick_step)
     x_axis_max_index = x_axis_max - 1  # 試合番号(1始まり)を0始まりのインデックスに変換
 
     def x_at(index: int) -> float:
@@ -544,9 +563,9 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None) 
 
     # 横軸目盛り: 縦向きの薄いグリッド線(縦軸のグリッド線と同様)+下側に短い目盛り線+
     # 試合番号のラベル。1試合目を必ず含み、実際の試合数を上回る位置(x_axis_max)まで
-    # 5刻みで表示する(ユーザーとの相談で決定)
+    # x_tick_step(通常5、試合数が多い場合は10、Issue #330)刻みで表示する
     x_axis_svg = []
-    for match_number in _rank_graph_x_tick_values(x_axis_max):
+    for match_number in _rank_graph_x_tick_values(x_axis_max, x_tick_step):
         x = x_at(match_number - 1)
         x_axis_svg.append(
             f'<line x1="{x:.1f}" y1="{plot_top}" x2="{x:.1f}" y2="{plot_bottom}" class="rank-graph-gridline" />'
