@@ -204,6 +204,22 @@ def _format_win_rate_text(counts: dict) -> str:
     return f"{win_rate}%" if win_rate is not None else "-"
 
 
+def _diverging_bar_fill_percents(counts: dict) -> dict:
+    """Issue #339: 得点/アシスト・勝率ウィジェットのダイバージングバー(中心線から
+    左=勝ち・右=負けに伸びる)の塗り幅(%)を返す。片側最大50%(全勝/全敗で
+    ちょうど半分まで伸びる)とし、「その結果の試合数 / 総試合数 * 50」で計算する。
+    引き分けはバー上には描かない(下のW/D/Lテキストのみで示す、Artifactでの
+    見た目確認時にユーザーと確定した仕様)。試合数0の場合は両方0%を返す。
+    """
+    total = counts["total"]
+    if total == 0:
+        return {"win": 0.0, "lose": 0.0}
+    return {
+        "win": round(counts["win"] / total * 50, 1),
+        "lose": round(counts["lose"] / total * 50, 1),
+    }
+
+
 # Issue #95: ランク推移グラフの対象範囲は「直近N試合」(配信セッションをまたぐ)。
 # #94(勝率)・#96/#98(ゴール/アシスト・連勝連敗)は配信セッション単位に絞ったが、
 # ランクは長期的な推移を見たい用途のため別の集計単位にした(ユーザーとの相談で決定)。
@@ -1290,13 +1306,19 @@ def create_app(db_path: Path) -> FastAPI:
         # 名前を出さない簡略表示に切り替える(ユーザーとの相談で決定)
         single_player_mode = len(get_allowed_players()) == 1
         winrate_data = _fetch_winrate(db_path)
+        session_fill = _diverging_bar_fill_percents(winrate_data["session"])
+        cumulative_fill = _diverging_bar_fill_percents(winrate_data["cumulative"])
         context = {
             "players": players,
             "single_player_mode": single_player_mode,
             "session": winrate_data["session"],
             "session_win_rate_text": _format_win_rate_text(winrate_data["session"]),
+            "session_win_fill_pct": session_fill["win"],
+            "session_lose_fill_pct": session_fill["lose"],
             "cumulative": winrate_data["cumulative"],
             "cumulative_win_rate_text": _format_win_rate_text(winrate_data["cumulative"]),
+            "cumulative_win_fill_pct": cumulative_fill["win"],
+            "cumulative_lose_fill_pct": cumulative_fill["lose"],
             "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
             "debug_bg_style": _overlay_debug_bg_style(request),
         }
