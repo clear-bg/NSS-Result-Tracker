@@ -1,7 +1,13 @@
 import numpy as np
 import pytest
 
-from nss_tracker.rank_entry_clips import GAUGE_TICK_SEGMENTS, RankEntryClipRecorder, _draw_gauge_ticks
+from nss_tracker.rank_entry_clips import (
+    GAUGE_LABEL_PADDING_HEIGHT,
+    GAUGE_TICK_LABEL_EXTENSION,
+    GAUGE_TICK_SEGMENTS,
+    RankEntryClipRecorder,
+    _draw_gauge_ticks,
+)
 
 
 def _make_frame(width: int = 64, height: int = 48, value: int = 128) -> np.ndarray:
@@ -136,16 +142,76 @@ def test_add_frame_skips_frame_when_processing_raises(caplog):
 def test_draw_gauge_ticks_draws_expected_number_of_vertical_lines():
     """Issue #312: ゲージ幅をGAUGE_TICK_SEGMENTS(20)分割する目盛り線が
     実際に描画されることを確認する(各列の色が変化する回数で数える)。
+
+    Issue #334でゲージ本体の下に白い余白を追加したため、ゲージ本体の高さの
+    範囲(0:height)だけを見る(余白側は目盛り数値の黒字で別途非背景色になるため)。
     """
-    frame = np.zeros((10, 200, 3), dtype=np.uint8)
+    height, width = 40, 200
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
 
     result = _draw_gauge_ticks(frame)
 
-    assert result.shape == frame.shape
-    non_black_columns = [x for x in range(200) if (result[:, x] != 0).any()]
+    gauge_area = result[:height, :]
+    non_black_columns = [x for x in range(width) if (gauge_area[:, x] != 0).any()]
     # 両端(0, 20)には線を引かないため、GAUGE_TICK_SEGMENTS - 1本の線があるはず
     # (線の太さが2pxの箇所もあるため、列数は本数以上になりうる)
     assert len(non_black_columns) >= GAUGE_TICK_SEGMENTS - 1
+
+
+def test_draw_gauge_ticks_adds_white_padding_for_labels():
+    """Issue #334: 整数の目盛り数値を描画するため、ゲージ本体の下に
+    GAUGE_LABEL_PADDING_HEIGHT分の白い余白を追加する(横幅は変えない)。
+    """
+    height, width = 40, 200
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+
+    result = _draw_gauge_ticks(frame)
+
+    assert result.shape == (height + GAUGE_LABEL_PADDING_HEIGHT, width, 3)
+    # 余白部分の背景は白(数値の黒字・目盛り線の伸び以外)
+    padding_area = result[height + GAUGE_TICK_LABEL_EXTENSION + 1 :, :]
+    assert (padding_area == 255).any()
+
+
+def test_draw_gauge_ticks_half_step_lines_are_dashed_and_stay_within_gauge():
+    """Issue #334: 0.5刻みの線は点線になり、ゲージ本体の高さ内(0:height)に
+    とどまる(白い余白側へは伸びない)ことを確認する。
+    """
+    height, width = 40, 200
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+
+    result = _draw_gauge_ticks(frame)
+
+    # i=1(0.5刻み)の列: x = round(200 * 1 / 20) = 10
+    x = 10
+    column = result[:height, x]
+    magenta = np.array([255, 0, 255], dtype=np.uint8)
+    is_magenta = (column == magenta).all(axis=1)
+    # 点線のため、色が乗っている行・乗っていない行の両方が存在するはず
+    assert is_magenta.any()
+    assert not is_magenta.all()
+    # ゲージ本体の高さを超えた行(余白側)には点線を伸ばさない
+    assert not (result[height:, x] == magenta).all(axis=1).any()
+
+
+def test_draw_gauge_ticks_full_step_lines_stay_solid_and_extend_into_padding():
+    """Issue #334: 1.0刻みの線は実線のまま、白い余白側へGAUGE_TICK_LABEL_EXTENSION分
+    だけ短く伸ばすことを確認する。
+    """
+    height, width = 40, 200
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+
+    result = _draw_gauge_ticks(frame)
+
+    # i=2(1.0刻み)の列: x = round(200 * 2 / 20) = 20
+    x = 20
+    magenta = np.array([255, 0, 255], dtype=np.uint8)
+    gauge_column = result[:height, x]
+    assert (gauge_column == magenta).all(axis=1).all()
+    extension_column = result[height : height + GAUGE_TICK_LABEL_EXTENSION, x]
+    assert (extension_column == magenta).all(axis=1).all()
+    # 伸ばすのはGAUGE_TICK_LABEL_EXTENSION分だけで、そこから先(数値の行)には伸ばさない
+    assert not (result[height + GAUGE_TICK_LABEL_EXTENSION + 5, x] == magenta).all()
 
 
 def test_draw_gauge_ticks_does_not_mutate_input_frame():
