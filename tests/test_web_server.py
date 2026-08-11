@@ -857,7 +857,7 @@ def test_overlay_goal_stats_winrate_page_shows_readable_summary(tmp_path: Path, 
     assert '<link rel="stylesheet" href="/static/goal_stats_winrate.css">' in response.text
     assert "今回" in response.text
     assert "3試合" in response.text
-    assert "勝率66.7%" in response.text
+    assert '<span class="rate-label">勝率</span><span class="rate-value">66.7%</span>' in response.text
     assert "W2" in response.text
     assert "D0" in response.text
     assert "L1" in response.text
@@ -904,7 +904,7 @@ def test_overlay_goal_stats_winrate_page_shows_empty_message_and_dash_when_no_ma
     response = client.get("/overlay/goal-stats-winrate")
 
     assert "データがありません" in response.text
-    assert "勝率-" in response.text
+    assert '<span class="rate-label">勝率</span><span class="rate-value">-</span>' in response.text
 
 
 def test_overlay_goal_stats_winrate_page_shows_zero_when_no_goals_yet(tmp_path: Path, monkeypatch):

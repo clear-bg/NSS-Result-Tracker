@@ -8,6 +8,20 @@
    不透明(新しい方ははっきり見せたいという追加要望)。詳細はweb/server.pyの
    _build_match_log_badges参照。不透明度は行内style属性で個別に設定するため、
    ここでは固定値を持たない。 */
+/* Issue #355: 配信画面(暗い背景・試合中の映像)に重ねたときの視認性対策として、
+   半透明パネルを敷く。ランク推移グラフ・ランク増減分布のSVGパネル
+   (rank_graph.cssの.rank-graph-panel等、Issue #113/#336)と同じ色・不透明度を
+   踏襲した(あちらはSVGの<rect>、こちらは通常のHTML/CSSのため実装方法は異なる)。
+   バッジの並びは試合数によって幅が変わるため、パネルは内容にフィットする
+   inline-blockにする(固定幅にしない)。 */
+.match-log-panel {
+    display: inline-block;
+    background: rgba(46, 53, 64, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    padding: 14px 18px;
+}
+
 .match-log-row {
     display: flex;
     align-items: center;

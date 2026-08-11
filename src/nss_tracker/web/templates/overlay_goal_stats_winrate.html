@@ -7,11 +7,12 @@
 <link rel="stylesheet" href="/static/goal_stats_winrate.css">
 </head>
 <body{{ debug_bg_style | safe }}>
+<div class="goal-stats-winrate-panel">
 <div class="goal-stats-winrate-row">
   <div class="goal-stats-winrate-header">
     <span class="tag">今回</span>
     <span class="total">{{ session.total }}試合</span>
-    <span class="rate">勝率{{ session_win_rate_text }}</span>
+    <span class="rate"><span class="rate-label">勝率</span><span class="rate-value">{{ session_win_rate_text }}</span></span>
   </div>
   <div class="goal-stats-winrate-track">
     <div class="goal-stats-winrate-center"></div>
@@ -28,7 +29,7 @@
   <div class="goal-stats-winrate-header">
     <span class="tag">累計</span>
     <span class="total">{{ cumulative.total }}試合</span>
-    <span class="rate">勝率{{ cumulative_win_rate_text }}</span>
+    <span class="rate"><span class="rate-label">勝率</span><span class="rate-value">{{ cumulative_win_rate_text }}</span></span>
   </div>
   <div class="goal-stats-winrate-track">
     <div class="goal-stats-winrate-center"></div>
@@ -64,6 +65,7 @@
   <p class="goal-stats-winrate-empty">データがありません</p>
 </div>
 {% endif %}
+</div>
 <script src="/static/overlay-refresh.js" data-interval-ms="{{ refresh_interval_ms }}"></script>
 </body>
 </html>
