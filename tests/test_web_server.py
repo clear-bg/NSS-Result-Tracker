@@ -825,7 +825,9 @@ def test_fetch_goal_stats_zero_counts_when_no_sessions(tmp_path: Path, monkeypat
 
 def test_overlay_goal_stats_winrate_page_shows_readable_summary(tmp_path: Path, monkeypatch):
     """Issue #339: /overlay/goal-stats(得点/アシスト)と/overlay/winrate(勝率)を
-    1つのウィジェットに統合した。両方の内容が同じページに表示されることを確認する。
+    1つのウィジェットに統合した上で、ダイバージングバー主体の見た目に刷新した
+    (Artifactでのモックアップ比較を経てユーザーと確定)。両方の内容が同じページに
+    表示されることを確認する。
     """
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
@@ -852,11 +854,17 @@ def test_overlay_goal_stats_winrate_page_shows_readable_summary(tmp_path: Path, 
 
     assert response.status_code == 200
     assert '<link rel="stylesheet" href="/static/overlay.css">' in response.text
-    assert "今回: Alice: 得点 1 / アシスト 0 (関与 1)" in response.text
-    assert "今回: 3試合" in response.text
-    assert "win 2 / lose 1 / draw 0" in response.text
-    assert "勝率 66.7%" in response.text
-    assert "累計: 3試合" in response.text
+    assert '<link rel="stylesheet" href="/static/goal_stats_winrate.css">' in response.text
+    assert "今回" in response.text
+    assert "3試合" in response.text
+    assert "勝率66.7%" in response.text
+    assert "W2" in response.text
+    assert "D0" in response.text
+    assert "L1" in response.text
+    assert "累計" in response.text
+    assert "Alice" in response.text
+    assert '<span class="goal-stats-winrate-stat-num" style="color: #5ec8ff;">1</span>' in response.text
+    assert '<span class="goal-stats-winrate-stat-num" style="color: #ffc247;">0</span>' in response.text
 
     css_response = client.get("/static/overlay.css")
     assert "background: transparent" in css_response.text
@@ -882,7 +890,8 @@ def test_overlay_goal_stats_winrate_page_hides_name_when_single_allowed_player(t
     response = client.get("/overlay/goal-stats-winrate")
 
     assert "Alice" not in response.text
-    assert "今回: 得点 1 / アシスト 0 (関与 1)" in response.text
+    assert '<span class="goal-stats-winrate-stat-num" style="color: #5ec8ff;">1</span>' in response.text
+    assert '<span class="goal-stats-winrate-stat-num" style="color: #ffc247;">0</span>' in response.text
 
 
 def test_overlay_goal_stats_winrate_page_shows_empty_message_and_dash_when_no_matches(tmp_path: Path, monkeypatch):
@@ -895,7 +904,7 @@ def test_overlay_goal_stats_winrate_page_shows_empty_message_and_dash_when_no_ma
     response = client.get("/overlay/goal-stats-winrate")
 
     assert "データがありません" in response.text
-    assert "勝率 -" in response.text
+    assert "勝率-" in response.text
 
 
 def test_overlay_goal_stats_winrate_page_shows_zero_when_no_goals_yet(tmp_path: Path, monkeypatch):
@@ -909,8 +918,33 @@ def test_overlay_goal_stats_winrate_page_shows_zero_when_no_goals_yet(tmp_path: 
     response = client.get("/overlay/goal-stats-winrate")
 
     assert "データがありません" not in response.text
-    assert "今回: Alice: 得点 0 / アシスト 0 (関与 0)" in response.text
-    assert "今回: Bob: 得点 0 / アシスト 0 (関与 0)" in response.text
+    assert "Alice" in response.text
+    assert "Bob" in response.text
+    assert '<span class="goal-stats-winrate-stat-num" style="color: #5ec8ff;">0</span>' in response.text
+    assert '<span class="goal-stats-winrate-stat-num" style="color: #ffc247;">0</span>' in response.text
+
+
+def test_overlay_goal_stats_winrate_page_diverging_bar_fill_reflects_win_lose_share(tmp_path: Path, monkeypatch):
+    """Issue #339: 中心線から左=勝ち・右=負けに伸びるダイバージングバーの塗り幅は
+    「その結果の試合数 / 総試合数 * 50%」であることを確認する(例: 15試合中10勝なら
+    10/15*50=33.3...%→33.3%、4敗なら4/15*50=13.3...%→13.3%)。
+    """
+    monkeypatch.delenv("ALLOWED_PLAYERS", raising=False)
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    for result in ["win"] * 10 + ["lose"] * 4 + ["draw"]:
+        _save_match_result(
+            conn,
+            MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+        )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/goal-stats-winrate")
+
+    assert '<div class="goal-stats-winrate-fill win" style="width: 33.3%;"></div>' in response.text
+    assert '<div class="goal-stats-winrate-fill lose" style="width: 13.3%;"></div>' in response.text
 
 
 def test_match_log_returns_recent_results_oldest_first(tmp_path: Path):
