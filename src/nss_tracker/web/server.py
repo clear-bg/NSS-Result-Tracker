@@ -271,21 +271,24 @@ def _fetch_rank_graph_summary(db_path: Path) -> Optional[dict]:
 # 実際の表示サイズ(OBSブラウザソースの矩形)まで引き伸ばす。左右上下でマージンを
 # 分けているのは、左に縦軸のラベル・下に横軸のラベル分の余白が必要なため
 _RANK_GRAPH_VIEWBOX_WIDTH = 786
-# Issue #281: 縦軸の範囲(axis_range)が広いとき、目盛り間隔をいきなり広げるより先に
-# グラフ自体の縦幅を大きくしてほしいという要望を受け、220px(通常運用)〜350pxの
-# 範囲で動的に決める(_rank_graph_height参照)。350pxに達してもなお範囲が広い場合のみ、
-# 従来通り目盛り間隔を広げる(Issue #123の挙動を維持)
-_RANK_GRAPH_VIEWBOX_HEIGHT_MIN = 220
-_RANK_GRAPH_VIEWBOX_HEIGHT_MAX = 350
+# Issue #281で、縦軸の範囲(axis_range)が広いとき目盛り間隔をいきなり広げるより先に
+# グラフ自体の縦幅を220px(通常運用)〜350pxの範囲で動的に伸ばす仕組みを追加したが、
+# Issue #336で「配信画面で見たときにグラフの大きさが試合ごとに変わって落ち着かない」
+# というフィードバックを受け撤廃し、常に350px固定に戻した(範囲が広い場合は従来通り
+# 目盛り間隔(_rank_graph_y_tick_step)を広げて対応する、Issue #123の挙動を維持)
+_RANK_GRAPH_VIEWBOX_HEIGHT = 350
 _RANK_GRAPH_MARGIN_LEFT = 50
 _RANK_GRAPH_MARGIN_RIGHT = 20
-_RANK_GRAPH_MARGIN_TOP = 54  # タイトル分の余白を含む(_RANK_GRAPH_TITLE参照)
+# タイトル分の余白を含む(_RANK_GRAPH_TITLE参照)。Issue #336でタイトルの文字サイズを
+# 拡大したことに合わせて54→58に広げた
+_RANK_GRAPH_MARGIN_TOP = 58
 _RANK_GRAPH_MARGIN_BOTTOM = 30
 _RANK_GRAPH_TITLE = "ランク推移"
 # Issue #313: 統計タイル(現在のランク・最高ランク・配信開始比)を表示する場合に
-# 追加で確保する高さ。グラフ本体の縦幅(_rank_graph_height、Issue #281の
-# 220px〜350px可変ロジック)とは別枠で上乗せする(目盛り密度の計算に影響させないため)
-_RANK_GRAPH_SUMMARY_HEIGHT = 56
+# 追加で確保する高さ。グラフ本体の縦幅(_RANK_GRAPH_VIEWBOX_HEIGHT)とは別枠で
+# 上乗せする(目盛り密度の計算に影響させないため)。Issue #336でタイトル・統計タイルの
+# 間の余白とラベル文字サイズを拡大したことに合わせて56→66に広げた
+_RANK_GRAPH_SUMMARY_HEIGHT = 66
 # 一番左の点がプロット領域の左端(枠)に接しないための余白(px)。右側は
 # _rank_graph_x_axis_maxで軸自体の右端(試合番号の上限)を実際の試合数より
 # 広げることで余白を作る(縦軸の_rank_graph_y_boundsと同じ考え方)ため、
@@ -307,40 +310,20 @@ _RANK_GRAPH_X_TICK_STEP_WIDE_THRESHOLD = 70
 # 縦軸が1〜412に広がり417本の目盛りが220の高さに詰め込まれた)。目盛りの本数が
 # この値を超えないよう、1・2・5・10・20...の「きりの良い」間隔から動的に選ぶ
 # (_rank_graph_y_tick_step参照)。通常運用の狭い範囲(数〜十数)では引き続き間隔1のまま。
-# _RANK_GRAPH_Y_TICK_MAX_COUNTは_rank_graph_y_tick_stepのデフォルト値(単体では
-# 高さ220px時の本数上限)としても使うが、_render_rank_graph_svg内では実際に動的に
-# 決まった高さ(_rank_graph_height)から計算した本数を明示的に渡す(Issue #281)
+# _RANK_GRAPH_Y_TICK_MAX_COUNTは_rank_graph_y_tick_stepのデフォルト値としても使うが、
+# _render_rank_graph_svg内では実際の高さ(_RANK_GRAPH_VIEWBOX_HEIGHT)から計算した
+# 本数を明示的に渡す
 _RANK_GRAPH_Y_TICK_MAX_COUNT = 20
 _RANK_GRAPH_Y_TICK_STEPS = (1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
-# Issue #281: 縦軸の目盛り本数(間隔1のまま)が10本に達したところで、グラフの縦幅が
-# ちょうど上限の350pxになるよう密度を決める(ユーザーとの相談で決定)。本数が
-# 増えるほど間隔1を保つための必要な高さも増えるため、350px÷(10本-1間隔)を
-# 1目盛りあたりのpx数として使う。20本を上限にしていた高さ固定220px時代の基準
-# (_RANK_GRAPH_Y_TICK_MAX_COUNT、単体テスト・_rank_graph_y_tick_stepのデフォルト
-# 引数としては引き続き使用)とは別の基準になったため、専用の定数として分けている
+# Issue #281で導入した「縦軸の目盛り本数(間隔1のまま)が10本に達したところでグラフの
+# 縦幅が上限の350pxになる」密度をそのまま踏襲している(Issue #336で高さ自体は常に
+# 350px固定になったため「上限」という位置づけではなくなったが、密度の基準値としては
+# 変更する理由が無いため残す)。本数が増えるほど間隔1を保つための必要な高さも増えるため、
+# 350px÷(10本-1間隔)を1目盛りあたりのpx数として使う
 _RANK_GRAPH_Y_TICK_COUNT_AT_MAX_HEIGHT = 10
 _RANK_GRAPH_Y_PX_PER_UNIT = (
-    _RANK_GRAPH_VIEWBOX_HEIGHT_MAX - _RANK_GRAPH_MARGIN_TOP - _RANK_GRAPH_MARGIN_BOTTOM
+    _RANK_GRAPH_VIEWBOX_HEIGHT - _RANK_GRAPH_MARGIN_TOP - _RANK_GRAPH_MARGIN_BOTTOM
 ) / (_RANK_GRAPH_Y_TICK_COUNT_AT_MAX_HEIGHT - 1)
-
-
-def _rank_graph_height(axis_range: int) -> int:
-    """縦軸の範囲(axis_range)に応じて、SVGの縦幅を220px〜350pxの範囲で動的に決める。
-
-    Issue #281: 範囲が広がったときに目盛り間隔をいきなり広げるより先に、グラフ自体を
-    大きくしてほしいという要望を受けて追加した。_RANK_GRAPH_Y_PX_PER_UNITの密度を
-    保てる高さを計算し、220px未満にはならず(通常運用時の見た目を変えない)、
-    350pxを超えては伸びないようにする(目盛り本数が_RANK_GRAPH_Y_TICK_COUNT_AT_MAX_HEIGHT
-    (10本)に達するあたりでちょうど350pxに到達する)。350pxで頭打ちになった後さらに
-    範囲が広がった場合は、_render_rank_graph_svg側で従来通り目盛り間隔を広げて対応する
-    (_rank_graph_y_tick_step参照)。
-    """
-    # 整数pxに丸める際round()だと切り捨て方向に丸まることがあり、_rank_graph_y_tick_step
-    # 側で丸め後の高さから逆算した本数上限が実際のaxis_rangeよりわずかに小さくなって
-    # 間隔が早まって広がってしまう境界ケースがあったため、必ず切り上げる
-    desired_plot_height = axis_range * _RANK_GRAPH_Y_PX_PER_UNIT
-    desired_height = desired_plot_height + _RANK_GRAPH_MARGIN_TOP + _RANK_GRAPH_MARGIN_BOTTOM
-    return math.ceil(min(max(desired_height, _RANK_GRAPH_VIEWBOX_HEIGHT_MIN), _RANK_GRAPH_VIEWBOX_HEIGHT_MAX))
 
 
 def _rank_graph_y_tick_step(axis_range: int, max_tick_count: float = _RANK_GRAPH_Y_TICK_MAX_COUNT) -> int:
@@ -447,10 +430,10 @@ def _rank_graph_summary_svg(summary: dict, width: int) -> str:
     tile_centers = (width / 6, width / 2, width * 5 / 6)
     parts = []
     for label, value_svg, cx in zip(labels, values_svg, tile_centers):
-        parts.append(f'<text x="{cx:.1f}" y="56" text-anchor="middle" class="rank-graph-stat-label">{label}</text>')
-        parts.append(f'<text x="{cx:.1f}" y="82" text-anchor="middle">{value_svg}</text>')
+        parts.append(f'<text x="{cx:.1f}" y="74" text-anchor="middle" class="rank-graph-stat-label">{label}</text>')
+        parts.append(f'<text x="{cx:.1f}" y="106" text-anchor="middle">{value_svg}</text>')
     for x in (width / 3, width * 2 / 3):
-        parts.append(f'<line x1="{x:.1f}" y1="45" x2="{x:.1f}" y2="80" class="rank-graph-stat-divider" />')
+        parts.append(f'<line x1="{x:.1f}" y1="62" x2="{x:.1f}" y2="104" class="rank-graph-stat-divider" />')
     return "".join(parts)
 
 
@@ -477,13 +460,13 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None) 
     summary_svg = _rank_graph_summary_svg(summary, width) if summary is not None else ""
 
     if not history:
-        height = _RANK_GRAPH_VIEWBOX_HEIGHT_MIN + summary_offset
+        height = _RANK_GRAPH_VIEWBOX_HEIGHT + summary_offset
         svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
         panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-graph-panel" />'
         title_svg = (
-            f'<text x="{width / 2}" y="34" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
+            f'<text x="{width / 2}" y="38" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
         )
-        empty_y = summary_offset + _RANK_GRAPH_VIEWBOX_HEIGHT_MIN / 2
+        empty_y = summary_offset + _RANK_GRAPH_VIEWBOX_HEIGHT / 2
         return (
             f"{svg_open}{panel_svg}{title_svg}{summary_svg}"
             f'<text x="{width / 2}" y="{empty_y:.1f}" text-anchor="middle" class="rank-graph-empty">'
@@ -494,15 +477,15 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None) 
     axis_min, axis_max = _rank_graph_y_bounds(min(values), max(values))
     axis_range = axis_max - axis_min
 
-    # Issue #281: 縦幅は固定ではなく、axis_rangeに応じて220px〜350pxの範囲で動的に決める
-    # (_rank_graph_height参照)。それ以外の描画(パネル・タイトル等)はこの高さを前提に組む。
-    # Issue #313: 統計タイル分(summary_offset)はこの可変ロジックと独立に上乗せする
-    height = _rank_graph_height(axis_range) + summary_offset
+    # Issue #336: 縦幅は常に_RANK_GRAPH_VIEWBOX_HEIGHT固定(以前はaxis_rangeに応じて
+    # 220px〜350pxの範囲で動的に決めていたが撤廃した、_RANK_GRAPH_VIEWBOX_HEIGHT参照)。
+    # Issue #313: 統計タイル分(summary_offset)はこれとは別枠で上乗せする
+    height = _RANK_GRAPH_VIEWBOX_HEIGHT + summary_offset
     svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
     # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
     # 一番背面に来るようにする
     panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-graph-panel" />'
-    title_svg = f'<text x="{width / 2}" y="34" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
+    title_svg = f'<text x="{width / 2}" y="38" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
 
     plot_left, plot_right = _RANK_GRAPH_MARGIN_LEFT, width - _RANK_GRAPH_MARGIN_RIGHT
     plot_top, plot_bottom = _RANK_GRAPH_MARGIN_TOP + summary_offset, height - _RANK_GRAPH_MARGIN_BOTTOM
@@ -526,8 +509,8 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None) 
     # ラベル・目盛り自体は整数のみ・間隔は_rank_graph_y_tick_stepで動的に決める
     # (Issue #123、通常運用の狭い範囲では間隔1のまま)。軸の下限・上限自体を実データより
     # 広げてあるため(_rank_graph_y_bounds参照)、一番上・一番下の点は自然に軸の端から離れる。
-    # 高さが伸びた分(_rank_graph_height)だけ目盛りの本数上限も伸ばす(Issue #281)ため、
-    # デフォルトの_RANK_GRAPH_Y_TICK_MAX_COUNTではなく実際のplot_heightから逆算する
+    # デフォルトの_RANK_GRAPH_Y_TICK_MAX_COUNTではなく、実際のplot_heightから逆算した
+    # 本数上限を渡す(Issue #281、summary_offsetの有無でplot_heightが変わるため)
     y_tick_step = _rank_graph_y_tick_step(axis_range, plot_height / _RANK_GRAPH_Y_PX_PER_UNIT)
     y_axis_svg = []
     for tick_value in range(axis_min, axis_max + 1, y_tick_step):
@@ -876,15 +859,25 @@ def _compute_box_stats(values: list[float]) -> Optional[dict]:
 # (負け側もabsで正の値にしてあるため、軸は0〜最大値のみで足りる)
 _BOX_PLOT_VIEWBOX_WIDTH = 779
 _BOX_PLOT_VIEWBOX_HEIGHT = 160
-_BOX_PLOT_MARGIN_LEFT = 60
+# Issue #336: 「増加」「減少」ラベル(24px)とプロット領域の間が窮屈に見えるという
+# フィードバックを受け、ラベルの右端からプロット領域左端までの間隔を8px→18pxに広げた
+# (_BOX_PLOT_ROW_LABEL_GAP参照)。ラベル文字自体が左にはみ出さないよう、
+# MARGIN_LEFTも60→70に広げている
+_BOX_PLOT_MARGIN_LEFT = 70
 _BOX_PLOT_MARGIN_RIGHT = 30
-_BOX_PLOT_MARGIN_TOP = 49  # タイトル分の余白を含む(_BOX_PLOT_TITLE参照)
+# タイトル分の余白を含む(_BOX_PLOT_TITLE参照)。Issue #336でタイトルの文字サイズを
+# 拡大したことに合わせて49→53に広げた
+_BOX_PLOT_MARGIN_TOP = 53
 _BOX_PLOT_MARGIN_BOTTOM = 30
 _BOX_PLOT_TITLE = "ランク増減分布"
 _BOX_PLOT_ROW_HEIGHT_RATIO = 0.5  # 各段の高さのうち箱ひげ図本体が占める割合
 # Issue #278: 「増加」「減少」ラベルの文字サイズを上げたのに合わせ、win/lose
 # 2段が詰まって見えないよう段の間に明示的な余白を設ける(ユーザーとの相談で決定)
 _BOX_PLOT_ROW_GAP = 10
+# Issue #336: 「増加」「減少」ラベルの右端からプロット領域左端(plot_left)までの間隔。
+# 以前はY軸目盛りラベルと同じ8pxを流用していたが、ラベル文字が24pxと大きいため
+# 窮屈に見えるというフィードバックを受け広げた
+_BOX_PLOT_ROW_LABEL_GAP = 18
 # 横軸(数直線)の目盛りは、この値の倍数(0.1, 0.2, 0.3, ...)の位置に固定間隔で置く
 # (#99の横軸と同じ考え方。ユーザーとの相談で決定)
 _BOX_PLOT_X_TICK_STEP = 0.1
@@ -918,7 +911,7 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
     # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
     # 一番背面に来るようにする
     panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-delta-panel" />'
-    title_svg = f'<text x="{width / 2}" y="32" text-anchor="middle" class="rank-delta-title">{_BOX_PLOT_TITLE}</text>'
+    title_svg = f'<text x="{width / 2}" y="36" text-anchor="middle" class="rank-delta-title">{_BOX_PLOT_TITLE}</text>'
 
     stats_by_category = {"win": _compute_box_stats(win_values), "lose": _compute_box_stats(lose_values)}
     if stats_by_category["win"] is None and stats_by_category["lose"] is None:
@@ -963,8 +956,8 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
         row_top = plot_top + index * (row_height + _BOX_PLOT_ROW_GAP)
         row_center_y = row_top + row_height / 2
         rows_svg.append(
-            f'<text x="{plot_left - 8}" y="{row_center_y:.1f}" text-anchor="end" dominant-baseline="middle" '
-            f'class="rank-delta-row-label">{category_label}</text>'
+            f'<text x="{plot_left - _BOX_PLOT_ROW_LABEL_GAP}" y="{row_center_y:.1f}" text-anchor="end" '
+            f'dominant-baseline="middle" class="rank-delta-row-label">{category_label}</text>'
         )
         stats = stats_by_category[category]
         if stats is None:

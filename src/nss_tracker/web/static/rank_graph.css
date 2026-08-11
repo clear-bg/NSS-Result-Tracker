@@ -11,8 +11,12 @@
    viewBox全体を覆う角丸パネルをSVGの一番背面に敷く(ユーザーとの相談で決定した
    3案のうち「A. 半透明パネル」を採用。server.py側で最初に描画する要素にすること
    で他の要素の背後に来る)。 */
+/* Issue #336: 実際の配信画面で見た際にパネルが暗く沈んで見えるというフィードバックを
+   受け、rgba(32, 38, 48, 0.6)からrgba(46, 53, 64, 0.72)に明るくした(不透明度も
+   少し上げ、背景の映像が透けすぎないようにした)。rank-delta-panel(こちらも同じ理由)
+   と揃えている。 */
 .rank-graph-panel {
-    fill: rgba(32, 38, 48, 0.6);
+    fill: rgba(46, 53, 64, 0.72);
     stroke: rgba(255, 255, 255, 0.12);
     stroke-width: 1;
 }
@@ -41,10 +45,12 @@
     font-size: 22px;
 }
 
+/* Issue #336: 実際の配信画面で見た際に小さく感じるというフィードバックを受け、
+   28px→32pxに拡大した */
 .rank-graph-title {
     fill: #fff;
     font-family: sans-serif;
-    font-size: 28px;
+    font-size: 32px;
     font-weight: bold;
 }
 
@@ -93,10 +99,12 @@
 /* Issue #332: 実際の配信画面で見た際に読みづらいというフィードバックを受け、
    13px/#9a9a96(ミュート)から15px/#c3c2b7(dataviz skillのdark secondary ink、
    ミュートは保ちつつ従来よりくっきり見える明るさ)に変更した */
+/* Issue #336: 引き続き小さいというフィードバックを受け、ランク増減分布の
+   「増加」「減少」ラベル(.rank-delta-row-label、24px)とサイズを揃えた */
 .rank-graph-stat-label {
     fill: #c3c2b7;
     font-family: sans-serif;
-    font-size: 15px;
+    font-size: 24px;
 }
 
 .rank-graph-stat-value {
@@ -108,9 +116,10 @@
 
 /* 配信開始時のランクに添える増減値。本体の数値(rank-graph-stat-value)より
    小さくし、色だけ-up/-down/-neutralの3クラスで切り替える */
+/* Issue #336: 16px→19pxに拡大(ラベル・本体の拡大に合わせたバランス調整) */
 .rank-graph-stat-delta {
     font-family: sans-serif;
-    font-size: 16px;
+    font-size: 19px;
     font-weight: bold;
 }
 
