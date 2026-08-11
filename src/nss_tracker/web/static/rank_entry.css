@@ -266,6 +266,14 @@ h1 {
     border: 1px solid #ccc;
     border-radius: 4px;
     text-align: center;
+    -moz-appearance: textfield; /* Issue #335: type="number"化に伴い、この幅では
+        邪魔になるネイティブの増減スピナーを非表示にする(Firefox) */
+}
+
+.rank-entry-input::-webkit-outer-spin-button,
+.rank-entry-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
 }
 
 .rank-entry-copy-button {
