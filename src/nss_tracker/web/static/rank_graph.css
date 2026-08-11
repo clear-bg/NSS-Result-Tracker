@@ -3,6 +3,10 @@
    昇格/降格(league_changed)による点の色分けはしない(ユーザーとの相談で決定、
    全て白で統一する)。 */
 
+/* Issue #313: エリアチャート化に伴い、折れ線・点・エリア塗りを白から青系に
+   変更した(3案をArtifactでモックアップし、統計タイルのレイアウトと合わせて
+   ユーザーが選択・確認済み)。 */
+
 /* Issue #113: 配信画面(暗い背景・試合中の映像)に重ねたときの視認性対策として、
    viewBox全体を覆う角丸パネルをSVGの一番背面に敷く(ユーザーとの相談で決定した
    3案のうち「A. 半透明パネル」を採用。server.py側で最初に描画する要素にすること
@@ -15,12 +19,20 @@
 
 .rank-graph-line {
     fill: none;
-    stroke: #fff;
+    stroke: #3987e5;
     stroke-width: 3;
+    stroke-linejoin: round;
+    stroke-linecap: round;
 }
 
 .rank-graph-point {
-    fill: #fff;
+    fill: #3987e5;
+}
+
+/* Issue #313: 折れ線の下を塗るエリア(薄いウォッシュ、データそのものより目立たせない) */
+.rank-graph-area {
+    fill: #3987e5;
+    opacity: 0.14;
 }
 
 .rank-graph-empty {
@@ -72,4 +84,49 @@
     fill: #fff;
     font-family: sans-serif;
     font-size: 17px;
+}
+
+/* Issue #313: 統計タイル(現在のランク・最高ランク・配信開始時のランク)。ラベルは
+   ミュートした白、数値は折れ線と同じ色を使わず白のまま(データの色をテキストに
+   使わない、ユーザーとプレビューで確認した案Bのまま)。3つ目のタイルは配信開始時の
+   ランク自体(白)+増減値(小さく、方向に応じて色付け)の組み合わせ */
+.rank-graph-stat-label {
+    fill: #9a9a96;
+    font-family: sans-serif;
+    font-size: 13px;
+}
+
+.rank-graph-stat-value {
+    fill: #fff;
+    font-family: sans-serif;
+    font-size: 26px;
+    font-weight: bold;
+}
+
+/* 配信開始時のランクに添える増減値。本体の数値(rank-graph-stat-value)より
+   小さくし、色だけ-up/-down/-neutralの3クラスで切り替える */
+.rank-graph-stat-delta {
+    font-family: sans-serif;
+    font-size: 16px;
+    font-weight: bold;
+}
+
+.rank-graph-stat-delta-up {
+    fill: #0ca30c;
+}
+
+.rank-graph-stat-delta-down {
+    fill: #d03b3b;
+}
+
+/* 今の配信セッションでまだランクを賭けた試合が無く、増減が0の場合
+   (ユーザー確認済み、_fetch_rank_graph_summaryのdocstring参照) */
+.rank-graph-stat-delta-neutral {
+    fill: #9a9a96;
+}
+
+.rank-graph-stat-divider {
+    stroke: #fff;
+    stroke-width: 1;
+    opacity: 0.15;
 }

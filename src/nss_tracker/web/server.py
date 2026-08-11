@@ -104,9 +104,11 @@ from nss_tracker.database.db import (
     fetch_all_matches,
     fetch_current_session_id,
     fetch_goals_for_session,
+    fetch_latest_rank_after,
     fetch_latest_vs_rank_snapshot,
     fetch_match,
     fetch_matches_for_session,
+    fetch_max_rank_after,
     fetch_oldest_pending_manual_rank_match,
     fetch_pending_manual_rank_match_count,
     fetch_recent_matches,
@@ -228,6 +230,43 @@ def _fetch_rank_history(db_path: Path) -> list[dict]:
     ]
 
 
+def _fetch_rank_graph_summary(db_path: Path) -> Optional[dict]:
+    """ランク推移グラフの統計欄(現在のランク・最高ランク・配信開始比)に必要な値を返す(Issue #313)。
+
+    グラフ本体(_fetch_rank_history)と異なりRANK_GRAPH_MATCH_LIMITの影響は受けず、
+    「現在のランク」「最高ランク」ともDB全体から集計する(ユーザー確認済み)。
+    確定済みrank_afterが1件も無ければ、グラフ自体の「データがありません」表示と
+    揃えてNoneを返す(呼び出し側は統計欄も出さない)。
+
+    「配信開始時のランク」は、現在の配信セッションで最初にランクを賭けた試合の
+    rank_before(Issue #308のチェーン設計により、配信開始前の最後に確定した
+    rank_afterと一致する)。今のセッションでまだランクを賭けた試合が無い場合は、
+    現在のランクをそのまま配信開始時のランクとみなし、増減を0として扱う
+    (ユーザー確認済み)。
+    """
+    conn = _connect(db_path)
+    try:
+        current_rank = fetch_latest_rank_after(conn)
+        if current_rank is None:
+            return None
+        max_rank = fetch_max_rank_after(conn)
+        session_start_rank = current_rank
+        session_id = fetch_current_session_id(conn)
+        if session_id is not None:
+            for row in fetch_matches_for_session(conn, session_id):
+                if row["rank_before"] is not None:
+                    session_start_rank = row["rank_before"]
+                    break
+    finally:
+        conn.close()
+    return {
+        "current_rank": current_rank,
+        "max_rank": max_rank,
+        "session_start_rank": session_start_rank,
+        "delta": current_rank - session_start_rank,
+    }
+
+
 # ランク推移グラフのSVG座標系(viewBox内の論理サイズ)。width/height="100%"で
 # 実際の表示サイズ(OBSブラウザソースの矩形)まで引き伸ばす。左右上下でマージンを
 # 分けているのは、左に縦軸のラベル・下に横軸のラベル分の余白が必要なため
@@ -243,6 +282,10 @@ _RANK_GRAPH_MARGIN_RIGHT = 20
 _RANK_GRAPH_MARGIN_TOP = 54  # タイトル分の余白を含む(_RANK_GRAPH_TITLE参照)
 _RANK_GRAPH_MARGIN_BOTTOM = 30
 _RANK_GRAPH_TITLE = "ランク推移"
+# Issue #313: 統計タイル(現在のランク・最高ランク・配信開始比)を表示する場合に
+# 追加で確保する高さ。グラフ本体の縦幅(_rank_graph_height、Issue #281の
+# 220px〜350px可変ロジック)とは別枠で上乗せする(目盛り密度の計算に影響させないため)
+_RANK_GRAPH_SUMMARY_HEIGHT = 56
 # 一番左の点がプロット領域の左端(枠)に接しないための余白(px)。右側は
 # _rank_graph_x_axis_maxで軸自体の右端(試合番号の上限)を実際の試合数より
 # 広げることで余白を作る(縦軸の_rank_graph_y_boundsと同じ考え方)ため、
@@ -348,7 +391,51 @@ def _rank_graph_x_tick_values(axis_max: int) -> list[int]:
     return sorted(values)
 
 
-def _render_rank_graph_svg(history: list[dict]) -> str:
+def _rank_graph_summary_svg(summary: dict, width: int) -> str:
+    """統計タイル(現在のランク・最高ランク・配信開始時のランク)3つを横並びで描画する(Issue #313)。
+
+    タイトルとグラフ本体の間、_RANK_GRAPH_SUMMARY_HEIGHT分の帯に収める。
+    数値は既にDB側でCHECK制約により小数第2位までに丸められているため、
+    ここでは`:g`で末尾の不要な0を落とすだけにする(例: 41.0 -> "41")。
+
+    3つ目のタイルは、増減値(delta)だけを大きく出す案だと配信開始時点の
+    ランク自体がどこにも残らず分かりにくいというフィードバックを受け、
+    配信開始時のランクを他の2タイルと同じ大きさで常に表示し、その右に
+    小さく増減値を添える形にした(同じ<text>内のtspanで連結し、text-anchor
+    ="middle"がテキスト全体を1つの塊としてセンタリングする性質を利用して
+    数値+増減値をまとめて中央寄せしている)。
+    """
+    current_text = f'{summary["current_rank"]:g}'
+    max_rank = summary["max_rank"]
+    max_text = f"{max_rank:g}" if max_rank is not None else "-"
+    session_start_text = f'{summary["session_start_rank"]:g}'
+    delta = summary["delta"]
+    delta_text = f"+{delta:g}" if delta >= 0 else f"{delta:g}"
+    if delta > 0:
+        delta_class = "rank-graph-stat-delta-up"
+    elif delta < 0:
+        delta_class = "rank-graph-stat-delta-down"
+    else:
+        delta_class = "rank-graph-stat-delta-neutral"
+
+    labels = ("現在のランク", "最高ランク", "配信開始時")
+    values_svg = (
+        f'<tspan class="rank-graph-stat-value">{current_text}</tspan>',
+        f'<tspan class="rank-graph-stat-value">{max_text}</tspan>',
+        f'<tspan class="rank-graph-stat-value">{session_start_text}</tspan>'
+        f'<tspan class="rank-graph-stat-delta {delta_class}" dx="6">{delta_text}</tspan>',
+    )
+    tile_centers = (width / 6, width / 2, width * 5 / 6)
+    parts = []
+    for label, value_svg, cx in zip(labels, values_svg, tile_centers):
+        parts.append(f'<text x="{cx:.1f}" y="56" text-anchor="middle" class="rank-graph-stat-label">{label}</text>')
+        parts.append(f'<text x="{cx:.1f}" y="82" text-anchor="middle">{value_svg}</text>')
+    for x in (width / 3, width * 2 / 3):
+        parts.append(f'<line x1="{x:.1f}" y1="45" x2="{x:.1f}" y2="80" class="rank-graph-stat-divider" />')
+    return "".join(parts)
+
+
+def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None) -> str:
     """ランク推移を、枠・縦横の目盛り付きの折れ線グラフとしてSVG文字列で描画する。
 
     JS・外部チャートライブラリは使わずサーバー側でSVGを組み立てる(配信環境の
@@ -358,19 +445,29 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
 
     Issue #180で「隣り合う試合同士が連続しているとみなせない箇所は点線でつなぐ」
     仕組みを一度導入したが、ユーザーとの相談で常に実線表示に戻した(2026-08-04)。
+
+    Issue #313: summaryを渡すと、タイトルとグラフの間に統計タイル3つ(現在の
+    ランク・最高ランク・配信開始比)を描画する(_rank_graph_summary_svg参照)。
+    summaryがNone(_fetch_rank_graph_summaryが「データ無し」を返した)の場合は
+    従来通り統計欄無しで描画する。データが無い(historyが空)場合でも、summary
+    自体は別集計(DB全体からの現在/最高ランク)のため独立して出せることがあり、
+    その場合は統計欄だけ表示し「データがありません」は据え置く。
     """
     width = _RANK_GRAPH_VIEWBOX_WIDTH
+    summary_offset = _RANK_GRAPH_SUMMARY_HEIGHT if summary is not None else 0
+    summary_svg = _rank_graph_summary_svg(summary, width) if summary is not None else ""
 
     if not history:
-        height = _RANK_GRAPH_VIEWBOX_HEIGHT_MIN
+        height = _RANK_GRAPH_VIEWBOX_HEIGHT_MIN + summary_offset
         svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
         panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-graph-panel" />'
         title_svg = (
             f'<text x="{width / 2}" y="34" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
         )
+        empty_y = summary_offset + _RANK_GRAPH_VIEWBOX_HEIGHT_MIN / 2
         return (
-            f"{svg_open}{panel_svg}{title_svg}"
-            f'<text x="{width / 2}" y="{height / 2}" text-anchor="middle" class="rank-graph-empty">'
+            f"{svg_open}{panel_svg}{title_svg}{summary_svg}"
+            f'<text x="{width / 2}" y="{empty_y:.1f}" text-anchor="middle" class="rank-graph-empty">'
             "データがありません</text></svg>"
         )
 
@@ -379,8 +476,9 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     axis_range = axis_max - axis_min
 
     # Issue #281: 縦幅は固定ではなく、axis_rangeに応じて220px〜350pxの範囲で動的に決める
-    # (_rank_graph_height参照)。それ以外の描画(パネル・タイトル等)はこの高さを前提に組む
-    height = _rank_graph_height(axis_range)
+    # (_rank_graph_height参照)。それ以外の描画(パネル・タイトル等)はこの高さを前提に組む。
+    # Issue #313: 統計タイル分(summary_offset)はこの可変ロジックと独立に上乗せする
+    height = _rank_graph_height(axis_range) + summary_offset
     svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
     # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
     # 一番背面に来るようにする
@@ -388,7 +486,7 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     title_svg = f'<text x="{width / 2}" y="34" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
 
     plot_left, plot_right = _RANK_GRAPH_MARGIN_LEFT, width - _RANK_GRAPH_MARGIN_RIGHT
-    plot_top, plot_bottom = _RANK_GRAPH_MARGIN_TOP, height - _RANK_GRAPH_MARGIN_BOTTOM
+    plot_top, plot_bottom = _RANK_GRAPH_MARGIN_TOP + summary_offset, height - _RANK_GRAPH_MARGIN_BOTTOM
     plot_width = plot_right - plot_left
     plot_height = plot_bottom - plot_top
     # 一番左の点がプロット領域の左端に接しないよう、内側に寄せた左端を使う
@@ -464,15 +562,20 @@ def _render_rank_graph_svg(history: list[dict]) -> str:
     coords = [(x_at(i), y_at(point["rank_after"])) for i, point in enumerate(history)]
 
     polyline_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
+    # Issue #313: エリアチャート化。折れ線と同じ座標列を使い、右端・左端からプロット
+    # 領域の底辺まで下ろして閉じた多角形にする(線・点より先に描画し背面に敷く)
+    area_points = f"{polyline_points} {coords[-1][0]:.1f},{plot_bottom:.1f} {coords[0][0]:.1f},{plot_bottom:.1f}"
+    area_svg = [f'<polygon points="{area_points}" class="rank-graph-area" />']
     line_svg = [f'<polyline points="{polyline_points}" class="rank-graph-line" />']
 
     markers = [f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" class="rank-graph-point" />' for x, y in coords]
 
     return (
-        f"{svg_open}{panel_svg}{title_svg}"
+        f"{svg_open}{panel_svg}{title_svg}{summary_svg}"
         f"{''.join(y_axis_svg)}"
         f"{frame_svg}"
         f"{''.join(x_axis_svg)}"
+        f"{''.join(area_svg)}"
         f"{''.join(line_svg)}"
         f"{''.join(markers)}"
         "</svg>"
@@ -1147,7 +1250,8 @@ def create_app(db_path: Path) -> FastAPI:
     @app.get("/overlay/rank-graph")
     def overlay_rank_graph(request: Request):
         history = _fetch_rank_history(db_path)
-        svg = _render_rank_graph_svg(history)
+        summary = _fetch_rank_graph_summary(db_path)
+        svg = _render_rank_graph_svg(history, summary)
         context = {
             "svg": svg,
             "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,

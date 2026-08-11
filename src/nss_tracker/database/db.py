@@ -654,6 +654,25 @@ def fetch_recent_matches(conn: sqlite3.Connection, limit: int) -> list[sqlite3.R
     return list(reversed(rows))
 
 
+def fetch_latest_rank_after(conn: sqlite3.Connection) -> Optional[float]:
+    """直近の確定済みrank_afterを返す(Issue #313、ランク推移グラフの「現在のランク」用)。
+
+    配信セッションで絞り込まない全期間のうち最新の1件。該当が1件も無ければNoneを返す。
+    """
+    row = conn.execute("SELECT rank_after FROM matches WHERE rank_after IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+    return row["rank_after"] if row is not None else None
+
+
+def fetch_max_rank_after(conn: sqlite3.Connection) -> Optional[float]:
+    """全期間のrank_afterの最大値を返す(Issue #313、ランク推移グラフの「最高ランク」用)。
+
+    RANK_GRAPH_MATCH_LIMITによるグラフの表示範囲とは独立に、DB全体から集計する
+    (ユーザー確認済み)。該当が1件も無ければNoneを返す。
+    """
+    row = conn.execute("SELECT MAX(rank_after) AS max_rank FROM matches").fetchone()
+    return row["max_rank"]
+
+
 def fetch_matches_for_session(conn: sqlite3.Connection, session_id: int) -> list[sqlite3.Row]:
     """指定した配信セッションに属する試合を記録順(id昇順)で取得する。
 
