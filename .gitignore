@@ -11,6 +11,7 @@ venv/
 fixtures/screenshots/*.png
 fixtures/**/*.mp4
 fixtures/ocr_debug/**/*.png
+fixtures/web_reference/
 test_frame_ffmpeg.png
 capture_stream_test_last_frame.png
 
