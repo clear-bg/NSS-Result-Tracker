@@ -413,8 +413,9 @@ def _rank_graph_summary_svg(summary: dict, width: int) -> str:
     """統計タイル(現在のランク・最高ランク・配信開始時のランク)3つを横並びで描画する(Issue #313)。
 
     タイトルとグラフ本体の間、_RANK_GRAPH_SUMMARY_HEIGHT分の帯に収める。
-    数値は既にDB側でCHECK制約により小数第2位までに丸められているため、
-    ここでは`:g`で末尾の不要な0を落とすだけにする(例: 41.0 -> "41")。
+    数値は常に小数第2位まで0埋めで表示する(例: 41.0 -> "41.00"、41.3 -> "41.30")。
+    以前は`:g`で末尾の0を落としていたが、整数ぴったりの値が44のように桁数の
+    異なる表示になり読みにくいというフィードバックを受けて統一した(ユーザー確認済み)。
 
     3つ目のタイルは、増減値(delta)だけを大きく出す案だと配信開始時点の
     ランク自体がどこにも残らず分かりにくいというフィードバックを受け、
@@ -423,12 +424,12 @@ def _rank_graph_summary_svg(summary: dict, width: int) -> str:
     ="middle"がテキスト全体を1つの塊としてセンタリングする性質を利用して
     数値+増減値をまとめて中央寄せしている)。
     """
-    current_text = f'{summary["current_rank"]:g}'
+    current_text = f'{summary["current_rank"]:.2f}'
     max_rank = summary["max_rank"]
-    max_text = f"{max_rank:g}" if max_rank is not None else "-"
-    session_start_text = f'{summary["session_start_rank"]:g}'
+    max_text = f"{max_rank:.2f}" if max_rank is not None else "-"
+    session_start_text = f'{summary["session_start_rank"]:.2f}'
     delta = summary["delta"]
-    delta_text = f"+{delta:g}" if delta >= 0 else f"{delta:g}"
+    delta_text = f"+{delta:.2f}" if delta >= 0 else f"{delta:.2f}"
     if delta > 0:
         delta_class = "rank-graph-stat-delta-up"
     elif delta < 0:

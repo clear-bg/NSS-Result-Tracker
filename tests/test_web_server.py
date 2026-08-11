@@ -570,10 +570,11 @@ def test_render_rank_graph_svg_with_summary_shows_three_stat_tiles():
     assert ">現在のランク<" in svg
     assert ">最高ランク<" in svg
     assert ">配信開始時<" in svg
-    assert 'class="rank-graph-stat-value">15<' in svg
-    assert 'class="rank-graph-stat-value">22.5<' in svg
-    assert 'class="rank-graph-stat-value">12<' in svg
-    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-up" dx="6">+3<' in svg
+    # Issue #(今回のフィードバック): 整数ぴったりの値でも小数第2位まで0埋めで表示する
+    assert 'class="rank-graph-stat-value">15.00<' in svg
+    assert 'class="rank-graph-stat-value">22.50<' in svg
+    assert 'class="rank-graph-stat-value">12.00<' in svg
+    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-up" dx="6">+3.00<' in svg
 
 
 def test_render_rank_graph_svg_summary_delta_down_uses_down_color():
@@ -581,8 +582,8 @@ def test_render_rank_graph_svg_summary_delta_down_uses_down_color():
 
     svg = _render_rank_graph_svg(_continuous_history([10]), summary)
 
-    assert 'class="rank-graph-stat-value">12.5<' in svg
-    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-down" dx="6">-2.5<' in svg
+    assert 'class="rank-graph-stat-value">12.50<' in svg
+    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-down" dx="6">-2.50<' in svg
 
 
 def test_render_rank_graph_svg_summary_delta_zero_uses_neutral_color():
@@ -591,7 +592,7 @@ def test_render_rank_graph_svg_summary_delta_zero_uses_neutral_color():
 
     svg = _render_rank_graph_svg(_continuous_history([10]), summary)
 
-    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-neutral" dx="6">+0<' in svg
+    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-neutral" dx="6">+0.00<' in svg
     assert "rank-graph-stat-delta-up" not in svg
     assert "rank-graph-stat-delta-down" not in svg
 
