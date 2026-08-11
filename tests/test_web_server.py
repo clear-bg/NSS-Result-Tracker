@@ -24,6 +24,7 @@ from nss_tracker.web.server import (
     _RANK_GRAPH_MARGIN_RIGHT,
     _RANK_GRAPH_TITLE,
     _RANK_GRAPH_VIEWBOX_HEIGHT,
+    _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE,
     _RANK_GRAPH_VIEWBOX_WIDTH,
     _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS,
     _aggregate_goal_stats,
@@ -472,8 +473,9 @@ def test_render_rank_graph_svg_draws_vertical_gridlines_at_x_ticks():
 
 
 def test_render_rank_graph_svg_adds_half_step_minor_gridlines_when_step_is_one():
-    """Issue #146: 目盛り間隔が1(通常運用)のとき、整数目盛りの間に0.5刻みの
-    補助グリッド線を追加する。ラベル・目盛り線自体は増やさない。
+    """Issue #146: 目盛り間隔が1(通常運用)かつ、Issue #336の
+    _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGEより範囲が広いとき、整数目盛りの間に
+    0.5刻みの補助グリッド線を追加する。ラベル・目盛り線自体は増やさない。
     """
     history = _continuous_history([10, 12])
 
@@ -481,9 +483,25 @@ def test_render_rank_graph_svg_adds_half_step_minor_gridlines_when_step_is_one()
 
     axis_min, axis_max = _rank_graph_y_bounds(10, 12)
     assert _rank_graph_y_tick_step(axis_max - axis_min) == 1
+    assert axis_max - axis_min > _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE
     assert svg.count('class="rank-graph-gridline-minor"') == axis_max - axis_min
     # 0.5刻みの補助線に対応するラベル(小数)は追加しない
     assert ".5<" not in svg
+
+
+def test_render_rank_graph_svg_shows_half_step_labels_for_narrow_range():
+    """Issue #336: 縦軸の範囲が_RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE以下と狭いときは、
+    0.5刻みも(補助線ではなく)ラベル・短い目盛り線付きの通常の目盛りとして表示する。
+    """
+    history = _continuous_history([10, 11])
+
+    svg = _render_rank_graph_svg(history)
+
+    axis_min, axis_max = _rank_graph_y_bounds(10, 11)
+    assert axis_max - axis_min <= _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE
+    assert 'class="rank-graph-gridline-minor"' not in svg
+    for tick_value in range(axis_min, axis_max):
+        assert f'>{tick_value + 0.5:g}<' in svg
 
 
 def test_render_rank_graph_svg_omits_minor_gridlines_when_step_widens():

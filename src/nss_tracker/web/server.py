@@ -326,6 +326,13 @@ _RANK_GRAPH_Y_TICK_COUNT_AT_MAX_HEIGHT = 10
 _RANK_GRAPH_Y_PX_PER_UNIT = (
     _RANK_GRAPH_VIEWBOX_HEIGHT - _RANK_GRAPH_MARGIN_TOP - _RANK_GRAPH_MARGIN_BOTTOM
 ) / (_RANK_GRAPH_Y_TICK_COUNT_AT_MAX_HEIGHT - 1)
+# Issue #336: 縦軸の範囲(axis_range)が狭いとき、0.5刻みの補助線(rank-graph-gridline-minor、
+# ラベル無し)だけでは見栄えが物足りないというフィードバックを受け、範囲がこの値以下のときは
+# 0.5刻みも通常の目盛り(ラベル・短い目盛り線付き)として表示するようにした
+# (_render_rank_graph_svg参照)。値が大きいほど0.5刻みラベル同士の間隔が狭まり窮屈になる
+# ため(axis_range=6で約22px、7で約19pxとプレビューで確認し、7は詰まって見えると
+# ユーザーが判断)、余裕を持って読める範囲としてユーザーと相談の上3に決定した
+_RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE = 3
 
 
 def _rank_graph_y_tick_step(axis_range: int, max_tick_count: float = _RANK_GRAPH_Y_TICK_MAX_COUNT) -> int:
@@ -533,13 +540,31 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None) 
     # 広がった場合(_rank_graph_y_tick_step参照)は追加しない(ユーザーとの相談で決定。
     # #136対応後はこの手の外れ値自体が起こりにくくなる見込みのため、実運用上は
     # ほぼ常にこの分岐に入る)
+    # Issue #336: さらに、縦軸の範囲が_RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE以下と
+    # 狭いときは、0.5刻みもラベル・短い目盛り線付きの通常の目盛りとして表示する
+    # (見た目が物足りないというフィードバックを受けた対応。範囲が広いとラベル同士が
+    # 詰まって見えるため、狭い範囲のみに限定している)
     if y_tick_step == 1:
+        show_half_step_labels = axis_range <= _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE
         for major_value in range(axis_min, axis_max):
-            y = y_at(major_value + 0.5)
-            y_axis_svg.append(
-                f'<line x1="{plot_left}" y1="{y:.1f}" x2="{plot_right}" y2="{y:.1f}" '
-                'class="rank-graph-gridline-minor" />'
-            )
+            half_value = major_value + 0.5
+            y = y_at(half_value)
+            if show_half_step_labels:
+                y_axis_svg.append(
+                    f'<line x1="{plot_left}" y1="{y:.1f}" x2="{plot_right}" y2="{y:.1f}" class="rank-graph-gridline" />'
+                )
+                y_axis_svg.append(
+                    f'<line x1="{plot_left - 5}" y1="{y:.1f}" x2="{plot_left}" y2="{y:.1f}" class="rank-graph-tick" />'
+                )
+                y_axis_svg.append(
+                    f'<text x="{plot_left - 8}" y="{y:.1f}" text-anchor="end" dominant-baseline="middle" '
+                    f'class="rank-graph-tick-label">{half_value:g}</text>'
+                )
+            else:
+                y_axis_svg.append(
+                    f'<line x1="{plot_left}" y1="{y:.1f}" x2="{plot_right}" y2="{y:.1f}" '
+                    'class="rank-graph-gridline-minor" />'
+                )
 
     # 枠(プロット領域を囲む矩形)
     frame_svg = (
