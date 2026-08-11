@@ -19,9 +19,12 @@
    (rank_graph.cssの.rank-graph-panel等、Issue #113/#336)と同じ色・不透明度を
    踏襲した(あちらはSVGの<rect>、こちらは通常のHTML/CSSのため実装方法は異なる)。
    勝率見出し行が右寄せ(margin-left: auto)でパネル幅いっぱいに広がる前提の
-   レイアウトのため、幅は固定する(モックアップで確定したウィジェット幅と揃えた)。 */
+   レイアウトのため、幅は固定する。パネル追加時の余白(padding)分だけ内側の
+   コンテンツ幅がモックアップ確定時より狭くなっていたため、ランク推移グラフの
+   SVG幅(786px、_RANK_GRAPH_VIEWBOX_WIDTH)に近い780pxまで広げた
+   (2026-08-12、ユーザーからの見た目フィードバックを反映)。 */
 .goal-stats-winrate-panel {
-    width: 620px;
+    width: 780px;
     box-sizing: border-box;
     background: rgba(46, 53, 64, 0.72);
     border: 1px solid rgba(255, 255, 255, 0.12);
