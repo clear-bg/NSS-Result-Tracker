@@ -1042,9 +1042,8 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
 # 新しいoverlayルートを追加した際にこの辞書への追記を忘れると、_overlay_widget_links()が
 # 起動時(create_app呼び出し時)にRuntimeErrorで気づける設計にした
 _OVERLAY_WIDGET_LABELS = {
-    "/overlay/winrate": "勝率",
+    "/overlay/goal-stats-winrate": "ゴール/アシスト統計・勝率",
     "/overlay/rank-graph": "ランク推移グラフ",
-    "/overlay/goal-stats": "ゴール/アシスト統計",
     "/overlay/match-log": "直近試合結果ログ",
     "/overlay/vs-rank-comparison": "対戦相手ランク比較",
     "/overlay/rank-delta-distribution": "ランク増減分布",
@@ -1188,10 +1187,6 @@ def create_app(db_path: Path) -> FastAPI:
     def matches_count() -> dict:
         return _fetch_matches_count(db_path)
 
-    @app.get("/api/winrate")
-    def winrate() -> dict:
-        return _fetch_winrate(db_path)
-
     @app.get("/")
     def index(request: Request):
         counts = _fetch_matches_count(db_path)
@@ -1271,19 +1266,6 @@ def create_app(db_path: Path) -> FastAPI:
             raise HTTPException(status_code=404, detail="クリップが見つかりません")
         return FileResponse(clip_path, media_type="video/mp4")
 
-    @app.get("/overlay/winrate")
-    def overlay_winrate(request: Request):
-        winrate_data = _fetch_winrate(db_path)
-        context = {
-            "session": winrate_data["session"],
-            "session_win_rate_text": _format_win_rate_text(winrate_data["session"]),
-            "cumulative": winrate_data["cumulative"],
-            "cumulative_win_rate_text": _format_win_rate_text(winrate_data["cumulative"]),
-            "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
-            "debug_bg_style": _overlay_debug_bg_style(request),
-        }
-        return _TEMPLATES.TemplateResponse(request, "overlay_winrate.html", context)
-
     @app.get("/api/rank-history")
     def rank_history() -> dict:
         return {"matches": _fetch_rank_history(db_path)}
@@ -1300,24 +1282,25 @@ def create_app(db_path: Path) -> FastAPI:
         }
         return _TEMPLATES.TemplateResponse(request, "overlay_rank_graph.html", context)
 
-    @app.get("/api/goal-stats")
-    def goal_stats() -> dict:
-        return {"players": _fetch_goal_stats(db_path)}
-
-    @app.get("/overlay/goal-stats")
-    def overlay_goal_stats(request: Request):
+    @app.get("/overlay/goal-stats-winrate")
+    def overlay_goal_stats_winrate(request: Request):
         players = _fetch_goal_stats(db_path)
         # 許可リストが1名(=配信者本人)だけの場合、プレイヤー名を表示する意味が
         # 無い(自明なため)上、配信画面に自分の実名を出したくない場合もあるため、
         # 名前を出さない簡略表示に切り替える(ユーザーとの相談で決定)
         single_player_mode = len(get_allowed_players()) == 1
+        winrate_data = _fetch_winrate(db_path)
         context = {
             "players": players,
             "single_player_mode": single_player_mode,
+            "session": winrate_data["session"],
+            "session_win_rate_text": _format_win_rate_text(winrate_data["session"]),
+            "cumulative": winrate_data["cumulative"],
+            "cumulative_win_rate_text": _format_win_rate_text(winrate_data["cumulative"]),
             "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
             "debug_bg_style": _overlay_debug_bg_style(request),
         }
-        return _TEMPLATES.TemplateResponse(request, "overlay_goal_stats.html", context)
+        return _TEMPLATES.TemplateResponse(request, "overlay_goal_stats_winrate.html", context)
 
     @app.get("/api/match-log")
     def match_log() -> dict:

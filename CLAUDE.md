@@ -145,9 +145,11 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 
 どれが最新の試合か一見して分からない問題への対応として、並び順反転(最新を左に)・最新のみ拡大+リング・末尾に矢印表示、の4案をArtifactでモックアップし黒背景(`?debug_bg=1`相当)で見比べてもらった。並び順(左が最古)は変えずに済み、時系列グラフ等の他ウィジェットとも向きが揃う「不透明度のグラデーション」が選ばれた。当初は全件を通した線形グラデーション(最新のみ1.0)だったが、「新しい方の半分ははっきり見せたい」という追加要望を受け、`_build_match_log_badges()`は件数の前半`count // 2`件(fade_count)だけを`_MATCH_LOG_OLDEST_OPACITY`から1.0まで線形にフェードさせ、後半(最新側)は常にopacity 1.0のまま固定する方式に変更した(2026-08-07)。fade_countが0〜1件の少数時は全件/フェード対象の1件がそのまま1.0または`_MATCH_LOG_OLDEST_OPACITY`になる。`_MATCH_LOG_OLDEST_OPACITY`の値自体も実機確認で「一番暗いバッジが暗すぎる」というフィードバックを受け0.3→0.5に調整済み(2026-08-07)。
 
-### 勝率ウィジェットの表示内容(Issue #261)
+### 得点/アシスト・勝率ウィジェットの表示内容(Issue #261/#339)
 
-`/overlay/winrate`は配信セッション・累計の試合数/勝敗数/勝率のみを表示する。以前は右側に許可リストプレイヤー全員分の得点・アシスト合計(`GOAL_ASSIST_TOTALS_SCOPE`、Issue #132)も表示していたが、`/overlay/goal-stats`ウィジェットと表示内容が重複していたため削除した(ユーザーとの相談で決定)。`GOAL_ASSIST_TOTALS_SCOPE`設定項目・`_fetch_goal_assist_totals()`・`/api/goal-assist-totals`エンドポイントは、この表示のためだけに存在していたため他に使い手が無くなり、あわせて削除した。
+`/overlay/winrate`は配信セッション・累計の試合数/勝敗数/勝率のみを表示する方針だった(Issue #261)。以前は右側に許可リストプレイヤー全員分の得点・アシスト合計(`GOAL_ASSIST_TOTALS_SCOPE`、Issue #132)も表示していたが、`/overlay/goal-stats`ウィジェットと表示内容が重複していたため削除した(ユーザーとの相談で決定)。`GOAL_ASSIST_TOTALS_SCOPE`設定項目・`_fetch_goal_assist_totals()`・`/api/goal-assist-totals`エンドポイントは、この表示のためだけに存在していたため他に使い手が無くなり、あわせて削除した。
+
+Issue #339(得点/アシスト・勝率ウィジェットの見た目見直し、方針未確定)の第一段階として、まず別ウィジェットだった`/overlay/goal-stats`と`/overlay/winrate`を`/overlay/goal-stats-winrate`という1つのウィジェットに統合した(表示内容・テキスト形式は変更せず、単純に1ページへまとめただけ。見た目の作り込みは方針が固まってから改めて着手する想定)。旧`/overlay/goal-stats`・`/overlay/winrate`ルート、対応するテンプレート(`overlay_goal_stats.html`/`overlay_winrate.html`)、および`/api/winrate`・`/api/goal-stats`エンドポイント(他に使い手が無かったため)は削除した。`_fetch_winrate()`・`_fetch_goal_stats()`自体は内部関数として残り、新ルートが両方呼び出す。
 
 ### `src/` のモジュール構成
 
