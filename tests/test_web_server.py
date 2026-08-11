@@ -34,6 +34,7 @@ from nss_tracker.web.server import (
     _build_match_log_badges,
     _compute_box_stats,
     _convert_rank_tier_to_unified_scale,
+    _fetch_rank_graph_summary,
     _format_vs_rank_value,
     _overlay_widget_links,
     _percentile,
@@ -540,6 +541,159 @@ def test_render_rank_graph_svg_first_point_stops_short_of_left_edge():
 
     expected_left_x = _RANK_GRAPH_MARGIN_LEFT + _RANK_GRAPH_LEFT_PADDING
     assert f'cx="{expected_left_x:.1f}"' in svg
+
+
+def test_render_rank_graph_svg_without_summary_shows_no_stat_tiles():
+    history = _continuous_history([10, 20, 15])
+
+    svg = _render_rank_graph_svg(history)
+
+    assert 'class="rank-graph-stat-value"' not in svg
+    assert 'class="rank-graph-stat-label"' not in svg
+
+
+def test_render_rank_graph_svg_with_summary_shows_three_stat_tiles():
+    """Issue #313: 現在のランク・最高ランク・配信開始時のランクの3タイルを表示する(案B)。
+
+    3つ目のタイルは配信開始時のランク自体を常に表示し、その右に増減値を
+    小さく添える(ユーザーフィードバックにより、増減値だけを大きく出す案から変更)。
+    """
+    history = _continuous_history([10, 20, 15])
+    summary = {"current_rank": 15.0, "max_rank": 22.5, "session_start_rank": 12.0, "delta": 3.0}
+
+    svg = _render_rank_graph_svg(history, summary)
+
+    assert svg.count('class="rank-graph-stat-label"') == 3
+    assert ">現在のランク<" in svg
+    assert ">最高ランク<" in svg
+    assert ">配信開始時<" in svg
+    assert 'class="rank-graph-stat-value">15<' in svg
+    assert 'class="rank-graph-stat-value">22.5<' in svg
+    assert 'class="rank-graph-stat-value">12<' in svg
+    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-up" dx="6">+3<' in svg
+
+
+def test_render_rank_graph_svg_summary_delta_down_uses_down_color():
+    summary = {"current_rank": 10.0, "max_rank": 20.0, "session_start_rank": 12.5, "delta": -2.5}
+
+    svg = _render_rank_graph_svg(_continuous_history([10]), summary)
+
+    assert 'class="rank-graph-stat-value">12.5<' in svg
+    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-down" dx="6">-2.5<' in svg
+
+
+def test_render_rank_graph_svg_summary_delta_zero_uses_neutral_color():
+    """今のセッションでまだランクを賭けた試合が無い場合の代わりの表示(ユーザー確認済み)。"""
+    summary = {"current_rank": 10.0, "max_rank": 20.0, "session_start_rank": 10.0, "delta": 0.0}
+
+    svg = _render_rank_graph_svg(_continuous_history([10]), summary)
+
+    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-neutral" dx="6">+0<' in svg
+    assert "rank-graph-stat-delta-up" not in svg
+    assert "rank-graph-stat-delta-down" not in svg
+
+
+def test_render_rank_graph_svg_summary_with_no_max_rank_shows_dash():
+    summary = {"current_rank": 10.0, "max_rank": None, "session_start_rank": 10.0, "delta": 0.0}
+
+    svg = _render_rank_graph_svg(_continuous_history([10]), summary)
+
+    assert ">-<" in svg
+
+
+def test_render_rank_graph_svg_with_no_data_but_summary_still_shows_stat_tiles():
+    """historyが空でもsummary(DB全体からの集計)は独立して出せるため、統計欄だけ表示する。"""
+    summary = {"current_rank": 10.0, "max_rank": 20.0, "session_start_rank": 10.0, "delta": 0.0}
+
+    svg = _render_rank_graph_svg([], summary)
+
+    assert "データがありません" in svg
+    assert 'class="rank-graph-stat-label"' in svg
+
+
+def test_fetch_rank_graph_summary_returns_none_when_no_confirmed_rank(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    assert _fetch_rank_graph_summary(db_path) is None
+
+
+def test_fetch_rank_graph_summary_uses_session_start_rank_before(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    old_session_id = db.create_session(conn)
+    _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=10, rank_after=11, league_changed=None, detected_at=now_jst()),
+        session_id=old_session_id,
+    )
+    current_session_id = db.create_session(conn)
+    _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=11, rank_after=13, league_changed=None, detected_at=now_jst()),
+        session_id=current_session_id,
+    )
+    _save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=13, rank_after=12.5, league_changed=None, detected_at=now_jst()),
+        session_id=current_session_id,
+    )
+    conn.close()
+
+    summary = _fetch_rank_graph_summary(db_path)
+
+    assert summary == {
+        "current_rank": 12.5,
+        "max_rank": 13.0,
+        "session_start_rank": 11.0,
+        "delta": 1.5,
+    }
+
+
+def test_fetch_rank_graph_summary_falls_back_to_zero_delta_when_session_has_no_ranked_match(tmp_path: Path):
+    """今の配信セッションでまだランクを賭けた試合が無い場合、現在のランクをそのまま
+    配信開始時のランクとみなし、増減を0として扱う(ユーザー確認済み)。
+    """
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    old_session_id = db.create_session(conn)
+    _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=10, rank_after=11, league_changed=None, detected_at=now_jst()),
+        session_id=old_session_id,
+    )
+    db.create_session(conn)  # 今のセッション、まだランクを賭けた試合が無い
+    conn.close()
+
+    summary = _fetch_rank_graph_summary(db_path)
+
+    assert summary == {
+        "current_rank": 11.0,
+        "max_rank": 11.0,
+        "session_start_rank": 11.0,
+        "delta": 0.0,
+    }
+
+
+def test_overlay_rank_graph_page_includes_summary_stats(tmp_path: Path):
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=10, rank_after=12, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/rank-graph")
+
+    assert response.status_code == 200
+    assert "現在のランク" in response.text
+    assert "最高ランク" in response.text
+    assert "配信開始時" in response.text
 
 
 def test_rank_graph_x_axis_max_extends_beyond_uneven_match_count():
