@@ -244,7 +244,16 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "rank-entry-clip-button" + (clip.match_id === selectedMatchId ? " rank-entry-clip-button-active" : "");
-      button.textContent = clip.recency_label;
+
+      const content = document.createElement("span");
+      content.className = "rank-entry-clip-button-content";
+      const confirmed = clip.rank_after !== null && clip.rank_after !== undefined;
+      const dot = document.createElement("span");
+      dot.className = "rank-entry-clip-status-dot " + (confirmed ? "rank-entry-clip-status-dot-confirmed" : "rank-entry-clip-status-dot-unconfirmed");
+      content.appendChild(dot);
+      content.appendChild(document.createTextNode(clip.recency_label));
+      button.appendChild(content);
+
       button.addEventListener("click", function () {
         userSelected = true;
         selectClip(clip.match_id);
