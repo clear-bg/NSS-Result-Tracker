@@ -18,5 +18,19 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked
 
+      - name: Set up .env
+        # config.pyはALLOWED_PLAYERSを除く設定項目にフォールバック値を持たず、
+        # 未設定だとConfigErrorで失敗する(Issue #89)。.env.exampleはこの前提で
+        # 「コピーするだけでそのまま動く」実際の初期値が入っているプレースホルダー
+        # (他プレイヤーの実名等は含まない)のため、CI環境にもそのまま使える。
+        run: cp .env.example .env
+
       - name: Run tests
+        env:
+          # .env.exampleのRANK_AFTER_CORRECTION_ENABLED=trueは新規セットアップ向けの
+          # 案内用の値で、多くのテストは実運用値のfalse(CLAUDE.md記載、Issue #295で
+          # 精度懸念により無効化)を前提に書かれている。python-dotenvのload_dotenv()は
+          # デフォルトで既存の環境変数を上書きしないため、ここでジョブの環境変数として
+          # 明示的に渡すだけで.envの値より優先される。
+          RANK_AFTER_CORRECTION_ENABLED: "false"
         run: uv run pytest -v
