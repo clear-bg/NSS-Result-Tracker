@@ -287,8 +287,10 @@ _RANK_GRAPH_TITLE = "ランク推移"
 # Issue #313: 統計タイル(現在のランク・最高ランク・配信開始比)を表示する場合に
 # 追加で確保する高さ。グラフ本体の縦幅(_RANK_GRAPH_VIEWBOX_HEIGHT)とは別枠で
 # 上乗せする(目盛り密度の計算に影響させないため)。Issue #336でタイトル・統計タイルの
-# 間の余白とラベル文字サイズを拡大したことに合わせて56→66に広げた
-_RANK_GRAPH_SUMMARY_HEIGHT = 66
+# 間の余白とラベル文字サイズを拡大したことに合わせて56→66に広げ、さらに実配信画面での
+# 確認を経てタイトルと統計タイルの間の余白をもう一段広げたい(隙間36→56)という要望を
+# 受けて66→86に広げた
+_RANK_GRAPH_SUMMARY_HEIGHT = 86
 # 一番左の点がプロット領域の左端(枠)に接しないための余白(px)。右側は
 # _rank_graph_x_axis_maxで軸自体の右端(試合番号の上限)を実際の試合数より
 # 広げることで余白を作る(縦軸の_rank_graph_y_boundsと同じ考え方)ため、
@@ -430,10 +432,10 @@ def _rank_graph_summary_svg(summary: dict, width: int) -> str:
     tile_centers = (width / 6, width / 2, width * 5 / 6)
     parts = []
     for label, value_svg, cx in zip(labels, values_svg, tile_centers):
-        parts.append(f'<text x="{cx:.1f}" y="74" text-anchor="middle" class="rank-graph-stat-label">{label}</text>')
-        parts.append(f'<text x="{cx:.1f}" y="106" text-anchor="middle">{value_svg}</text>')
+        parts.append(f'<text x="{cx:.1f}" y="94" text-anchor="middle" class="rank-graph-stat-label">{label}</text>')
+        parts.append(f'<text x="{cx:.1f}" y="126" text-anchor="middle">{value_svg}</text>')
     for x in (width / 3, width * 2 / 3):
-        parts.append(f'<line x1="{x:.1f}" y1="62" x2="{x:.1f}" y2="104" class="rank-graph-stat-divider" />')
+        parts.append(f'<line x1="{x:.1f}" y1="82" x2="{x:.1f}" y2="124" class="rank-graph-stat-divider" />')
     return "".join(parts)
 
 
