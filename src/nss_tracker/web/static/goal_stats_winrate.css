@@ -21,10 +21,11 @@
    勝率見出し行が右寄せ(margin-left: auto)でパネル幅いっぱいに広がる前提の
    レイアウトのため、幅は固定する。パネル追加時の余白(padding)分だけ内側の
    コンテンツ幅がモックアップ確定時より狭くなっていたため、ランク推移グラフの
-   SVG幅(786px、_RANK_GRAPH_VIEWBOX_WIDTH)に近い780pxまで広げた
+   SVG幅(786px、_RANK_GRAPH_VIEWBOX_WIDTH)に近い780pxまで広げた後、
+   さらに横長にしたいというフィードバックを受け900pxまで広げた
    (2026-08-12、ユーザーからの見た目フィードバックを反映)。 */
 .goal-stats-winrate-panel {
-    width: 780px;
+    width: 900px;
     box-sizing: border-box;
     background: rgba(46, 53, 64, 0.72);
     border: 1px solid rgba(255, 255, 255, 0.12);
@@ -44,7 +45,7 @@
 
 .goal-stats-winrate-header .tag {
     opacity: 0.8;
-    font-size: 0.55em;
+    font-size: 0.82em;
 }
 
 .goal-stats-winrate-header .total {
@@ -57,7 +58,14 @@
     opacity: 0.85;
     margin-left: auto;
     font-variant-numeric: tabular-nums;
-    font-size: 0.76em;
+}
+
+.goal-stats-winrate-header .rate-label {
+    font-size: 0.82em;
+}
+
+.goal-stats-winrate-header .rate-value {
+    font-size: 32px;
 }
 
 .goal-stats-winrate-track {
@@ -100,7 +108,7 @@
     gap: 22px;
     opacity: 0.9;
     font-variant-numeric: tabular-nums;
-    font-size: 0.71em;
+    font-size: 32px;
     margin-top: 8px;
 }
 
@@ -137,7 +145,7 @@
 
 .goal-stats-winrate-player-name {
     opacity: 0.85;
-    font-size: 0.71em;
+    font-size: 0.82em;
 }
 
 .goal-stats-winrate-stat {
@@ -148,16 +156,16 @@
 
 .goal-stats-winrate-stat-label {
     opacity: 0.9;
-    font-size: 0.71em;
+    font-size: 0.82em;
 }
 
 .goal-stats-winrate-stat-num {
     font-weight: 800;
     font-variant-numeric: tabular-nums;
-    font-size: 0.82em;
+    font-size: 32px;
 }
 
 .goal-stats-winrate-empty {
-    font-size: 0.71em;
+    font-size: 0.82em;
     opacity: 0.75;
 }
