@@ -56,7 +56,6 @@ from nss_tracker.config import (
     get_youtube_chat_dive_time_enabled,
 )
 from nss_tracker.database import db
-from nss_tracker.detection.goal import _get_name_reader
 from nss_tracker.detection.motion import StabilityMonitor, is_full_blackout
 from nss_tracker.detection.rank_ocr import (
     GAUGE_ROI_ENLARGED,
@@ -79,6 +78,7 @@ from nss_tracker.state.match_state import (
     MatchResult,
     MatchStateMachine,
     VsScreenEvent,
+    _run_goal_ocr,
 )
 from nss_tracker.timeutil import JST, now_jst
 from nss_tracker.web.runner import start_web_server_thread
@@ -179,6 +179,12 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     モジュールdocstring参照)。ワーカープロセスは`MatchStateMachine`のライフタイム
     (=アプリのセッション全体)を通じて使い回されるため、モデル読み込みのコールド
     スタートは実質的に最初の1回だけで済む。
+
+    Issue #327: ゴール検知のOCR一式(_run_goal_ocr、PaddleOCR)も同じ理由で
+    ProcessPoolExecutorを渡す。tier_recheck_executorとは別のプロセスに分ける
+    (1つのワーカープロセスで直列化してしまうと、ゴールOCRと帯番号再チェックが
+    同時期に発生した場合に一方が他方を待たされ、結局メインループの遅延要因を
+    プロセスの外に移しただけになるため)。
     """
     confirm_frames = round(fps * 1.0)
     # Issue #67: 通常プレイ中の背景誤検知(実測1.3秒程度持続)がデバウンス(1秒)を
@@ -198,6 +204,9 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     # (_warmup_ocr_engines()と同じ狙いだが、こちらは別プロセスで実行されるため
     # メインプロセス側のフレーム取得を一切妨げない)
     tier_recheck_executor.submit(read_rank, np.zeros((1080, 1920, 3), dtype=np.uint8), RANK_NUMBER_ROI_ENLARGED)
+    goal_ocr_executor = ProcessPoolExecutor(max_workers=1)
+    # Issue #327: tier_recheck_executorと同じ理由でウォームアップを前倒しする
+    goal_ocr_executor.submit(_run_goal_ocr, np.zeros((1080, 1920, 3), dtype=np.uint8))
     return MatchStateMachine(
         banner_confirm_frames=banner_confirm_frames,
         banner_confirm_frames_after_match_end=confirm_frames,
@@ -210,6 +219,7 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
         match_end_confirm_frames=match_end_confirm_frames,
         demotion_label_confirm_frames=confirm_frames,
         tier_recheck_executor=tier_recheck_executor,
+        goal_ocr_executor=goal_ocr_executor,
         league_change_grace_frames=round(fps * 5.0),
         rank_recheck_interval_frames=round(fps * 0.25),
         rank_tier_rescan_wait_frames=round(fps / 6),
@@ -315,10 +325,13 @@ def _warmup_ocr_engines() -> None:
     組み合わさって、ちょうどランクバッジの安定待ちが始まる直後というもっとも
     重要な数秒間分のフレームを丸ごと読み飛ばしてしまう。ループ開始前に
     済ませておくことでこれを避ける。
+
+    Issue #327: 得点者・アシスト名OCR(PaddleOCR、旧_get_name_reader())は
+    goal_ocr_executor(別プロセス)側に移したため、ここでのウォームアップは不要になった
+    (_make_match_state_machine()のgoal_ocr_executorウォームアップ投入を参照)。
     """
     logger.info("OCRエンジンを初期化しています(数秒かかります)")
     _get_reader()
-    _get_name_reader()
     _get_vs_rank_reader()
     logger.info("OCRエンジンの初期化が完了しました")
 

@@ -341,6 +341,40 @@ Issue #189のVS画面OCRとは異なり、`_finalize()`側で完了を待つこ�
 `ProcessPoolExecutor`はワーカーが別プロセスでモジュールを新規importするため
 モンキーパッチが効かず、本番用途のみに限定する理由でもある)。
 
+Issue #327: Issue #303と同じ種類の不具合が、ゴール検知(`_check_for_goal`)側でも
+実配信のテストで見つかった。得点者名パネルのラベル確認(`confirm_goal_text`)・
+得点者名(`read_scorer_name`)・アシスト名(`read_assist_name`)・オウンゴール判定
+(`is_own_goal_event`)を毎回同期的に呼んでおり、1回のゴール検知で最大6回程度
+PaddleOCRを直列に呼ぶため、実測で数秒メインループをブロックしうる。ゴールは
+試合終了の直前に発生することも多く、このブロックが直後の結果バナー確定・
+暗転検知(`/rank-entry`用クリップの録画終了トリガー)の遅延につながり、
+本来は数秒〜十数秒で終わるはずのクリップ録画がほぼ毎回`MAX_DURATION_SECONDS`
+(`rank_entry_clips.py`、60秒)の安全策に張り付く事象として顕在化した。
+
+対策は`_run_goal_ocr()`として上記4関数の呼び出しを1つの関数にまとめ、
+`goal_ocr_executor`(`tier_recheck_executor`と同じ設計、本番はmain.pyが
+別の`ProcessPoolExecutor`を渡す。1つのワーカーを共有すると片方のOCRがもう
+片方を待たされてしまうため、tier_recheck_executorとは別プロセスにする)へ
+丸ごと投げる。`_run_goal_ocr()`をモジュール直下の関数として定義しているのは、
+(1)`ProcessPoolExecutor`がpickle参照のため通常のメソッド・クロージャにできない、
+(2)内部で呼ぶ`confirm_goal_text`等をこのモジュールの名前空間で解決させることで、
+既存テストの`monkeypatch.setattr(match_state_module, "confirm_goal_text", ...)`が
+そのまま効くようにするため(`detection.goal`側に置くとテストの差し替えが
+効かなくなる)。
+
+帯番号の定期再チェック(Issue #303)とは異なり、ゴール自体は取りこぼすと
+そのゴール1件が二度と記録されない(次の試合の`_pending_goals`に紛れ込ませて
+しまうのはさらに悪い)。そのため`_finalize()`は`_vs_ocr_thread.join()`と同じ
+考え方で、`_goal_ocr_future`が残っていれば完了を待ってから`_pending_goals`を
+`MatchResult`へ積む(`_poll_goal_ocr(wait=True)`)。通常時(`wait=False`)は
+`process_frame()`から状態に関わらず毎フレーム呼び、ブロックせずに結果が
+届いていれば取り込む。
+
+Issue #324/#325(/rank-entryの動画コントロール修正)の作業自体はこの遅延の
+原因ではないと切り分け済み(Issue #312で追加されたゲージ動画の毎フレーム処理は
+録画開始=`tracking_rank`突入後にしか走らないが、今回の遅延は`watching`状態中の
+結果バナー確定そのもので発生していた)。
+
 Issue #224: 試合終了時のOBSシーン切替(in_match=False)が、結果画面から離脱する
 フェード演出とタイミングが重なり、体感上早すぎるタイミングで発生する事象が
 実配信で確認された(Issue #223の調査中に発見)。実測(is_full_blackoutの
@@ -604,6 +638,42 @@ class GoalEvent:
     is_own_goal: bool = False
 
 
+class GoalOcrResult(NamedTuple):
+    """`_run_goal_ocr()`(Issue #327)の戻り値。confirmedがFalseの場合は誤検知として
+    扱い、他のフィールドは意味を持たない。
+    """
+
+    confirmed: bool
+    scorer: Optional[tuple[str, float]]
+    assist: Optional[tuple[str, float]]
+    is_own_goal: bool
+
+
+def _run_goal_ocr(frame: np.ndarray) -> GoalOcrResult:
+    """ゴール候補フレームに対するOCR一式(確認・得点者名・アシスト名・オウンゴール判定)を
+    まとめて実行する(Issue #327)。
+
+    以前は_check_for_goal()内でconfirm_goal_text/read_scorer_name/read_assist_name/
+    is_own_goal_eventを個別に同期呼び出ししており、1回のゴール検知で最大6回程度の
+    PaddleOCR呼び出しがメインループを直列にブロックしていた。Issue #303
+    (帯番号の定期再チェック)と同じ理由・同じ対策として、この一式を1つの関数に
+    まとめてgoal_ocr_executor(本番はProcessPoolExecutor)へ丸ごと投げられるようにした。
+    モジュール直下の関数として定義しているのは、(1)ProcessPoolExecutorがpickle経由で
+    参照するため通常のメソッド・クロージャにできない、(2)内部で呼ぶconfirm_goal_text等を
+    このモジュールの名前空間で解決させることで、既存テストの
+    `monkeypatch.setattr(match_state_module, "confirm_goal_text", ...)`が
+    そのまま効くようにするため(detection.goal側に置くとテストの差し替えが効かなくなる)。
+    """
+    if not confirm_goal_text(frame):
+        return GoalOcrResult(confirmed=False, scorer=None, assist=None, is_own_goal=False)
+    return GoalOcrResult(
+        confirmed=True,
+        scorer=read_scorer_name(frame),
+        assist=read_assist_name(frame),
+        is_own_goal=is_own_goal_event(frame),
+    )
+
+
 class VsScreenEvent(NamedTuple):
     """VS画面を確定した直後の1フレームだけ`pop_vs_screen_event()`が返す読み取り結果(Issue #145)。
 
@@ -660,6 +730,7 @@ class MatchStateMachine:
         obs_switch_delay_after_blackout_frames: int = DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_FRAMES,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
         tier_recheck_executor: Optional["concurrent.futures.Executor"] = None,
+        goal_ocr_executor: Optional["concurrent.futures.Executor"] = None,
     ) -> None:
         self._banner_confirm_frames = banner_confirm_frames
         self._banner_confirm_frames_after_match_end = banner_confirm_frames_after_match_end
@@ -681,6 +752,12 @@ class MatchStateMachine:
             tier_recheck_executor
             if tier_recheck_executor is not None
             else concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="tier-recheck")
+        )
+        # Issue #327: ゴール検知のOCR一式(_run_goal_ocr)用。考え方はtier_recheck_executorと同じ
+        self._goal_ocr_executor: concurrent.futures.Executor = (
+            goal_ocr_executor
+            if goal_ocr_executor is not None
+            else concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="goal-ocr")
         )
 
         self._state = _State.WATCHING
@@ -710,6 +787,9 @@ class MatchStateMachine:
         # 非同期実行するための状態(モジュールdocstring参照)。_tier_recheck_futureが
         # 非Noneの間は多重に投げない
         self._tier_recheck_future: Optional["concurrent.futures.Future"] = None
+        # Issue #327: ゴール検知のOCR一式(_run_goal_ocr)を_goal_ocr_executorで
+        # 非同期実行するための状態。_goal_ocr_futureが非Noneの間は多重に投げない
+        self._goal_ocr_future: Optional["concurrent.futures.Future"] = None
         # Issue #136: 昇格演出(is_league_change_screen)がこの試合中に一度でも
         # 観測されたか。帯番号の急変を検証する際、昇格側はこの独立信号で
         # 確認できていない限り認めない
@@ -811,6 +891,10 @@ class MatchStateMachine:
         # 途中(_track_rank内)のため、先頭で呼ぶとまだFalseのまま素通りしてしまい、
         # 同じフレームが暗転そのものであることに気づけない(モジュールdocstring参照)
         self._check_pending_obs_switch(frame)
+        # Issue #327: ゴールOCRの結果が届いた時点で状態がWATCHINGから進んでいても
+        # (_pending_goalsへの追加は_finalize()まで有効なため)取りこぼさないよう、
+        # 状態に関わらず毎フレーム呼ぶ(_check_pending_obs_switchと同じ考え方)
+        self._poll_goal_ocr()
         return result
 
     def _check_pending_obs_switch(self, frame: np.ndarray) -> None:
@@ -950,67 +1034,92 @@ class MatchStateMachine:
             return
 
         self._goal_streak += 1
-        if self._goal_streak >= self._goal_confirm_frames and not self._goal_recorded_this_event:
+        if (
+            self._goal_streak >= self._goal_confirm_frames
+            and not self._goal_recorded_this_event
+            and self._goal_ocr_future is None
+        ):
             self._goal_recorded_this_event = True
-            # is_goal_eventは色ベースの候補判定のため、青空・スタジアム天蓋の映り込み
-            # (Issue #186)等の誤検知をここでOCRにより除外する(detection.goal参照)
-            if not confirm_goal_text(frame):
-                logger.info(
-                    "ゴール候補を検知しましたが、得点者名パネルのラベルを確認できなかったため誤検知として無視します"
-                )
-                return
+            self._goal_ocr_future = self._goal_ocr_executor.submit(_run_goal_ocr, frame)
 
-            scorer = read_scorer_name(frame)
-            assist = read_assist_name(frame)
-            # Issue #71: OCRの誤読診断のため、信頼度スコア込みの実名をDEBUGレベルに
-            # 限り出す(CLAUDE.md「ログ方針」の例外)
-            logger.debug("ゴール検知: scorer=%s assist=%s", scorer, assist)
+    def _poll_goal_ocr(self, wait: bool = False) -> None:
+        """_check_for_goal()が投げたOCR一式(Issue #327)の結果を取り込む。
 
-            scorer_name = scorer[0] if scorer is not None else None
-            assist_name = assist[0] if assist is not None else None
-            # Issue #217: オウンゴールは得点者名パネル自体が表示されないため
-            # scorer_name/assist_nameは常にNoneのまま(detection.goalのdocstring参照)。
-            # 判定結果は見えたものをそのまま報告するのみで、GOAL_RECORD_MODEに応じた
-            # 記録可否の判断は永続化層(database.db.save_goal)の責務のまま変更しない
-            is_own_goal = is_own_goal_event(frame)
-            # Issue #86: 検知した瞬間に得点者・アシスト名を許可リストの判定結果に
-            # よらずINFOレベルで表示する(2026-07決め事、CLAUDE.md「ログ方針」参照。
-            # 個人のローカル環境のみでの運用のため、許可リスト外の実名がログに
-            # 残ること自体は許容する)。ここでの判定はログ表示用の見込みに過ぎず、
-            # 実際にDBへ記録する/しないの判定は引き続き永続化層(database.db.
-            # save_goal)の責務のまま変更しない。Issue #88でGOAL_RECORD_MODEの
-            # 3モード(all/allowlist/allowlist_redact)に合わせて3値表示にした
-            mode = get_goal_record_mode()
-            scorer_allowed = scorer_name is not None and is_allowed_player(scorer_name)
-            assist_allowed = assist_name is not None and is_allowed_player(assist_name)
-            if is_own_goal:
-                status = "記録対象(オウンゴール)" if mode == "all" else "オウンゴールのため記録対象外"
-            elif mode == "all":
-                status = "記録対象"
-            elif not scorer_allowed and not assist_allowed:
-                status = "許可リスト外のため記録対象外"
-            elif mode == "allowlist_redact" and (
-                not scorer_allowed or (assist_name is not None and not assist_allowed)
-            ):
-                status = "一部redactして記録対象"
-            else:
-                status = "記録対象"
+        通常(wait=False)はブロックせず、まだ実行中の間は何もしない。結果が届く
+        タイミングは呼び出し元では制御しない(状態がWATCHINGから進んでいても、
+        _pending_goalsへの追加はfinalize()まで有効なためそのまま適用する)。
+
+        wait=Trueの場合(_finalize()からの呼び出し、_vs_ocr_thread.join()と同じ理由)は
+        完了を待ってから取り込む。ゴールの帯番号再チェック(Issue #303の
+        _tier_recheck_future)と異なり、ゴール自体は取りこぼすとその1件が
+        MatchResult.goalsに載らないまま永久に失われてしまう(次の試合の
+        _pending_goalsに紛れ込ませるのはさらに悪い、誤った試合に記録されてしまう)
+        ため、読み捨てを許容せず待つ設計にしている。
+        """
+        if self._goal_ocr_future is None:
+            return
+        if not wait and not self._goal_ocr_future.done():
+            return
+        result = self._goal_ocr_future.result()
+        self._goal_ocr_future = None
+
+        # is_goal_eventは色ベースの候補判定のため、青空・スタジアム天蓋の映り込み
+        # (Issue #186)等の誤検知をここでOCRにより除外する(detection.goal参照)
+        if not result.confirmed:
             logger.info(
-                "%d試合目 ゴール検知: scorer=%s assist=%s (%s)",
-                self._session_match_no,
-                scorer_name,
-                assist_name,
-                status,
+                "ゴール候補を検知しましたが、得点者名パネルのラベルを確認できなかったため誤検知として無視します"
             )
+            return
 
-            self._pending_goals.append(
-                GoalEvent(
-                    scorer_name=scorer_name,
-                    assist_name=assist_name,
-                    detected_at=now_jst(),
-                    is_own_goal=is_own_goal,
-                )
+        scorer = result.scorer
+        assist = result.assist
+        # Issue #71: OCRの誤読診断のため、信頼度スコア込みの実名をDEBUGレベルに
+        # 限り出す(CLAUDE.md「ログ方針」の例外)
+        logger.debug("ゴール検知: scorer=%s assist=%s", scorer, assist)
+
+        scorer_name = scorer[0] if scorer is not None else None
+        assist_name = assist[0] if assist is not None else None
+        # Issue #217: オウンゴールは得点者名パネル自体が表示されないため
+        # scorer_name/assist_nameは常にNoneのまま(detection.goalのdocstring参照)。
+        # 判定結果は見えたものをそのまま報告するのみで、GOAL_RECORD_MODEに応じた
+        # 記録可否の判断は永続化層(database.db.save_goal)の責務のまま変更しない
+        is_own_goal = result.is_own_goal
+        # Issue #86: 検知した瞬間に得点者・アシスト名を許可リストの判定結果に
+        # よらずINFOレベルで表示する(2026-07決め事、CLAUDE.md「ログ方針」参照。
+        # 個人のローカル環境のみでの運用のため、許可リスト外の実名がログに
+        # 残ること自体は許容する)。ここでの判定はログ表示用の見込みに過ぎず、
+        # 実際にDBへ記録する/しないの判定は引き続き永続化層(database.db.
+        # save_goal)の責務のまま変更しない。Issue #88でGOAL_RECORD_MODEの
+        # 3モード(all/allowlist/allowlist_redact)に合わせて3値表示にした
+        mode = get_goal_record_mode()
+        scorer_allowed = scorer_name is not None and is_allowed_player(scorer_name)
+        assist_allowed = assist_name is not None and is_allowed_player(assist_name)
+        if is_own_goal:
+            status = "記録対象(オウンゴール)" if mode == "all" else "オウンゴールのため記録対象外"
+        elif mode == "all":
+            status = "記録対象"
+        elif not scorer_allowed and not assist_allowed:
+            status = "許可リスト外のため記録対象外"
+        elif mode == "allowlist_redact" and (not scorer_allowed or (assist_name is not None and not assist_allowed)):
+            status = "一部redactして記録対象"
+        else:
+            status = "記録対象"
+        logger.info(
+            "%d試合目 ゴール検知: scorer=%s assist=%s (%s)",
+            self._session_match_no,
+            scorer_name,
+            assist_name,
+            status,
+        )
+
+        self._pending_goals.append(
+            GoalEvent(
+                scorer_name=scorer_name,
+                assist_name=assist_name,
+                detected_at=now_jst(),
+                is_own_goal=is_own_goal,
             )
+        )
 
     def _read_rank_before(self, frame: np.ndarray) -> Optional[tuple[int, float]]:
         """結果バナー確定時点でランクバッジを読み取る(Issue #222)。
@@ -1493,6 +1602,9 @@ class MatchStateMachine:
         if self._vs_ocr_thread is not None:
             self._vs_ocr_thread.join()
             self._vs_ocr_thread = None
+        # Issue #327: ゴール検知OCR(_run_goal_ocr)も同じ理由で完了を待ってから
+        # _pending_goalsを読み取る(_poll_goal_ocr()のdocstring参照)
+        self._poll_goal_ocr(wait=True)
         if rank_after is None:
             logger.info(
                 "%d試合目: 試合終了時点でもランクバッジを読み取れませんでした"
