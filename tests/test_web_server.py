@@ -31,7 +31,9 @@ from nss_tracker.web.server import (
     _build_match_log_badges,
     _compute_box_stats,
     _convert_rank_tier_to_unified_scale,
+    _fetch_goal_stats,
     _fetch_rank_graph_summary,
+    _fetch_winrate,
     _format_vs_rank_value,
     _overlay_widget_links,
     _percentile,
@@ -139,7 +141,7 @@ def test_index_page_shows_match_counts(tmp_path: Path):
     assert "draw: 0" in response.text
 
 
-def test_winrate_with_no_sessions_returns_empty_session_counts(tmp_path: Path):
+def test_fetch_winrate_with_no_sessions_returns_empty_session_counts(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     _save_match_result(
@@ -148,18 +150,15 @@ def test_winrate_with_no_sessions_returns_empty_session_counts(tmp_path: Path):
     )
     conn.close()
 
-    client = TestClient(create_app(db_path))
+    result = _fetch_winrate(db_path)
 
-    response = client.get("/api/winrate")
-
-    assert response.status_code == 200
-    assert response.json() == {
+    assert result == {
         "session": {"total": 0, "win": 0, "lose": 0, "draw": 0},
         "cumulative": {"total": 1, "win": 1, "lose": 0, "draw": 0},
     }
 
 
-def test_winrate_splits_session_and_cumulative_counts(tmp_path: Path):
+def test_fetch_winrate_splits_session_and_cumulative_counts(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
     first_session_id = db.create_session(conn)
@@ -177,68 +176,12 @@ def test_winrate_splits_session_and_cumulative_counts(tmp_path: Path):
         )
     conn.close()
 
-    client = TestClient(create_app(db_path))
+    result = _fetch_winrate(db_path)
 
-    response = client.get("/api/winrate")
-
-    assert response.status_code == 200
-    assert response.json() == {
+    assert result == {
         "session": {"total": 2, "win": 2, "lose": 0, "draw": 0},
         "cumulative": {"total": 3, "win": 2, "lose": 1, "draw": 0},
     }
-
-
-def test_overlay_winrate_page_shows_readable_summary(tmp_path: Path):
-    db_path = tmp_path / "test.db"
-    conn = db.connect(db_path)
-    session_id = db.create_session(conn)
-    for result in ["win", "win", "lose"]:
-        _save_match_result(
-            conn,
-            MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
-            session_id=session_id,
-        )
-    conn.close()
-
-    client = TestClient(create_app(db_path))
-
-    response = client.get("/overlay/winrate")
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
-    assert "今回: 3試合" in response.text
-    assert "win 2 / lose 1 / draw 0" in response.text
-    assert "勝率 66.7%" in response.text
-    assert "累計: 3試合" in response.text
-
-
-def test_overlay_winrate_page_links_transparent_background_stylesheet(tmp_path: Path):
-    """OBSのブラウザソースに重ねて配置する想定のため、文字の無い部分が
-    背後の他の部品を隠さないよう背景を明示的に透過にしていることを確認する。
-    """
-    db_path = tmp_path / "test.db"
-    db.connect(db_path).close()
-
-    client = TestClient(create_app(db_path))
-
-    page_response = client.get("/overlay/winrate")
-    assert '<link rel="stylesheet" href="/static/overlay.css">' in page_response.text
-
-    css_response = client.get("/static/overlay.css")
-    assert css_response.status_code == 200
-    assert "background: transparent" in css_response.text
-
-
-def test_overlay_winrate_page_shows_dash_when_no_matches(tmp_path: Path):
-    db_path = tmp_path / "test.db"
-    db.connect(db_path).close()
-
-    client = TestClient(create_app(db_path))
-
-    response = client.get("/overlay/winrate")
-
-    assert response.status_code == 200
-    assert "勝率 -" in response.text
 
 
 def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path, monkeypatch):
@@ -832,7 +775,7 @@ def test_aggregate_goal_stats_returns_zero_counts_for_allowed_players_with_no_go
     ]
 
 
-def test_goal_stats_endpoint_scoped_to_current_session(tmp_path: Path, monkeypatch):
+def test_fetch_goal_stats_scoped_to_current_session(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
     db_path = tmp_path / "test.db"
@@ -855,45 +798,35 @@ def test_goal_stats_endpoint_scoped_to_current_session(tmp_path: Path, monkeypat
     db.save_goal(conn, current_match_id, "Bob", "Alice", now_jst())
     conn.close()
 
-    client = TestClient(create_app(db_path))
+    result = _fetch_goal_stats(db_path)
 
-    response = client.get("/api/goal-stats")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "players": [
-            {"name": "Bob", "goals": 1, "assists": 0, "involvement": 1},
-            {"name": "Alice", "goals": 0, "assists": 1, "involvement": 1},
-        ]
-    }
+    assert result == [
+        {"name": "Bob", "goals": 1, "assists": 0, "involvement": 1},
+        {"name": "Alice", "goals": 0, "assists": 1, "involvement": 1},
+    ]
 
 
-def test_goal_stats_endpoint_empty_when_no_sessions_and_no_allowed_players(tmp_path: Path, monkeypatch):
+def test_fetch_goal_stats_empty_when_no_sessions_and_no_allowed_players(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("ALLOWED_PLAYERS", raising=False)
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
-    client = TestClient(create_app(db_path))
-
-    response = client.get("/api/goal-stats")
-
-    assert response.json() == {"players": []}
+    assert _fetch_goal_stats(db_path) == []
 
 
-def test_goal_stats_endpoint_zero_counts_when_no_sessions(tmp_path: Path, monkeypatch):
+def test_fetch_goal_stats_zero_counts_when_no_sessions(tmp_path: Path, monkeypatch):
     """Issue #271: 配信セッションが1件も無くても、許可リストプレイヤーは0件として返す。"""
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
-    client = TestClient(create_app(db_path))
-
-    response = client.get("/api/goal-stats")
-
-    assert response.json() == {"players": [{"name": "Alice", "goals": 0, "assists": 0, "involvement": 0}]}
+    assert _fetch_goal_stats(db_path) == [{"name": "Alice", "goals": 0, "assists": 0, "involvement": 0}]
 
 
-def test_overlay_goal_stats_page_shows_readable_summary(tmp_path: Path, monkeypatch):
+def test_overlay_goal_stats_winrate_page_shows_readable_summary(tmp_path: Path, monkeypatch):
+    """Issue #339: /overlay/goal-stats(得点/アシスト)と/overlay/winrate(勝率)を
+    1つのウィジェットに統合した。両方の内容が同じページに表示されることを確認する。
+    """
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
     db_path = tmp_path / "test.db"
@@ -905,21 +838,31 @@ def test_overlay_goal_stats_page_shows_readable_summary(tmp_path: Path, monkeypa
         session_id=session_id,
     )
     db.save_goal(conn, match_id, "Alice", None, now_jst())
+    for result in ["win", "lose"]:
+        _save_match_result(
+            conn,
+            MatchResult(result=result, rank_before=1, rank_after=1, league_changed=None, detected_at=now_jst()),
+            session_id=session_id,
+        )
     conn.close()
 
     client = TestClient(create_app(db_path))
 
-    response = client.get("/overlay/goal-stats")
+    response = client.get("/overlay/goal-stats-winrate")
 
     assert response.status_code == 200
     assert '<link rel="stylesheet" href="/static/overlay.css">' in response.text
     assert "今回: Alice: 得点 1 / アシスト 0 (関与 1)" in response.text
+    assert "今回: 3試合" in response.text
+    assert "win 2 / lose 1 / draw 0" in response.text
+    assert "勝率 66.7%" in response.text
+    assert "累計: 3試合" in response.text
 
     css_response = client.get("/static/overlay.css")
     assert "background: transparent" in css_response.text
 
 
-def test_overlay_goal_stats_page_hides_name_when_single_allowed_player(tmp_path: Path, monkeypatch):
+def test_overlay_goal_stats_winrate_page_hides_name_when_single_allowed_player(tmp_path: Path, monkeypatch):
     """許可リストが1名だけの場合(=配信者本人が自明)は、名前を出さず得点/アシストのみ表示する。"""
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
@@ -936,25 +879,26 @@ def test_overlay_goal_stats_page_hides_name_when_single_allowed_player(tmp_path:
 
     client = TestClient(create_app(db_path))
 
-    response = client.get("/overlay/goal-stats")
+    response = client.get("/overlay/goal-stats-winrate")
 
     assert "Alice" not in response.text
     assert "今回: 得点 1 / アシスト 0 (関与 1)" in response.text
 
 
-def test_overlay_goal_stats_page_shows_empty_message_when_no_allowed_players(tmp_path: Path, monkeypatch):
+def test_overlay_goal_stats_winrate_page_shows_empty_message_and_dash_when_no_matches(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("ALLOWED_PLAYERS", raising=False)
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
     client = TestClient(create_app(db_path))
 
-    response = client.get("/overlay/goal-stats")
+    response = client.get("/overlay/goal-stats-winrate")
 
     assert "データがありません" in response.text
+    assert "勝率 -" in response.text
 
 
-def test_overlay_goal_stats_page_shows_zero_when_no_goals_yet(tmp_path: Path, monkeypatch):
+def test_overlay_goal_stats_winrate_page_shows_zero_when_no_goals_yet(tmp_path: Path, monkeypatch):
     """Issue #271: 許可リストプレイヤーがいてもゴールが無い場合は0を表示する(データがありません、ではない)。"""
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
     db_path = tmp_path / "test.db"
@@ -962,7 +906,7 @@ def test_overlay_goal_stats_page_shows_zero_when_no_goals_yet(tmp_path: Path, mo
 
     client = TestClient(create_app(db_path))
 
-    response = client.get("/overlay/goal-stats")
+    response = client.get("/overlay/goal-stats-winrate")
 
     assert "データがありません" not in response.text
     assert "今回: Alice: 得点 0 / アシスト 0 (関与 0)" in response.text
@@ -1565,9 +1509,8 @@ def test_overlay_refresh_script_is_served_and_reads_the_page_it_is_embedded_in(t
 @pytest.mark.parametrize(
     "path",
     [
-        "/overlay/winrate",
+        "/overlay/goal-stats-winrate",
         "/overlay/rank-graph",
-        "/overlay/goal-stats",
         "/overlay/match-log",
         "/overlay/rank-delta-distribution",
         "/overlay/dive-time",
@@ -1607,9 +1550,8 @@ def test_overlay_vs_rank_comparison_page_uses_shorter_refresh_interval(tmp_path:
 @pytest.mark.parametrize(
     "path",
     [
-        "/overlay/winrate",
+        "/overlay/goal-stats-winrate",
         "/overlay/rank-graph",
-        "/overlay/goal-stats",
         "/overlay/match-log",
         "/overlay/vs-rank-comparison",
         "/overlay/rank-delta-distribution",
@@ -1636,9 +1578,8 @@ def test_overlay_pages_have_no_debug_bg_style_by_default(tmp_path: Path, path: s
 @pytest.mark.parametrize(
     "path",
     [
-        "/overlay/winrate",
+        "/overlay/goal-stats-winrate",
         "/overlay/rank-graph",
-        "/overlay/goal-stats",
         "/overlay/match-log",
         "/overlay/vs-rank-comparison",
         "/overlay/rank-delta-distribution",

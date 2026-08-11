@@ -31,7 +31,7 @@ def main() -> None:
     handle = start_web_server_thread(create_app(db_path), host=host, port=port)
     print(f"Webダッシュボードを起動しました(DB: {db_path})")
     print(f"  値確認ページ: http://{host}:{port}/")
-    print(f"  勝率ウィジェット: http://{host}:{port}/overlay/winrate")
+    print(f"  ゴール/アシスト統計・勝率ウィジェット: http://{host}:{port}/overlay/goal-stats-winrate")
     print("Ctrl+Cで終了します")
     try:
         while True:
