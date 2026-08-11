@@ -140,10 +140,10 @@ h1 {
 }
 
 /* ゲージ動画の縦横比(GAUGE_TARGET_WIDTH=1160に対し、ゲージ本体の高さ約128px +
-   Issue #334で目盛り数値用に追加した白い余白GAUGE_LABEL_PADDING_HEIGHT=40pxの
-   合計168px) */
+   Issue #334で目盛り数値用に追加した白い余白GAUGE_LABEL_PADDING_HEIGHT=44pxの
+   合計172px) */
 .rank-entry-video-wrap-gauge {
-    padding-bottom: 14.48%;
+    padding-bottom: 14.83%;
 }
 
 .rank-entry-video,
