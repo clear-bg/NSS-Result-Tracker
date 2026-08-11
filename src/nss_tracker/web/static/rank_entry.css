@@ -220,6 +220,32 @@ h1 {
     font-weight: bold;
 }
 
+/* Issue #337: rank_afterの確定/未確定をラベル文字の前のドットで示す。配置・色は
+   Artifactでの見た目案(コーナーバッジ/インライン/2段組み/帯の5案)をユーザーと
+   比較した上で、テキストと自然に読める「ラベル前インラインドット」案を採用した。
+   色はdataviz skillのstatus palette(good/warning)をそのまま使う。 */
+.rank-entry-clip-button-content {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.rank-entry-clip-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+.rank-entry-clip-status-dot-confirmed {
+    background: #0ca30c;
+}
+
+.rank-entry-clip-status-dot-unconfirmed {
+    background: #fab219;
+}
+
 .rank-entry-form {
     display: flex;
     flex-direction: column;
