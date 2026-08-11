@@ -41,6 +41,7 @@ from nss_tracker.web.server import (
     _rank_delta_axis_max,
     _rank_graph_height,
     _rank_graph_x_axis_max,
+    _rank_graph_x_tick_step,
     _rank_graph_x_tick_values,
     _rank_graph_y_bounds,
     _rank_graph_y_tick_step,
@@ -450,7 +451,9 @@ def test_render_rank_graph_svg_points_are_always_white_regardless_of_league_chan
 
 
 def test_render_rank_graph_svg_draws_frame_and_axis_ticks():
-    history = _continuous_history([10, 20, 15, 25, 12])
+    # 7試合(5の倍数ではない)にして、横軸が次の倍数(10)まで拡張されることを
+    # 確認できるようにする(Issue #331、5試合ちょうどだと拡張されなくなったため)
+    history = _continuous_history([10, 20, 15, 25, 12, 18, 22])
 
     svg = _render_rank_graph_svg(history)
 
@@ -458,8 +461,8 @@ def test_render_rank_graph_svg_draws_frame_and_axis_ticks():
     # 縦軸: 最小値10・最大値25を含む整数の目盛りラベルが表示されること
     assert ">10<" in svg
     assert ">25<" in svg
-    # 横軸: 1試合目と、5試合しか無くても軸を上回るまで拡張した10試合目分の目盛りが
-    # 表示されること(_rank_graph_x_axis_max(5) == 10)
+    # 横軸: 1試合目と、7試合を上回るまで拡張した10試合目分の目盛りが
+    # 表示されること(_rank_graph_x_axis_max(7, 5) == 10)
     assert ">1<" in svg
     assert ">5<" in svg
     assert ">10<" in svg
@@ -479,7 +482,7 @@ def test_render_rank_graph_svg_outlier_value_does_not_flood_y_axis_ticks():
 
 def test_render_rank_graph_svg_draws_vertical_gridlines_at_x_ticks():
     """横軸の目盛り位置(1, 5, 10試合目)にも縦軸と同様の薄いグリッド線を引く。"""
-    history = _continuous_history([10, 20, 15, 25, 12])
+    history = _continuous_history([10, 20, 15, 25, 12, 18, 22])
 
     svg = _render_rank_graph_svg(history)
 
@@ -526,7 +529,7 @@ def test_render_rank_graph_svg_last_point_stops_short_of_right_edge():
     plot_left = _RANK_GRAPH_MARGIN_LEFT
     plot_right = _RANK_GRAPH_VIEWBOX_WIDTH - _RANK_GRAPH_MARGIN_RIGHT
     points_left = plot_left + _RANK_GRAPH_LEFT_PADDING
-    x_axis_max_index = _rank_graph_x_axis_max(len(history)) - 1
+    x_axis_max_index = _rank_graph_x_axis_max(len(history), _rank_graph_x_tick_step(len(history))) - 1
     expected_right_x = points_left + (plot_right - points_left) * (len(history) - 1) / x_axis_max_index
 
     assert expected_right_x < plot_right
@@ -567,10 +570,11 @@ def test_render_rank_graph_svg_with_summary_shows_three_stat_tiles():
     assert ">現在のランク<" in svg
     assert ">最高ランク<" in svg
     assert ">配信開始時<" in svg
-    assert 'class="rank-graph-stat-value">15<' in svg
-    assert 'class="rank-graph-stat-value">22.5<' in svg
-    assert 'class="rank-graph-stat-value">12<' in svg
-    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-up" dx="6">+3<' in svg
+    # Issue #(今回のフィードバック): 整数ぴったりの値でも小数第2位まで0埋めで表示する
+    assert 'class="rank-graph-stat-value">15.00<' in svg
+    assert 'class="rank-graph-stat-value">22.50<' in svg
+    assert 'class="rank-graph-stat-value">12.00<' in svg
+    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-up" dx="6">+3.00<' in svg
 
 
 def test_render_rank_graph_svg_summary_delta_down_uses_down_color():
@@ -578,8 +582,8 @@ def test_render_rank_graph_svg_summary_delta_down_uses_down_color():
 
     svg = _render_rank_graph_svg(_continuous_history([10]), summary)
 
-    assert 'class="rank-graph-stat-value">12.5<' in svg
-    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-down" dx="6">-2.5<' in svg
+    assert 'class="rank-graph-stat-value">12.50<' in svg
+    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-down" dx="6">-2.50<' in svg
 
 
 def test_render_rank_graph_svg_summary_delta_zero_uses_neutral_color():
@@ -588,7 +592,7 @@ def test_render_rank_graph_svg_summary_delta_zero_uses_neutral_color():
 
     svg = _render_rank_graph_svg(_continuous_history([10]), summary)
 
-    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-neutral" dx="6">+0<' in svg
+    assert 'class="rank-graph-stat-delta rank-graph-stat-delta-neutral" dx="6">+0.00<' in svg
     assert "rank-graph-stat-delta-up" not in svg
     assert "rank-graph-stat-delta-down" not in svg
 
@@ -698,24 +702,42 @@ def test_overlay_rank_graph_page_includes_summary_stats(tmp_path: Path):
 
 def test_rank_graph_x_axis_max_extends_beyond_uneven_match_count():
     # ユーザーの例: 23試合なら25まで表示する
-    assert _rank_graph_x_axis_max(23) == 25
+    assert _rank_graph_x_axis_max(23, 5) == 25
 
 
-def test_rank_graph_x_axis_max_widens_further_when_count_is_exact_multiple():
-    # ちょうど20試合でも、一番右の点が軸の端に接してしまうためさらに1段広げる
-    assert _rank_graph_x_axis_max(20) == 25
+def test_rank_graph_x_axis_max_does_not_widen_when_count_is_exact_multiple():
+    """Issue #331: 以前はちょうど20試合でも、一番右の点が軸の端に接してしまうことを
+    避けるためさらに1段広げていたが、右側に丸々1目盛り分の空白ができるのが
+    気になるというフィードバックを受けて撤廃した(ユーザー確認済み)。
+    """
+    assert _rank_graph_x_axis_max(20, 5) == 20
 
 
 def test_rank_graph_x_axis_max_small_count():
-    assert _rank_graph_x_axis_max(3) == 5
+    assert _rank_graph_x_axis_max(3, 5) == 5
+
+
+def test_rank_graph_x_tick_step_stays_five_below_threshold():
+    assert _rank_graph_x_tick_step(0) == 5
+    assert _rank_graph_x_tick_step(69) == 5
+
+
+def test_rank_graph_x_tick_step_widens_to_ten_at_threshold():
+    """Issue #330: 試合数が70以上になったら目盛り間隔を10刻みに広げる。"""
+    assert _rank_graph_x_tick_step(70) == 10
+    assert _rank_graph_x_tick_step(200) == 10
 
 
 def test_rank_graph_x_tick_values_always_includes_one_and_steps_of_five():
-    assert _rank_graph_x_tick_values(25) == [1, 5, 10, 15, 20, 25]
+    assert _rank_graph_x_tick_values(25, 5) == [1, 5, 10, 15, 20, 25]
 
 
 def test_rank_graph_x_tick_values_small_axis_max():
-    assert _rank_graph_x_tick_values(5) == [1, 5]
+    assert _rank_graph_x_tick_values(5, 5) == [1, 5]
+
+
+def test_rank_graph_x_tick_values_steps_of_ten():
+    assert _rank_graph_x_tick_values(30, 10) == [1, 10, 20, 30]
 
 
 def test_render_rank_graph_svg_flat_values_widens_y_axis_around_the_value():

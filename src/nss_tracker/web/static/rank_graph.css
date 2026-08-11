@@ -90,10 +90,13 @@
    ミュートした白、数値は折れ線と同じ色を使わず白のまま(データの色をテキストに
    使わない、ユーザーとプレビューで確認した案Bのまま)。3つ目のタイルは配信開始時の
    ランク自体(白)+増減値(小さく、方向に応じて色付け)の組み合わせ */
+/* Issue #332: 実際の配信画面で見た際に読みづらいというフィードバックを受け、
+   13px/#9a9a96(ミュート)から15px/#c3c2b7(dataviz skillのdark secondary ink、
+   ミュートは保ちつつ従来よりくっきり見える明るさ)に変更した */
 .rank-graph-stat-label {
-    fill: #9a9a96;
+    fill: #c3c2b7;
     font-family: sans-serif;
-    font-size: 13px;
+    font-size: 15px;
 }
 
 .rank-graph-stat-value {
