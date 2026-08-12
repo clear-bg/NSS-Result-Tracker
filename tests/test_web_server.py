@@ -1192,6 +1192,64 @@ def test_vs_rank_comparison_endpoint_none_when_no_snapshots(tmp_path: Path):
     assert response.json() == {"mine": None, "opponent": None}
 
 
+def test_vs_rank_comparison_endpoint_ignores_snapshot_from_previous_session(tmp_path: Path):
+    """Issue #359: 配信セッション開始直後は、前回配信の値を初期表示として引きずらない。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    old_session_id = db.create_session(conn)
+    db.save_vs_rank_snapshot(
+        conn,
+        session_id=old_session_id,
+        mine_ranks=[SlotRank("∞", 40)] * 4,
+        opponent_ranks=[SlotRank("∞", 10)] * 4,
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+        detected_at=now_jst(),
+    )
+    db.create_session(conn)  # 今のセッション、まだVS画面を検知していない
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/vs-rank-comparison")
+
+    assert response.json() == {"mine": None, "opponent": None}
+
+
+def test_vs_rank_comparison_endpoint_uses_snapshot_from_current_session(tmp_path: Path):
+    """Issue #359: 前回配信のスナップショットがあっても、今のセッションの値を優先する。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    old_session_id = db.create_session(conn)
+    db.save_vs_rank_snapshot(
+        conn,
+        session_id=old_session_id,
+        mine_ranks=[SlotRank("∞", 1)] * 4,
+        opponent_ranks=[SlotRank("∞", 1)] * 4,
+        mine_team_color="#111111",
+        opponent_team_color="#222222",
+        detected_at=now_jst(),
+    )
+    current_session_id = db.create_session(conn)
+    db.save_vs_rank_snapshot(
+        conn,
+        session_id=current_session_id,
+        mine_ranks=[SlotRank("∞", 40)] * 4,
+        opponent_ranks=[SlotRank("∞", 10)] * 4,
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+        detected_at=now_jst(),
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/vs-rank-comparison")
+
+    assert response.json()["mine"]["total"] == 160
+    assert response.json()["mine_team_color"] == "#64bde2"
+
+
 def test_vs_rank_comparison_endpoint_none_when_latest_snapshot_has_no_vs_data(tmp_path: Path):
     """Issue #145: VS画面を見逃した試合が終わった際、main.pyが空スナップショットを書き込んでリセットする想定。"""
     db_path = tmp_path / "test.db"
