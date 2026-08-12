@@ -25,17 +25,39 @@ OAuth 2.0(installed app flow)で自分のGoogleアカウントに一度だけ同
 
 ## 状態の持ち方
 
-検知結果(`HH:MM`)はDBを経由せず、モジュールレベルのインメモリ状態として
-保持する(`get_dive_time()`)。他のWebダッシュボードの値はSQLiteを介した疎結合
-(CLAUDE.md「配信画面向けWebダッシュボード」節)を原則としているが、この値は
-配信セッションをまたいで参照する意味が無い一過性の値であり、DBに永続化する
-価値が無いための意図的な逸脱。
+検知結果はDBを経由せず、モジュールレベルのインメモリ状態(`DiveTimeState`、
+`get_dive_time_state()`)として保持する。他のWebダッシュボードの値はSQLiteを
+介した疎結合(CLAUDE.md「配信画面向けWebダッシュボード」節)を原則としているが、
+この値は配信セッションをまたいで参照する意味が無い一過性の値であり、DBに
+永続化する価値が無いための意図的な逸脱。
+
+Issue #356: 当初は`HH:MM`文字列のみを保持していたが、「スナイプ中」表示を
+追加するにあたり、状態を`mode`(`"time"` / `"snipe"`)付きの`DiveTimeState`に
+拡張した。自分(`isChatOwner`)のコメント本文の末尾が「スナイプ」または
+「スナイプ中」で終わる場合(`_parse_snipe_comment`、正規表現`^(.*)スナイプ中?$`)、
+それより前の部分(prefix、コメントが「スナイプ」単独等で空文字列になる場合もある)
+を`DiveTimeState.snipe_target`に保持する。既存の数値のみ・時刻表現の検知
+(`_parse_dive_time_comment`)とは文字種上排他なため、`_poll_chat_messages`側は
+まず`_parse_dive_time_comment`で判定し、一致しなければスナイプパターンで判定する
+順序で問題ない。スナイプ表示に切り替わった後もコメント監視は止めず、次に
+数値のみ(または時刻表現)のコメントを受け取った時点で従来通りの`HH:MM`表示
+(`mode="time"`)に自動的に戻る(解除専用コマンドは無い)。
 
 ## 見た目・機能のスコープ
 
 初期実装は最小構成(`HH:MM`表示のみ)。表示スタイルの切替・配置指定・手動での
 時刻操作ボタン・localStorageでの復元・自動クリアは対象外(必要になった時点で
 別途検討する)。
+
+Issue #356で「スナイプ中」表示を追加した際の見た目の決め事(Artifactで複数案を
+比較しユーザーと決定):
+- 見出し(従来の「次に潜る時間」相当)を「スナイプ中」に差し替え、キャプション先頭の
+  菱形アイコンをオレンジ(`#ff6a3d`)にして点滅させる。「スナイプ中」の文字自体は
+  従来の白のまま(色は変えない)
+- その下の値行(従来のHH:MM相当)には、コメントから抽出したprefixに「配信」を
+  付けたテキスト(例: 「たろうさんスナイプ」→「たろうさん配信」)を、時刻より
+  控えめな見た目(小さめ・非bold)で表示する。prefixが空文字列(コメントが
+  「スナイプ」単独等)の場合、値行自体を表示しない(見出しのみ)
 """
 
 import logging
@@ -43,7 +65,7 @@ import re
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import httpx
 from google.auth.exceptions import RefreshError
@@ -72,21 +94,45 @@ _FULLWIDTH_TO_HALFWIDTH = str.maketrans("０１２３４５６７８９：", "01
 _MINUTE_ONLY_PATTERN = re.compile(r"^\d{1,2}$")
 _HOUR_MINUTE_COLON_PATTERN = re.compile(r"^(\d{1,2}):(\d{2})$")
 _HOUR_MINUTE_COMPACT_PATTERN = re.compile(r"^(\d{3,4})$")
+# Issue #356: 末尾が「スナイプ」または「スナイプ中」で終わるコメントを検知する。
+# 末尾一致にしているのは、「スナイプ」を含みさえすれば良い部分一致だと雑談コメント
+# での誤発火リスクが上がるため
+_SNIPE_PATTERN = re.compile(r"^(.*)スナイプ中?$")
+
+
+class DiveTimeState(NamedTuple):
+    """「次に潜る時間」ウィジェットの表示状態(Issue #356)。
+
+    mode="time"の場合はtimeに"HH:MM"、mode="snipe"の場合はsnipe_targetに
+    コメントから抽出したprefix(空文字列になる場合もある。モジュールdocstring参照)
+    が入る。
+    """
+
+    mode: str
+    time: Optional[str] = None
+    snipe_target: Optional[str] = None
+
 
 _dive_time_lock = threading.Lock()
-_dive_time: Optional[str] = None
+_dive_time_state: Optional[DiveTimeState] = None
 
 
-def get_dive_time() -> Optional[str]:
-    """直近に検知した「次に潜る時間」(`"HH:MM"`)を返す。未検知ならNone。"""
+def get_dive_time_state() -> Optional[DiveTimeState]:
+    """直近に検知した表示状態を返す。未検知ならNone。"""
     with _dive_time_lock:
-        return _dive_time
+        return _dive_time_state
 
 
 def _set_dive_time(value: str) -> None:
-    global _dive_time
+    global _dive_time_state
     with _dive_time_lock:
-        _dive_time = value
+        _dive_time_state = DiveTimeState(mode="time", time=value)
+
+
+def _set_snipe_target(prefix: str) -> None:
+    global _dive_time_state
+    with _dive_time_lock:
+        _dive_time_state = DiveTimeState(mode="snipe", snipe_target=prefix)
 
 
 def _parse_dive_time_comment(text: str, now: datetime) -> Optional[str]:
@@ -129,6 +175,20 @@ def _parse_dive_time_comment(text: str, now: datetime) -> Optional[str]:
     if candidate <= now:
         candidate += timedelta(days=1)
     return candidate.strftime("%H:%M")
+
+
+def _parse_snipe_comment(text: str) -> Optional[str]:
+    """コメント本文の末尾が「スナイプ」または「スナイプ中」の場合、それより前の
+    部分(prefix)を返す。一致しなければNone。
+
+    prefixは前後の空白を除去して返す。コメントが「スナイプ」単独等の場合、
+    prefixは空文字列になる(Noneとは区別する。呼び出し側はNoneを「非該当」、
+    空文字列を「該当したがprefix無し」として扱う)。
+    """
+    match = _SNIPE_PATTERN.match(text.strip())
+    if match is None:
+        return None
+    return match.group(1).strip()
 
 
 class DiveTimeWatcher:
@@ -260,6 +320,15 @@ class DiveTimeWatcher:
                     logger.info(
                         "チャットコメントから「次に潜る時間」を検知しました: %s(コメント: %r)",
                         dive_time,
+                        text,
+                    )
+                    continue
+                snipe_target = _parse_snipe_comment(text)
+                if snipe_target is not None:
+                    _set_snipe_target(snipe_target)
+                    logger.info(
+                        "チャットコメントから「スナイプ中」を検知しました: prefix=%r(コメント: %r)",
+                        snipe_target,
                         text,
                     )
 

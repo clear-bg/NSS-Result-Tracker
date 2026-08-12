@@ -49,3 +49,28 @@
     font-variant-numeric: tabular-nums;
     line-height: 1.1;
 }
+
+/* Issue #356: スナイプ中の表示。菱形アイコンをオレンジ(#ff6a3d)にして点滅させ、
+   「スナイプ中」の文字自体は既存の白のままにする(Artifactで色案を比較した結果、
+   文字まで変えると読みにくいという判断でアイコンのみに絞った)。 */
+.dive-time-caption.is-snipe::before {
+    background: #ff6a3d;
+    animation: dive-time-snipe-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes dive-time-snipe-pulse {
+    0%, 100% { opacity: 1; transform: rotate(45deg) scale(1); }
+    50% { opacity: 0.3; transform: rotate(45deg) scale(0.6); }
+}
+
+/* スナイプ対象の配信者名(prefix+「配信」)。見出し「スナイプ中」の方が主役に
+   なったため、時刻(.dive-time-value)より控えめな見た目にする。ただし過去の
+   実機確認(Issue #276)で暗すぎる色は読みにくいというフィードバックがあったため、
+   低コントラストな灰色ではなく、既存キャプションと同じ薄い水色寄りの白
+   (#e2ecee)を流用する。 */
+.dive-time-value.is-snipe-target {
+    font-family: inherit;
+    font-weight: 400;
+    font-size: 24px;
+    color: #e2ecee;
+}
