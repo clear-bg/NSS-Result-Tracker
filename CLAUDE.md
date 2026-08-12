@@ -139,6 +139,11 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
   - `MatchStateMachine.pop_vs_screen_event()`: `process_frame()`の戻り値(試合終了時の`MatchResult`のみ)とは別に、VS画面確定を検知した直後の1フレームだけ`VsScreenEvent`(読み取ったランク・チームカラー)を返す。`process_frame()`と同じ「取得したら消費される」設計で、`in_match`のような常時参照可能なプロパティにはしていない
   - DBは`matches`/`vs_slot_ranks`(試合結果確定時にまとめて保存する履歴データ、保存タイミング・スキーマとも変更なし)とは別に、新しい`vs_rank_snapshots`/`vs_rank_snapshot_slots`テーブルを追加した。`main.py`が`pop_vs_screen_event()`をポーリングし、Noneでなければその場で`db.save_vs_rank_snapshot()`を呼んで即書き込む。ウィジェット側(`web/server.py`の`_fetch_vs_rank_comparison`)はこのスナップショットの最新1件だけを見るようにし、`matches`/`vs_slot_ranks`への依存を無くした
   - VS画面を見逃した試合が終わった際(`result.vs_mine_ranks`/`vs_opponent_ranks`が両方空)は、`_record_match_result`が明示的に空スナップショット(チームカラーNULL・スロット行無し)を書き込み、ウィジェットの表示を前の試合の値のまま残さずnone/noneにリセットする(既存の見逃し時のフォールバック挙動を、試合終了時点のタイミングのまま新しいテーブル経由で維持している)
+- 切替アニメーション(Issue #360): 合計値が更新されたことを視聴者にも分かりやすくするため、値が変わった瞬間だけ数値カウントアップ(旧値→新値を約0.6秒でロールしつつ、ピルをうっすら発光させる)を再生する。フェード・スライド・スケールポップ等の案もArtifactで比較したうえで、差分の大きさそのものが視覚的に伝わるという理由でカウントアップが選ばれた
+  - `overlay-refresh.js`(Issue #104の全ウィジェット共通の自動更新スクリプト)に、**オプトインの**値変化検知・アニメーション発火の仕組みを追加した。対象要素に`id`と`data-animate-on-change="count"`を付けるだけで、body差し替え前後のテキスト比較→カウントアップ再生を自動で行う。この1ウィジェット専用のスクリプトには切り出さず、他ウィジェットが将来同様のアニメーションを必要とした際もそのまま再利用できるようにした(ユーザーとの相談で決定)
+  - JS側は`nss-animate-count`という汎用クラスを付け外しするだけで、発光などの見た目自体は各ウィジェット固有のCSS(`vs_rank_comparison.css`の`.vs-rank-pill.nss-animate-count`)に委ねている
+  - セッション開始直後、[#359](https://github.com/clear-bg/NSS-Result-Tracker/issues/359)により初期表示が「-」になってから最初のVS画面を検知して実際の数値が入る瞬間(「-」→数値)は、このアニメーションを再生しない。`parseInt("-", 10)`が`NaN`になることを利用しており、初回だけを除外する特別な分岐は書いていない(新旧いずれかが数値としてパースできない場合は無演出のまま最終値を表示する)
+  - `prefers-reduced-motion: reduce`の場合はアニメーションを再生せず即座に最終値を表示する
 
 ### 直近試合結果ログウィジェットの見た目(Issue #262)
 
