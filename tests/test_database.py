@@ -1929,6 +1929,37 @@ def test_fetch_latest_vs_rank_snapshot_returns_none_when_no_snapshots():
     assert fetch_latest_vs_rank_snapshot(conn) is None
 
 
+def test_fetch_latest_vs_rank_snapshot_filters_by_session_id():
+    """Issue #359: session_idを指定すると、そのセッションのスナップショットのみを対象にする。"""
+    conn = connect(":memory:")
+    old_session_id = create_session(conn)
+    save_vs_rank_snapshot(
+        conn,
+        session_id=old_session_id,
+        mine_ranks=[SlotRank("∞", 1)] * 4,
+        opponent_ranks=[SlotRank("∞", 1)] * 4,
+        mine_team_color="#111111",
+        opponent_team_color="#222222",
+        detected_at=datetime.now(timezone.utc),
+    )
+    current_session_id = create_session(conn)
+
+    assert fetch_latest_vs_rank_snapshot(conn, session_id=current_session_id) is None
+
+    newest_id = save_vs_rank_snapshot(
+        conn,
+        session_id=current_session_id,
+        mine_ranks=[SlotRank("∞", 40)] * 4,
+        opponent_ranks=[SlotRank("∞", 10)] * 4,
+        mine_team_color="#64bde2",
+        opponent_team_color="#f87abe",
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    header = fetch_latest_vs_rank_snapshot(conn, session_id=current_session_id)
+    assert header["id"] == newest_id
+
+
 def test_save_vs_rank_snapshot_created_at_is_jst():
     conn = connect(":memory:")
 
