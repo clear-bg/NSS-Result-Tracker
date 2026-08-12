@@ -1397,8 +1397,11 @@ def create_app(db_path: Path) -> FastAPI:
 
     @app.get("/overlay/dive-time")
     def overlay_dive_time(request: Request):
+        state = youtube_chat.get_dive_time_state()
         context = {
-            "dive_time": youtube_chat.get_dive_time(),
+            "dive_time_mode": state.mode if state is not None else None,
+            "dive_time": state.time if state is not None else None,
+            "snipe_target": state.snipe_target if state is not None else None,
             "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
             "debug_bg_style": _overlay_debug_bg_style(request),
         }
