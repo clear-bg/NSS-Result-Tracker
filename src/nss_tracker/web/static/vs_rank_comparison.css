@@ -6,14 +6,20 @@
    常時表示することを踏まえて文字数を極力減らしたい(ユーザーとの相談で決定)。
    文言を削って数字だけにすると何の数字か伝わりにくくなるため、代わりに
    左上に小さく"RANK"というキャプションを添えることで、常時表示の邪魔になる
-   文字量を増やさずに意味を補足する。 */
+   文字量を増やさずに意味を補足する。
+   Issue #362: 「合計」の意味合いをより明確にするため"RANK"→"RANK TOTAL"に変更し、
+   文字サイズも14px→20pxに拡大した(Artifactで文言・サイズ候補を比較しユーザーと
+   決定)。 */
 .vs-rank-comparison {
     position: relative;
     display: inline-block;
     /* キャプション分の余白。marginではなくpaddingにするのは、キャプションを
        position: absoluteで浮かせているため、通常のフローに余白を作る必要が
-       あるため(Issue #276でキャプションを拡大したのに合わせて広げた) */
-    padding-top: 20px;
+       あるため(Issue #276でキャプションを拡大したのに合わせて広げた)。
+       Issue #362でキャプションを20pxに拡大した際、行の高さぶん(padding-top =
+       font-size * 1.2 + 3、Issue #276時点の14px/20pxの比率から逆算)だけ
+       20px→27pxに広げ、ピル行と被らないようにした */
+    padding-top: 27px;
 }
 
 .vs-rank-caption {
@@ -22,7 +28,7 @@
     left: 2px;
     /* 実機確認で薄く感じるとのフィードバックを受け、白寄りに調整(Issue #276) */
     color: #e8e8e8;
-    font-size: 14px;
+    font-size: 20px;
     letter-spacing: 0.2em;
     text-transform: uppercase;
 }
