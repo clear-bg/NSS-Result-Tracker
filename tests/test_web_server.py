@@ -1243,7 +1243,7 @@ def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
         '<span id="vs-rank-value-opponent" class="vs-rank-pill" data-animate-on-change="count" '
         'style="background-color: #f87abe;">40</span>' in response.text
     )
-    assert '<div class="vs-rank-caption">Rank</div>' in response.text
+    assert '<div class="vs-rank-caption">Rank Total</div>' in response.text
     assert "160</span><span class=\"vs-rank-vs\">VS</span><span" in response.text
 
 
@@ -1260,7 +1260,7 @@ def test_overlay_vs_rank_comparison_page_shows_dash_placeholders_when_no_data(tm
         '<span id="vs-rank-value-mine" class="vs-rank-pill" data-animate-on-change="count" '
         'style="background-color: #666666;">-</span>' in response.text
     )
-    assert '<div class="vs-rank-caption">Rank</div>' in response.text
+    assert '<div class="vs-rank-caption">Rank Total</div>' in response.text
 
 
 def test_overlay_vs_rank_comparison_page_shows_dash_for_side_with_only_unknown_members(tmp_path: Path):

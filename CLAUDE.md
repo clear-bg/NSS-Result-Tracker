@@ -134,6 +134,7 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 ### 対戦相手ランク比較ウィジェットの見た目・更新タイミング(Issue #145)
 
 - 見た目: 試合中(ゲーム画面が全画面の間)常時表示する想定のため文字量を極力減らしたい一方、数字だけだと何の値か伝わりにくいという実際の見た目確認を経て、「合計ランク：」という先頭ラベルを削除し、代わりに左上に小さく`RANK`というキャプションを添える形にした(ユーザーとの相談で決定。`overlay_vs_rank_comparison.html`・`static/vs_rank_comparison.css`の`vs-rank-caption`参照)。ピル+VSの構成自体(Issue #100/#113)は変更していない
+  - Issue #362: 「合計」の意味合いをより明確にするため、キャプションを`RANK`→`RANK TOTAL`に変更し、文字サイズも14px→20pxに拡大した(Artifactで英語表記の候補・サイズをユーザーと比較して決定)。文字が大きくなった分ピル行と被らないよう、`.vs-rank-comparison`の`padding-top`を20px→27pxに再計算している(`top: -2px`は据え置き。`padding-top ≈ font-size * 1.2 + 3`という、Issue #276時点の14px/20pxの比率から逆算した式で、文字サイズを再度変える場合もこの式を目安にする)
 - 更新タイミング: 従来は試合結果確定(`MatchResult`、試合終了後の`_finalize()`でまとめて払い出される)まで対戦相手ランク比較の表示が更新されず、試合中はずっと「前の試合」の値が表示され続ける問題があった(VS画面確定時点で読み取ったランクは`state/match_state.py`内のメモリ上にバッファされるだけで、DBへの書き込みは試合終了時の`main.py._record_match_result`まで遅延していたため)。VS画面確定を検知した瞬間に即座に反映したいというユーザー要望から、以下の仕組みを追加した:
   - `MatchStateMachine.pop_vs_screen_event()`: `process_frame()`の戻り値(試合終了時の`MatchResult`のみ)とは別に、VS画面確定を検知した直後の1フレームだけ`VsScreenEvent`(読み取ったランク・チームカラー)を返す。`process_frame()`と同じ「取得したら消費される」設計で、`in_match`のような常時参照可能なプロパティにはしていない
   - DBは`matches`/`vs_slot_ranks`(試合結果確定時にまとめて保存する履歴データ、保存タイミング・スキーマとも変更なし)とは別に、新しい`vs_rank_snapshots`/`vs_rank_snapshot_slots`テーブルを追加した。`main.py`が`pop_vs_screen_event()`をポーリングし、Noneでなければその場で`db.save_vs_rank_snapshot()`を呼んで即書き込む。ウィジェット側(`web/server.py`の`_fetch_vs_rank_comparison`)はこのスナップショットの最新1件だけを見るようにし、`matches`/`vs_slot_ranks`への依存を無くした
