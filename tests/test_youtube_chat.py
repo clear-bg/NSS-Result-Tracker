@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from nss_tracker import youtube_chat
-from nss_tracker.youtube_chat import DiveTimeWatcher, _parse_dive_time_comment
+from nss_tracker.youtube_chat import DiveTimeState, DiveTimeWatcher, _parse_dive_time_comment, _parse_snipe_comment
 
 # 現在時刻を23:35に固定してテストする(分のみ指定の繰り上げを検証しやすいため)
 _NOW = datetime(2026, 8, 7, 23, 35)
@@ -48,6 +48,33 @@ def test_parse_dive_time_comment_valid_inputs(text, expected):
 )
 def test_parse_dive_time_comment_invalid_inputs_ignored(text):
     assert _parse_dive_time_comment(text, _NOW) is None
+
+
+@pytest.mark.parametrize(
+    "text,expected_prefix",
+    [
+        ("たろうさんスナイプ", "たろうさん"),
+        ("たろうさんスナイプ中", "たろうさん"),  # Issue #356: 「スナイプ中」終わりも対象
+        ("スナイプ", ""),  # prefix無し(コメントが「スナイプ」単独)
+        ("スナイプ中", ""),  # prefix無し(コメントが「スナイプ中」単独)
+        (" たろうさんスナイプ ", "たろうさん"),  # 前後の空白は無視する
+    ],
+)
+def test_parse_snipe_comment_valid_inputs(text, expected_prefix):
+    assert _parse_snipe_comment(text) == expected_prefix
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "24",  # 数値のみ検知パターンと排他
+        "スナイプしてくる",  # 末尾がスナイプで終わっていない
+        "スナイプ中に負けた",  # 末尾がスナイプ中で終わっていない
+        "",  # 空文字列
+    ],
+)
+def test_parse_snipe_comment_invalid_inputs_ignored(text):
+    assert _parse_snipe_comment(text) is None
 
 
 class _FakeResponse:
@@ -110,7 +137,7 @@ def test_poll_chat_messages_ignores_backlog_on_first_poll(monkeypatch):
     """放送検出直後の最初の1ページは、過去に溜まっていたコメントを『今打たれた
     コメント』として誤検知しないよう状態更新に使わないことを確認する。
     """
-    monkeypatch.setattr(youtube_chat, "_dive_time", None)
+    monkeypatch.setattr(youtube_chat, "_dive_time_state", None)
     watcher = _make_watcher_with_fake_credentials(monkeypatch)
     watcher._live_chat_id = "chat123"
     watcher._skip_next_result = True
@@ -128,13 +155,13 @@ def test_poll_chat_messages_ignores_backlog_on_first_poll(monkeypatch):
 
     watcher._poll_chat_messages()
 
-    assert youtube_chat.get_dive_time() is None
+    assert youtube_chat.get_dive_time_state() is None
     assert watcher._skip_next_result is False
 
 
 def test_poll_chat_messages_updates_dive_time_only_for_chat_owner(monkeypatch):
     """視聴者(isChatOwner=False)のコメントでは絶対に表示が更新されないことを確認する。"""
-    monkeypatch.setattr(youtube_chat, "_dive_time", None)
+    monkeypatch.setattr(youtube_chat, "_dive_time_state", None)
     # 分のみ指定のパース結果(繰り上げの有無)が実行時刻に依存しないよう固定する
     monkeypatch.setattr(youtube_chat, "now_jst", lambda: _NOW)
     watcher = _make_watcher_with_fake_credentials(monkeypatch)
@@ -158,7 +185,7 @@ def test_poll_chat_messages_updates_dive_time_only_for_chat_owner(monkeypatch):
     watcher._poll_chat_messages()
 
     # 視聴者コメント(24)は無視され、配信者コメント(abc、パース不能)も無視されるため未設定のまま
-    assert youtube_chat.get_dive_time() is None
+    assert youtube_chat.get_dive_time_state() is None
 
     monkeypatch.setattr(
         youtube_chat.httpx,
@@ -178,4 +205,56 @@ def test_poll_chat_messages_updates_dive_time_only_for_chat_owner(monkeypatch):
     watcher._poll_chat_messages()
 
     # 配信者コメント(40)のみが反映され、同じページ内の視聴者コメント(45)は無視される
-    assert youtube_chat.get_dive_time() == "23:40"
+    assert youtube_chat.get_dive_time_state() == DiveTimeState(mode="time", time="23:40")
+
+
+def test_poll_chat_messages_switches_to_snipe_state(monkeypatch):
+    """Issue #356: 末尾が「スナイプ」のコメントでスナイプ中表示に切り替わる。"""
+    monkeypatch.setattr(youtube_chat, "_dive_time_state", None)
+    monkeypatch.setattr(youtube_chat, "now_jst", lambda: _NOW)
+    watcher = _make_watcher_with_fake_credentials(monkeypatch)
+    watcher._live_chat_id = "chat123"
+    watcher._skip_next_result = False
+    monkeypatch.setattr(
+        youtube_chat.httpx,
+        "get",
+        lambda *args, **kwargs: _FakeResponse(
+            {
+                "nextPageToken": "token-1",
+                "pollingIntervalMillis": 0,
+                "items": [
+                    {"authorDetails": {"isChatOwner": True}, "snippet": {"displayMessage": "たろうさんスナイプ"}}
+                ],
+            }
+        ),
+    )
+
+    watcher._poll_chat_messages()
+
+    assert youtube_chat.get_dive_time_state() == DiveTimeState(mode="snipe", snipe_target="たろうさん")
+
+
+def test_poll_chat_messages_returns_to_time_state_from_snipe(monkeypatch):
+    """Issue #356: スナイプ中表示に切り替わった後も、次に数値のみのコメントを
+    受け取れば従来通りのHH:MM表示に自動的に戻る(解除専用コマンドは無い)。
+    """
+    monkeypatch.setattr(youtube_chat, "_dive_time_state", DiveTimeState(mode="snipe", snipe_target="たろうさん"))
+    monkeypatch.setattr(youtube_chat, "now_jst", lambda: _NOW)
+    watcher = _make_watcher_with_fake_credentials(monkeypatch)
+    watcher._live_chat_id = "chat123"
+    watcher._skip_next_result = False
+    monkeypatch.setattr(
+        youtube_chat.httpx,
+        "get",
+        lambda *args, **kwargs: _FakeResponse(
+            {
+                "nextPageToken": "token-1",
+                "pollingIntervalMillis": 0,
+                "items": [{"authorDetails": {"isChatOwner": True}, "snippet": {"displayMessage": "40"}}],
+            }
+        ),
+    )
+
+    watcher._poll_chat_messages()
+
+    assert youtube_chat.get_dive_time_state() == DiveTimeState(mode="time", time="23:40")

@@ -1604,6 +1604,64 @@ def test_overlay_rank_delta_distribution_page_shows_empty_message_when_no_data(t
     assert "データがありません" in response.text
 
 
+def test_overlay_dive_time_page_shows_placeholder_when_unset(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(server_module.youtube_chat, "_dive_time_state", None)
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/dive-time")
+
+    assert '<p class="dive-time-caption">次に潜る時間</p>' in response.text
+    assert '<p class="dive-time-value">未設定</p>' in response.text
+
+
+def test_overlay_dive_time_page_shows_time_value(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(
+        server_module.youtube_chat, "_dive_time_state", server_module.youtube_chat.DiveTimeState(mode="time", time="23:40")
+    )
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/dive-time")
+
+    assert '<p class="dive-time-caption">次に潜る時間</p>' in response.text
+    assert '<p class="dive-time-value">23:40</p>' in response.text
+
+
+def test_overlay_dive_time_page_shows_snipe_target(tmp_path: Path, monkeypatch):
+    """Issue #356: prefixがある場合、見出し「スナイプ中」+値行に「prefix配信」を表示する。"""
+    monkeypatch.setattr(
+        server_module.youtube_chat,
+        "_dive_time_state",
+        server_module.youtube_chat.DiveTimeState(mode="snipe", snipe_target="たろうさん"),
+    )
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/dive-time")
+
+    assert '<p class="dive-time-caption is-snipe">スナイプ中</p>' in response.text
+    assert '<p class="dive-time-value is-snipe-target">たろうさん配信</p>' in response.text
+
+
+def test_overlay_dive_time_page_hides_value_line_when_snipe_target_is_empty(tmp_path: Path, monkeypatch):
+    """Issue #356: prefix無し(コメントが「スナイプ」単独等)の場合、値行自体を表示しない。"""
+    monkeypatch.setattr(
+        server_module.youtube_chat, "_dive_time_state", server_module.youtube_chat.DiveTimeState(mode="snipe", snipe_target="")
+    )
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/dive-time")
+
+    assert '<p class="dive-time-caption is-snipe">スナイプ中</p>' in response.text
+    assert "dive-time-value" not in response.text
+
+
 def test_overlay_refresh_script_is_served_and_reads_the_page_it_is_embedded_in(tmp_path: Path):
     """Issue #104: 共有の自動更新スクリプトが静的ファイルとして配信され、
     自分自身のURLをfetchし直してbody差し替えする実装になっていることを確認する。
