@@ -1604,6 +1604,19 @@ def test_overlay_rank_delta_distribution_page_shows_empty_message_when_no_data(t
     assert "データがありません" in response.text
 
 
+def test_overlay_dive_time_widget_has_left_padding_to_avoid_diamond_clipping(tmp_path: Path):
+    """Issue #366: 菱形アイコンは回転により左右にわずかにはみ出すため、
+    ビューポート左端で見切れないよう左padding.を確保していることを確認する。
+    """
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    css_response = client.get("/static/dive_time.css")
+
+    assert "padding-left: 6px;" in css_response.text
+
+
 def test_overlay_dive_time_page_shows_placeholder_when_unset(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(server_module.youtube_chat, "_dive_time_state", None)
     db_path = tmp_path / "test.db"
