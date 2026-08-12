@@ -729,10 +729,17 @@ def _fetch_vs_rank_comparison(db_path: Path) -> Optional[dict]:
     VS画面を見逃した場合等、main.py._record_match_resultが空スナップショットを
     書き込む)はNoneを返す。チームカラー(Issue #113)もスナップショットに含まれる
     ため、あわせてここで返す。
+
+    Issue #359: 現在の配信セッション(db.fetch_current_session_id、_fetch_winrateと
+    同じパターン)のスナップショットのみを対象にする。配信セッション開始直後、
+    まだ今回のセッションでVS画面を検知していない間は、前回配信の値を初期表示として
+    引きずらずNoneを返す(呼び出し元は既存の「スナップショットが1件も無い」場合と
+    同じ"-"表示フォールバックに乗る)。
     """
     conn = _connect(db_path)
     try:
-        snapshot = fetch_latest_vs_rank_snapshot(conn)
+        current_session_id = fetch_current_session_id(conn)
+        snapshot = fetch_latest_vs_rank_snapshot(conn, session_id=current_session_id)
         if snapshot is None:
             return None
         rows = fetch_vs_rank_snapshot_slots(conn, snapshot["id"])

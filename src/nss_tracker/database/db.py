@@ -899,9 +899,23 @@ def save_vs_rank_snapshot(
     return snapshot_id
 
 
-def fetch_latest_vs_rank_snapshot(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
-    """直近VS画面スナップショットのヘッダー行を返す。1件も無い場合はNone。"""
-    return conn.execute("SELECT * FROM vs_rank_snapshots ORDER BY id DESC LIMIT 1").fetchone()
+def fetch_latest_vs_rank_snapshot(
+    conn: sqlite3.Connection, session_id: Optional[int] = None
+) -> Optional[sqlite3.Row]:
+    """直近VS画面スナップショットのヘッダー行を返す。1件も無い場合はNone。
+
+    Issue #359: session_idを指定すると、そのセッションのスナップショットのみを
+    対象にする(配信セッション開始直後、前回配信分の値が初期表示として残らない
+    ようにするため、_fetch_matches_countと同じパターン)。省略時は全期間から
+    最新1件を返す従来通りの挙動。
+    """
+    query = "SELECT * FROM vs_rank_snapshots"
+    params: tuple = ()
+    if session_id is not None:
+        query += " WHERE session_id = ?"
+        params = (session_id,)
+    query += " ORDER BY id DESC LIMIT 1"
+    return conn.execute(query, params).fetchone()
 
 
 def fetch_vs_rank_snapshot_slots(conn: sqlite3.Connection, snapshot_id: int) -> list[sqlite3.Row]:
