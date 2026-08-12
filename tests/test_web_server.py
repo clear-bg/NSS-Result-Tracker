@@ -1235,8 +1235,14 @@ def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
     assert response.status_code == 200
     assert '<link rel="stylesheet" href="/static/overlay.css">' in response.text
     assert '<link rel="stylesheet" href="/static/vs_rank_comparison.css">' in response.text
-    assert '<span class="vs-rank-pill" style="background-color: #64bde2;">160</span>' in response.text
-    assert '<span class="vs-rank-pill" style="background-color: #f87abe;">40</span>' in response.text
+    assert (
+        '<span id="vs-rank-value-mine" class="vs-rank-pill" data-animate-on-change="count" '
+        'style="background-color: #64bde2;">160</span>' in response.text
+    )
+    assert (
+        '<span id="vs-rank-value-opponent" class="vs-rank-pill" data-animate-on-change="count" '
+        'style="background-color: #f87abe;">40</span>' in response.text
+    )
     assert '<div class="vs-rank-caption">Rank</div>' in response.text
     assert "160</span><span class=\"vs-rank-vs\">VS</span><span" in response.text
 
@@ -1250,7 +1256,10 @@ def test_overlay_vs_rank_comparison_page_shows_dash_placeholders_when_no_data(tm
 
     response = client.get("/overlay/vs-rank-comparison")
 
-    assert '<span class="vs-rank-pill" style="background-color: #666666;">-</span>' in response.text
+    assert (
+        '<span id="vs-rank-value-mine" class="vs-rank-pill" data-animate-on-change="count" '
+        'style="background-color: #666666;">-</span>' in response.text
+    )
     assert '<div class="vs-rank-caption">Rank</div>' in response.text
 
 
@@ -1273,8 +1282,14 @@ def test_overlay_vs_rank_comparison_page_shows_dash_for_side_with_only_unknown_m
 
     response = client.get("/overlay/vs-rank-comparison")
 
-    assert '<span class="vs-rank-pill" style="background-color: #64bde2;">160</span>' in response.text
-    assert '<span class="vs-rank-pill" style="background-color: #f87abe;">-</span>' in response.text
+    assert (
+        '<span id="vs-rank-value-mine" class="vs-rank-pill" data-animate-on-change="count" '
+        'style="background-color: #64bde2;">160</span>' in response.text
+    )
+    assert (
+        '<span id="vs-rank-value-opponent" class="vs-rank-pill" data-animate-on-change="count" '
+        'style="background-color: #f87abe;">-</span>' in response.text
+    )
 
 
 def test_overlay_vs_rank_comparison_page_uses_default_color_when_team_color_not_detected(tmp_path: Path):
@@ -1296,8 +1311,14 @@ def test_overlay_vs_rank_comparison_page_uses_default_color_when_team_color_not_
 
     response = client.get("/overlay/vs-rank-comparison")
 
-    assert '<span class="vs-rank-pill" style="background-color: #666666;">160</span>' in response.text
-    assert '<span class="vs-rank-pill" style="background-color: #666666;">40</span>' in response.text
+    assert (
+        '<span id="vs-rank-value-mine" class="vs-rank-pill" data-animate-on-change="count" '
+        'style="background-color: #666666;">160</span>' in response.text
+    )
+    assert (
+        '<span id="vs-rank-value-opponent" class="vs-rank-pill" data-animate-on-change="count" '
+        'style="background-color: #666666;">40</span>' in response.text
+    )
 
 
 def test_percentile_linear_interpolation():
