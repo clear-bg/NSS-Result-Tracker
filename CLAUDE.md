@@ -130,6 +130,17 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 - Issue #247: 配信用ダッシュボードのウィジェットはOBSの「ブラウザ」ソースとして表示しているが、ブラウザソースは一度読み込んだきり保持されるため、本アプリ(Webサーバー)を再起動してもOBS側で手動更新しない限り表示が復帰しない問題があった。接続成功直後に1回だけ、`.env`の`OBS_BROWSER_SOURCE_NAMES`(カンマ区切り、使わない場合は`none`)で指定したソースそれぞれに対し、obs-websocketの`PressInputPropertiesButton`(`press_input_properties_button(name, "refreshnocache")`)を呼んで自動的に再読み込みする。1つのソースの更新失敗は他のソースの更新を妨げない(個別にWARNINGログ)
 - Issue #248: 配信によっては手動でシーンを操作したい場合があるため、`.env`の`OBS_SCENE_SWITCHING_ENABLED`(`true`/`false`、`/admin`から変更可能な5項目の1つ、上記「配信中の設定変更GUI」参照)でシーン自動切替のON/OFFを切り替えられる。`false`にしてもOBSへの接続自体(シーン名の事前確認・Issue #247のブラウザソース再読み込みを含む)は維持したまま、`set_in_match`呼び出し時の`set_current_program_scene`だけをスキップする(接続を切らないことで、無効化中もブラウザソースの表示は最新に保たれる)。値は呼び出しのたびに`.env`から再読み込みするため、配信中に切り替えても検知ループの再起動は不要
 
+### OBSウィジェット：試合間シーン切替時にランク推移グラフへ登場アニメーションを追加する(Issue #361)
+
+試合が終わりOBSが試合中シーンから試合間シーンへ切り替わった瞬間、`/overlay/rank-graph`のグラフに控えめな登場アニメーション(折れ線が左から伸びる)を再生する。複数案(塗りが下から起き上がる/左から右へクリップで払う/フェード+浮き上がりのみ)をArtifactでモックアップしてユーザーと比較し、issueで最初に挙がっていた「折れ線が左から伸びる」案(通過位置に応じて点も段階的にポップ、塗りは緩やかにフェード)を採用した。
+
+- **OBS側からページへの直接通知は使えないことを実機で確認済み**: OBSのブラウザソースには`window.obsstudio`というJS API(`obsSceneChanged`/`obsSourceVisibleChanged`等のイベント、obsproject/obs-browser提供)が存在し、これが使えればポーリング無しで正確なタイミングを取れる可能性を検討したが、ユーザーの実機OBSで確認したところ`typeof window.obsstudio`が`undefined`だった(利用不可)。そのためissue本文どおり、`main.py`側で検知してポーリングで伝える方式を採用する
+- **信号**: `match_transition.py`(新規モジュール、`youtube_chat.py`の`DiveTimeState`と同じ「DBを経由しないインメモリ状態」パターン)が、試合間に入るたびに1ずつ増える意味の無いエポックカウンタを持つ。`main.py`の`machine.in_match`がTrue→Falseになった瞬間(OBSシーン自動切替と全く同じ検知箇所、L411-413)で`notify_between_matches()`を呼ぶ。`OBS_SCENE_SWITCHING_ENABLED`の値に関わらず発火する(OBSのシーン切替そのものではなく試合状態の遷移自体を表す信号のため)。信号自体はランク推移グラフ専用にせず、将来他のウィジェット(得点/アシスト・勝率、直近試合結果ログ、勝敗別ランク増減分布等)にも転用できるよう汎用に保つ
+- **overlay-refresh.jsの拡張**: Issue #360の`data-animate-on-change="count"`(テキスト比較→カウントアップ)とは別に、`"signal"`モードを追加した。対象要素(`/overlay/rank-graphでは<svg id="rank-graph-svg">`自身)に`data-epoch`属性を持たせておくと、body差し替え前後でこの属性を比較し、変化していればクラス`nss-animate-entrance`を一時的に付与する(`ENTRANCE_ANIMATION_HOLD_MS`=2000ms後に自動で外す。子要素ごとのstagger(段階的遅延)アニメーションが全て終わる前にクラスを外すと途中で打ち切られてしまうための猶予)。何をどう演出するかは各ウィジェット固有のCSSに委ねる(`rank_graph.css`が最初の利用例)
+- **SVG側の実装**: `_render_rank_graph_svg`の`polyline`に`pathLength="1000"`を付与し、実際の座標・長さに関わらず`stroke-dasharray`/`stroke-dashoffset`の基準を1000に正規化する。各`circle`(点)には、折れ線が実際にその点を通過するタイミングに合わせたstagger用の`animation-delay`をインラインstyleで付与する(`_RANK_GRAPH_ENTRANCE_LINE_DRAW_MS`、CSS側の`animation-duration`と値を一致させる必要がある)。通常表示時(`nss-animate-entrance`クラス無し)はこれらの属性が見た目に一切影響しない
+- **ポーリング方式ゆえの遅延**: 実際のシーン切り替わりから、ウィジェットが次にポーリングでエポックの変化に気づくまで最大でもポーリング間隔分の遅れが生じる(ユーザー確認済みのトレードオフ)。プッシュ通知方式(WebSocket/SSE)への転換はIssue #104で意図的に避けた設計のため今回のスコープ外。この遅れを人間の目に気にならない程度まで縮めるため、`/overlay/rank-graph`だけ他ウィジェットの既定5秒より短い`_RANK_GRAPH_REFRESH_INTERVAL_MS`(0.5秒)を使う。ローカル1クライアントのみが見る用途のため、ポーリング頻度を上げること自体のコストは無視できる
+- **動作確認時の注意(実機テストで判明)**: `overlay-refresh.js`は`<body>`の中身だけを差し替える設計のため、`<head>`内の`<link rel="stylesheet">`(CSS)は自動更新の対象に含まれない。CSS/JSの静的ファイルを変更しても、OBSのブラウザソース側は表示を開いた時点のキャッシュを見続け、ブラウザソースを手動でリロードする(右クリック→更新、またはIssue #247の`refreshnocache`の仕組み)までは反映されない。今回の変更に限らず、overlay系ウィジェットのCSS/JSを変更した際は毎回この点に注意する
+
 ### チャットコメント連動「次に潜る時間」オーバーレイ(`youtube_chat.py`、Issue #265)
 
 配信中、自分(配信者)がYouTube Liveのコメント欄に数値のみのコメント(例: `24`)を打つと、それを自動検知して`/overlay/dive-time`の表示(「次に潜る時間」)を更新する。
