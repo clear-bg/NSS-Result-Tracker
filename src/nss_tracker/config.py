@@ -77,6 +77,11 @@ os.environと`.env`ファイルの両方を更新する(`.env`側も更新する
 にも同じ値を引き継ぐため)。この5項目を選んだ理由は、配信中に調整したくなり得る値
 (出演者・記録方針・グラフの表示範囲・シーン自動切替の要否)に絞ったため。
 キャプチャ設定やOBS接続情報等は配信開始前に一度決めれば十分なため対象外とした。
+
+`get_room_type`/`set_room_type`(Issue #358)は野良/専用部屋の現在設定を保持するが、
+上記5項目とは異なり`.env`へ永続化しない(モジュールレベル変数のみで完結し、
+アプリ起動のたびに必ず`"random"`にリセットされる。切り替え忘れたまま前回配信の
+設定を引き継ぐ事故を防ぐため)。詳細は各関数のdocstring参照。
 """
 
 import logging
@@ -387,3 +392,38 @@ def update_editable_settings(values: dict[str, str]) -> None:
     for key in _EDITABLE_ENV_KEYS:
         os.environ[key] = values[key]
         set_key(dotenv_path, key, values[key])
+
+
+_VALID_ROOM_TYPES = ("random", "private")
+
+# Issue #358: 野良/専用部屋の現在設定。_EDITABLE_ENV_KEYSの5項目と異なり.envには
+# 永続化しない(切り替え忘れたまま前回配信の設定を引き継ぐリスクを避けるため、
+# アプリ起動のたびに必ず'random'にリセットする運用。モジュールインポート時に
+# この初期値へ一度だけ初期化されるため、プロセス起動ごとに自然とリセットされる。
+# os.environではなくモジュールレベル変数で保持するのは、.envから読み込む他の
+# 設定値と混同しないようにするため)。
+_current_room_type = "random"
+
+
+def get_room_type() -> str:
+    """現在の野良/専用部屋設定を取得する('random'(野良) / 'private'(専用部屋))。
+
+    database.db.save_match_result()が試合ごとのmatches.room_typeを決めるのに使う
+    (ただしランクが検出された試合は野良でしか成立しないため、この値によらず
+    常に'random'を強制する。db.py参照)。
+    """
+    return _current_room_type
+
+
+def set_room_type(value: str) -> None:
+    """管理画面(/admin)からの野良/専用部屋切り替えを反映する(Issue #358)。
+
+    _EDITABLE_ENV_KEYSの更新(update_editable_settings)と異なり.envへは書き込まない。
+    不正な値の場合はConfigErrorを送出する。
+    """
+    if value not in _VALID_ROOM_TYPES:
+        raise ConfigError(
+            f"room_typeの値が不正です: {value}({'/'.join(_VALID_ROOM_TYPES)}のいずれかを指定してください)"
+        )
+    global _current_room_type
+    _current_room_type = value

@@ -79,7 +79,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from nss_tracker.config import get_db_path, get_goal_record_mode, get_rank_after_correction_enabled, is_allowed_player
+from nss_tracker.config import (
+    get_db_path,
+    get_goal_record_mode,
+    get_rank_after_correction_enabled,
+    get_room_type,
+    is_allowed_player,
+)
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchResult
 from nss_tracker.timeutil import now_jst
@@ -152,6 +158,9 @@ CREATE TABLE IF NOT EXISTS matches (
     league_changed TEXT,            -- 'up' / 'down' / NULL
     mine_team_color TEXT,           -- VS画面で実測した自チームの色(hex文字列、例: '#64bde2')。Issue #113
     opponent_team_color TEXT,       -- 同、相手チーム。VS画面を検知できなかった試合ではどちらもNULL
+    room_type TEXT NOT NULL DEFAULT 'random', -- 'random'(野良) / 'private'(専用部屋)。Issue #358。
+                                     -- ランクが検出された試合(rank_before_ocr/rank_after_ocrの
+                                     -- いずれかが非NULL)は常に'random'を強制する(save_match_result参照)
     created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601, JST)
     updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601, JST)
 );
@@ -326,6 +335,24 @@ def _migrate_matches_add_rank_before_ocr(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_matches_add_room_type(conn: sqlite3.Connection) -> None:
+    """Issue #358: 既存DBファイルのmatchesテーブルにroom_type列を追加する。
+
+    DEFAULT付きのNOT NULL列追加のため、SQLiteのALTER TABLE ADD COLUMNだけで済む
+    (DEFAULTがある場合、既存行にもその値が自動的に埋まる)。既存行は全て
+    'random'(野良)扱いになる。専用部屋の試合を遡って区別することはできない
+    (CLAUDE.md・Issue #358参照)。新規DBでは_SCHEMA自体に既にroom_type列を含む
+    ため、この関数は無害にreturnする。
+    """
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    if any(c["name"] == "room_type" for c in columns):
+        return
+
+    logger.info("matchesテーブルにroom_type列を追加しています(既存行は全て'random'扱い)")
+    conn.execute("ALTER TABLE matches ADD COLUMN room_type TEXT NOT NULL DEFAULT 'random'")
+    conn.commit()
+
+
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """DBに接続し、テーブルが無ければ作成して返す。
 
@@ -345,6 +372,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     _migrate_matches_add_team_color(conn)
     _migrate_matches_add_rank_after_ocr(conn)
     _migrate_matches_add_rank_before_ocr(conn)
+    _migrate_matches_add_room_type(conn)
     logger.info("DBに接続しました: %s", Path(db_path).resolve())
     return conn
 
@@ -564,15 +592,23 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
     Issue #308: 同様にmatch.rank_before(自動検知値)もrank_before_ocr列へ保存し、
     正の値であるrank_beforeは直近のランクを賭けた試合のrank_afterから導出する
     (_resolve_rank_before参照)。
+
+    Issue #358: room_typeはconfig.get_room_type()(/adminから切り替える現在設定、
+    .envには永続化しない)を基本とするが、match.rank_before/match.rank_afterの
+    いずれかが非None(=ランクが検出された試合)の場合は、ランクを賭けた対戦は
+    仕組み上野良でしか成立しないため、現在設定によらず必ず'random'を強制する
+    (切り替え忘れによる誤混入を防ぐ安全装置、ユーザー確認済み)。
     """
     _maybe_correct_previous_match_rank_after(conn, match.rank_before)
     rank_before = _resolve_rank_before(conn, match.rank_before)
+    is_ranked_match = match.rank_before is not None or match.rank_after is not None
+    room_type = "random" if is_ranked_match else get_room_type()
     now = now_jst().isoformat()
     cursor = conn.execute(
         "INSERT INTO matches "
         "(session_id, detected_at, result, rank_before, rank_before_ocr, rank_after_ocr, "
-        "mine_team_color, opponent_team_color, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "mine_team_color, opponent_team_color, room_type, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             session_id,
             match.detected_at.isoformat(),
@@ -582,6 +618,7 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
             _round_rank(match.rank_after),
             match.mine_team_color,
             match.opponent_team_color,
+            room_type,
             now,
             now,
         ),
