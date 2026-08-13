@@ -9,6 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from nss_tracker import match_transition
 from nss_tracker.database import db
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.web import server as server_module
@@ -21,7 +22,9 @@ from nss_tracker.web.server import (
     _OVERLAY_WIDGET_LABELS,
     _RANK_GRAPH_LEFT_PADDING,
     _RANK_GRAPH_MARGIN_LEFT,
+    _RANK_GRAPH_ENTRANCE_LINE_DRAW_MS,
     _RANK_GRAPH_MARGIN_RIGHT,
+    _RANK_GRAPH_REFRESH_INTERVAL_MS,
     _RANK_GRAPH_TITLE,
     _RANK_GRAPH_VIEWBOX_HEIGHT,
     _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE,
@@ -402,6 +405,56 @@ def test_render_rank_graph_svg_with_single_point_does_not_divide_by_zero():
     assert svg.count("<circle") == 1
 
 
+def test_render_rank_graph_svg_embeds_epoch_as_data_attribute():
+    """Issue #361: overlay-refresh.jsのsignalモードが比較する対象。svg要素自体に
+    id・data-animate-on-change="signal"・data-epochを持たせる(データ有無・
+    件数に関わらず常に埋め込む、通常表示の見た目には影響しない)。
+    """
+    history = _continuous_history([10, 20, 15])
+
+    svg_with_data = _render_rank_graph_svg(history, epoch=7)
+    svg_without_data = _render_rank_graph_svg([], epoch=7)
+
+    for svg in (svg_with_data, svg_without_data):
+        assert 'id="rank-graph-svg"' in svg
+        assert 'data-animate-on-change="signal"' in svg
+        assert 'data-epoch="7"' in svg
+
+
+def test_render_rank_graph_svg_epoch_defaults_to_zero():
+    svg = _render_rank_graph_svg(_continuous_history([10, 20]))
+
+    assert 'data-epoch="0"' in svg
+
+
+def test_render_rank_graph_svg_polyline_has_normalized_path_length():
+    """Issue #361: 実際の座標・長さに関わらずstroke-dasharray/dashoffsetの基準を
+    1000に正規化するため、polyline要素にpathLength="1000"を付与する。
+    """
+    svg = _render_rank_graph_svg(_continuous_history([10, 20, 15]))
+
+    assert 'pathLength="1000"' in svg
+
+
+def test_render_rank_graph_svg_points_have_staggered_entrance_delay():
+    """Issue #361: 登場アニメーション時、折れ線が実際にその点を通過するタイミングに
+    合わせて各点をポップさせるため、最初の点は遅延0ms・最後の点は線の描画所要時間
+    (_RANK_GRAPH_ENTRANCE_LINE_DRAW_MS)ちょうどになるよう、間の点は均等分散させる。
+    """
+    history = _continuous_history([10, 20, 15, 25, 12])
+
+    svg = _render_rank_graph_svg(history)
+
+    assert 'style="animation-delay:0ms"' in svg
+    assert f'style="animation-delay:{_RANK_GRAPH_ENTRANCE_LINE_DRAW_MS}ms"' in svg
+
+
+def test_render_rank_graph_svg_single_point_entrance_delay_is_zero():
+    svg = _render_rank_graph_svg(_continuous_history([10]))
+
+    assert 'style="animation-delay:0ms"' in svg
+
+
 def test_render_rank_graph_svg_with_flat_values_does_not_divide_by_zero():
     history = _continuous_history([5, 5, 5])
 
@@ -686,6 +739,23 @@ def test_overlay_rank_graph_page_includes_summary_stats(tmp_path: Path):
     assert "現在のランク" in response.text
     assert "最高ランク" in response.text
     assert "配信開始時" in response.text
+
+
+def test_overlay_rank_graph_page_embeds_current_between_matches_epoch(tmp_path: Path):
+    """Issue #361: match_transition.get_between_matches_epoch()の現在値がsvgへ
+    そのまま埋め込まれることを確認する(overlay-refresh.jsのsignalモードがこの値を
+    ポーリング前後で比較して登場アニメーションを発火させる)。
+    """
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+    before_epoch = match_transition.get_between_matches_epoch()
+    match_transition.notify_between_matches()
+
+    response = client.get("/overlay/rank-graph")
+
+    assert response.status_code == 200
+    assert f'data-epoch="{before_epoch + 1}"' in response.text
 
 
 def test_rank_graph_x_axis_max_extends_beyond_uneven_match_count():
@@ -1736,11 +1806,26 @@ def test_overlay_refresh_script_is_served_and_reads_the_page_it_is_embedded_in(t
     assert "document.body.innerHTML" in response.text
 
 
+def test_overlay_refresh_script_supports_signal_mode_entrance_animation(tmp_path: Path):
+    """Issue #361: #360のcountモード(テキスト比較)とは別に、data-epoch属性の変化を
+    比較してnss-animate-entranceクラスを付与するsignalモードが実装されていることを確認する。
+    """
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/static/overlay-refresh.js")
+
+    assert response.status_code == 200
+    assert 'data-animate-on-change="signal"' in response.text
+    assert "nss-animate-entrance" in response.text
+    assert "data-epoch" in response.text
+
+
 @pytest.mark.parametrize(
     "path",
     [
         "/overlay/goal-stats-winrate",
-        "/overlay/rank-graph",
         "/overlay/match-log",
         "/overlay/rank-delta-distribution",
         "/overlay/dive-time",
@@ -1774,6 +1859,22 @@ def test_overlay_vs_rank_comparison_page_uses_shorter_refresh_interval(tmp_path:
     expected_tag = (
         f'<script src="/static/overlay-refresh.js" data-interval-ms="{_VS_RANK_COMPARISON_REFRESH_INTERVAL_MS}">'
     )
+    assert expected_tag in response.text
+
+
+def test_overlay_rank_graph_page_uses_shorter_refresh_interval(tmp_path: Path, monkeypatch):
+    """Issue #361: 試合間シーンへの切り替わりとポーリング検知のずれを縮めるため、
+    他より短い間隔にしている(ユーザーとの相談で決定)。
+    """
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/rank-graph")
+
+    expected_tag = f'<script src="/static/overlay-refresh.js" data-interval-ms="{_RANK_GRAPH_REFRESH_INTERVAL_MS}">'
     assert expected_tag in response.text
 
 

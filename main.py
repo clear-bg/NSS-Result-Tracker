@@ -65,6 +65,7 @@ from nss_tracker.detection.rank_ocr import (
     read_rank,
 )
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
+from nss_tracker import match_transition
 from nss_tracker.obs_control import ObsSceneController
 from nss_tracker.rank_entry_clips import (
     DEFAULT_CLIPS_DIR,
@@ -410,6 +411,12 @@ def run(
 
             if machine.in_match != prev_in_match:
                 obs_controller.set_in_match(machine.in_match)
+                if prev_in_match and not machine.in_match:
+                    # Issue #361: 試合間シーンへ切り替わった瞬間を、ランク推移グラフ等の
+                    # 登場アニメーション用にウィジェット側へ知らせる(OBS_SCENE_SWITCHING_ENABLED
+                    # の値に関わらず発火する。OBS側のシーン切替そのものではなく、試合状態の
+                    # 遷移自体を表す信号のため)
+                    match_transition.notify_between_matches()
                 prev_in_match = machine.in_match
 
             if result is not None:

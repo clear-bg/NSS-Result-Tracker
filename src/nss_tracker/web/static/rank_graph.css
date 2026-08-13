@@ -144,3 +144,50 @@
     stroke-width: 1;
     opacity: 0.15;
 }
+
+/* Issue #361: 試合間シーンへ切り替わった瞬間の登場アニメーション。
+   overlay-refresh.jsのsignalモード(data-animate-on-change="signal")経由で
+   svg要素にnss-animate-entranceクラスが一時的に付与された時だけ再生し、
+   通常のポーリング更新(値の変化が無い時)では何もしない。枠・タイトル・
+   統計タイルは動かさず、折れ線・塗り・点だけが変化する(ユーザーとの相談で
+   決定した案。他の3案(塗りが下から起き上がる/左から右へクリップで払う/
+   フェード+浮き上がりのみ)はArtifactでの比較用モックアップのみで不採用)。
+   reduced-motion環境ではJS側(overlay-refresh.js)がそもそもクラスを
+   付与しないため、ここでの追加分岐は不要 */
+svg.nss-animate-entrance .rank-graph-line {
+    /* server.py側でpolyline要素にpathLength="1000"を付与しているため、
+       実際の折れ線の座標・長さに関わらずこの値をそのまま使える */
+    stroke-dasharray: 1000;
+    stroke-dashoffset: 1000;
+    animation: rank-graph-entrance-draw 900ms cubic-bezier(0.3, 0.7, 0.2, 1) forwards;
+}
+
+svg.nss-animate-entrance .rank-graph-area {
+    opacity: 0;
+    animation: rank-graph-entrance-area-fade 900ms ease-out forwards;
+}
+
+/* server.py側で各circle要素にanimation-delay(通過タイミングに応じた段階的な遅延)を
+   インラインstyleで付与している */
+svg.nss-animate-entrance .rank-graph-point {
+    opacity: 0;
+    transform: scale(0);
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: rank-graph-entrance-point-pop 280ms cubic-bezier(0.2, 1.4, 0.4, 1) forwards;
+}
+
+@keyframes rank-graph-entrance-draw {
+    to { stroke-dashoffset: 0; }
+}
+
+@keyframes rank-graph-entrance-area-fade {
+    to { opacity: 0.14; }
+}
+
+@keyframes rank-graph-entrance-point-pop {
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}

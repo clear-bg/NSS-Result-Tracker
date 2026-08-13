@@ -11,6 +11,7 @@ import sys
 import webbrowser
 from datetime import datetime
 
+import numpy as np
 import pytest
 
 from conftest import requires_video_fixtures
@@ -256,5 +257,93 @@ def test_run_wires_capture_state_and_database(videos_dir, monkeypatch, tmp_path)
         assert row["created_at"] is not None
         assert row["updated_at"] is not None
         assert row["session_id"] == session_id
+    finally:
+        conn.close()
+
+
+def test_run_notifies_match_transition_only_on_true_to_false(monkeypatch, tmp_path):
+    """Issue #361: match_transition.notify_between_matches()は、machine.in_matchが
+    True->Falseになった瞬間(obs_controller.set_in_matchを呼んでいるのと同じ検知箇所)
+    だけ呼ばれ、False->True(試合開始)や変化無しでは呼ばれないことを確認する。
+
+    実画像・OCRに依存しないロジック(main.pyのループ配線そのもの)のため、
+    MatchStateMachine/FfmpegFrameReaderの代わりに最小限のフェイクを使い、
+    fixture・OCR初期化(_warmup_ocr_engines、実測3.8秒)無しでCI・クローン直後でも
+    常に実行できるようにする(CLAUDE.mdのテスト方針参照)。
+    """
+    monkeypatch.setattr(main, "_warmup_ocr_engines", lambda: None)
+
+    # 各フレーム処理後のin_matchの値(初期値Falseからの遷移):
+    # True(試合開始)->True(変化無し)->False(試合終了)->True(次の試合開始)
+    in_match_sequence = [True, True, False, True]
+    notify_calls = []
+    monkeypatch.setattr(main.match_transition, "notify_between_matches", lambda: notify_calls.append(1))
+
+    class _FakeMachine:
+        def __init__(self):
+            self.current_state = "watching"
+            self.in_match = False
+            self._sequence = iter(in_match_sequence)
+
+        def process_frame(self, frame):
+            self.in_match = next(self._sequence)
+            return None
+
+        def pop_vs_screen_event(self):
+            return None
+
+    class _FakeReader:
+        def __init__(self, frame_count):
+            self._remaining = frame_count
+            self.is_running = True
+            self.error = None
+            self.frames_produced = 0
+            self.frames_consumed = 0
+
+        def start(self):
+            pass
+
+        def read(self, timeout):
+            if self._remaining <= 0:
+                self.is_running = False
+                return None
+            self._remaining -= 1
+            self.frames_produced += 1
+            self.frames_consumed += 1
+            return np.zeros((2, 2, 3), dtype=np.uint8)
+
+        def stop(self):
+            pass
+
+    set_in_match_calls = []
+
+    class _RecordingObsController:
+        def set_in_match(self, in_match):
+            set_in_match_calls.append(in_match)
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db._SCHEMA)
+        conn.commit()
+        session_id = db.create_session(conn)
+        clip_recorder = RankEntryClipRecorder(output_dir=tmp_path / "rank_entry_clips")
+        gauge_clip_recorder = RankEntryClipRecorder(
+            output_dir=tmp_path / "rank_gauge_clips", target_width=GAUGE_TARGET_WIDTH, crop_roi=GAUGE_ROI_ENLARGED
+        )
+
+        main.run(
+            _FakeReader(len(in_match_sequence)),
+            _FakeMachine(),
+            conn,
+            session_id,
+            _RecordingObsController(),
+            30.0,
+            clip_recorder,
+            gauge_clip_recorder,
+        )
+
+        assert set_in_match_calls == [True, False, True]
+        assert len(notify_calls) == 1
     finally:
         conn.close()
