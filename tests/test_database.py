@@ -108,6 +108,70 @@ def test_save_match_result_without_session_id_leaves_it_null():
     assert row["session_id"] is None
 
 
+def test_save_match_result_uses_current_room_type_for_unranked_match(monkeypatch):
+    """Issue #358: ランクを賭けない試合(rank_before/rank_afterどちらもNone)は、
+    config.get_room_type()(/adminからの現在設定)がそのままroom_typeとして
+    保存されることを確認する。
+    """
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["room_type"] == "private"
+
+
+def test_save_match_result_defaults_room_type_to_random_when_unranked(monkeypatch):
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["room_type"] == "random"
+
+
+@pytest.mark.parametrize(
+    "rank_before,rank_after",
+    [(38.5, None), (None, 39.0), (38.5, 39.0)],
+)
+def test_save_match_result_forces_random_room_type_for_ranked_match(monkeypatch, rank_before, rank_after):
+    """Issue #358: ランクが検出された試合(rank_before/rank_afterのいずれかが非None)は、
+    現在の野良/専用部屋設定が'private'であっても、切り替え忘れ対策として必ず
+    'random'に上書きされることを確認する(ランクを賭けた対戦は仕組み上野良でしか
+    成立しないため)。
+    """
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=rank_before,
+        rank_after=rank_after,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["room_type"] == "random"
+
+
 def test_save_match_result_corrects_previous_rank_after_with_small_diff(caplog, monkeypatch):
     """Issue #179: 直前の試合のrank_afterと今回のrank_beforeに差があれば、
     続いている試合とみなして直前の試合のrank_afterを補正することを確認する。
@@ -818,6 +882,48 @@ def test_connect_migrates_legacy_matches_without_rank_before_ocr(tmp_path):
 
 
 def test_connect_migrates_legacy_matches_without_rank_before_ocr_is_idempotent(tmp_path):
+    db_path = tmp_path / "test.db"
+    connect(db_path).close()
+
+    connect(db_path).close()  # 2回目もエラーにならない
+
+
+def test_connect_migrates_legacy_matches_without_room_type(tmp_path):
+    """Issue #358: room_type列が無い移行前のDBファイルに対しても、connect()を
+    呼ぶだけで列が追加され、既存行は全て'random'(野良)扱いになることを確認する。
+    """
+    db_path = tmp_path / "legacy.db"
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.executescript(
+        """
+        CREATE TABLE matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            result TEXT NOT NULL,
+            rank_before REAL,
+            rank_after REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO matches (detected_at, result, created_at, updated_at)
+            VALUES ('2026-07-01T00:00:00+09:00', 'win', '2026-07-01T00:00:00+09:00', '2026-07-01T00:00:00+09:00');
+        """
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    conn = connect(db_path)
+
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    room_type_column = next(c for c in columns if c["name"] == "room_type")
+    assert room_type_column["notnull"] == 1
+
+    rows = fetch_all_matches(conn)
+    assert len(rows) == 1
+    assert rows[0]["room_type"] == "random"
+
+
+def test_connect_migrates_legacy_matches_without_room_type_is_idempotent(tmp_path):
     db_path = tmp_path / "test.db"
     connect(db_path).close()
 
