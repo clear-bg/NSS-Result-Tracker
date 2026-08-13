@@ -99,11 +99,24 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 
 `ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・`RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`の5項目(`config.py`の`_EDITABLE_ENV_KEYS`。5つ目はIssue #248で追加)のみ、配信中に調整したくなり得る値としてWebダッシュボードの管理画面(`/admin`)からGUIで編集できる。キャプチャ設定・OBS接続情報等、配信開始前に一度決めれば十分な値は対象外(`.env`の手動編集のまま)。対象項目の選定理由・バリデーション方式・`.env`同時更新の仕組みは`src/nss_tracker/config.py`のモジュールdocstring参照。
 
+`/admin`には上記5項目とは別に、野良/専用部屋の切り替え(Issue #358、下記「専用部屋の試合の区別」節参照)もある。こちらは`.env`に永続化しない別の仕組みのため`_EDITABLE_ENV_KEYS`には含めず、`/admin/room-type`への独立したフォーム・POSTで扱う。
+
 - 別プロセスのネイティブGUI(tkinter等)は不採用とし、既存のFastAPI Webダッシュボード(同一プロセス内・別スレッド)に`/admin`ページを追加する方式にした(ユーザーとの相談で決定)。理由: 対象5項目は呼び出しのたびに`os.environ`を読み直す実装のため、同一プロセス内で直接書き換えれば検知ループの再起動なしに反映できる。別プロセスのGUIだとプロセス間で値を受け渡す仕組みが別途必要になる
 - `main.py`起動時に`/admin`のURLを既定ブラウザで自動的に開く(`webbrowser.open()`、失敗してもWARNINGログのみでアプリ全体は継続する)。視聴者向けオーバーレイページ(`/overlay/xxx`、透過背景)とは別パスにし、`/admin`自体は`overlay.css`を使わず通常のブラウザ表示として組む(`static/admin.css`)
 - 更新結果は`nss_tracker.web`ロガーでログに残す(成功=INFO、拒否=WARNING)
 - Issue #257: `/admin`には上記の設定フォームに加え、各`/overlay/xxx`ウィジェットへのリンク一覧(クリックで別タブが開く、iframeでのライブプレビューはスコープ外)も表示する。OBSのブラウザソースごとにURLが分かれているため、動作確認等で個別に開き直す手間を減らす目的。リンク先はテンプレートにハードコードせず、`web/server.py`の`_overlay_widget_links()`が実際に登録された`/overlay/xxx`ルート(`app.routes`)から機械的に収集する。表示ラベルのみ`_OVERLAY_WIDGET_LABELS`辞書で個別管理し、新しいoverlayルートを追加した際にラベルの追記を忘れるとアプリ起動時(`create_app()`呼び出し時)にRuntimeErrorで気づける設計にした
 - Issue #259: `/overlay/xxx`は`static/overlay.css`でOBS用に背景を`transparent`・文字色を白にしているため、通常のブラウザ(背景白)で開くと白文字が読めない。`/admin`のリンク一覧(#257)はこの問題を避けるため、リンク先URLに`?debug_bg=1`を付ける。overlay側のルートハンドラは`_overlay_debug_bg_style()`でこのクエリパラメータの**有無のみ**を見て(値そのものはHTML/CSSインジェクションを避けるため受け取らない)、付いていれば`<body>`に固定の黒背景inline styleを追加する。OBSのブラウザソースが実際に登録するURLにはこのパラメータを付けないため、配信時の見た目には一切影響しない。`overlay-refresh.js`(#104)は`<body>`のinnerHTMLしか差し替えないため、このinline styleは自動更新後も保持される
+
+### 専用部屋の試合の区別(Issue #358)
+
+野良マッチングとは別に、フレンドと遊ぶ「専用部屋」がある。専用部屋で遊ぶときも記録自体は残すが、`/overlay/goal-stats-winrate`の**累計**勝率にはフレンド戦の結果を混ぜない。直近試合結果ログ(`/overlay/match-log`)・勝率の「今回」(配信セッション単位)は野良・専用部屋を問わず今まで通りそのまま表示する(専用部屋で配信するときはその場の結果を見たいため)。
+
+- `matches.room_type`(`TEXT NOT NULL DEFAULT 'random'`、`'random'`(野良) / `'private'`(専用部屋))を追加した(`database/db.py`の`_migrate_matches_add_room_type`)。既存データは全件`'random'`扱いになる(専用部屋の試合を遡って区別することはできない)
+- ランクが検出された試合(`match.rank_before`/`match.rank_after`のいずれかが非None)は、ブラウザ側の設定値によらず`save_match_result()`が必ず`room_type='random'`を強制する(切り替え忘れによる誤混入を防ぐ安全装置。ランクを賭けた対戦は仕組み上野良でしか成立しないため)
+- 「野良/専用部屋」の現在設定(`config.get_room_type`/`set_room_type`)は、既存の`/admin`編集可能5項目(`_EDITABLE_ENV_KEYS`)とは異なり`.env`に永続化しない。モジュールレベル変数のみで完結させ、アプリ起動のたびに必ず`'random'`にリセットされる(切り替え忘れたまま前回配信の設定を引き継ぐ事故を防ぐため)。`/admin`には`_EDITABLE_ENV_KEYS`の一括更新フォームとは別に、`/admin/room-type`への独立したPOSTフォームを設けた
+- 切り替えタイミングは「セッション開始後、最初の試合を記録するまでの間」を想定。配信内で野良⇔専用部屋が混在するケースはスコープ外(将来必要になれば別途検討)
+- `web/server.py`の`_fetch_matches_count()`は、`session_id`を指定しない呼び出し(累計集計)にのみ`WHERE room_type = 'random'`を追加する。`session_id`指定時(配信セッション単位、`_fetch_winrate`の`session`側)は野良・専用部屋を問わずそのまま含める
+- 得点/アシスト集計(`_fetch_goal_stats`)は元々配信セッション単位のみで累計表示自体が無いため、ランク推移グラフ(`_fetch_rank_history`)はランクが検出された試合が常に`room_type='random'`として保存される(上記の強制ルール)ため、いずれも対象外(自然と野良のみになる)
 
 ### OBSシーン自動切り替え(`obs_control.py`、Issue #83)
 
