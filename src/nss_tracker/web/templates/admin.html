@@ -14,13 +14,25 @@
   {% endfor %}
   <li><a href="/rank-entry" target="_blank" rel="noopener">ランク手動入力</a></li>
 </ul>
-<h2>配信中の設定</h2>
 {% if status == "updated" %}
 <p class="admin-message admin-message-success">更新しました。</p>
 {% endif %}
 {% if error %}
 <p class="admin-message admin-message-error">{{ error }}</p>
 {% endif %}
+<h2>野良/専用部屋</h2>
+<p>アプリ起動のたびに必ず「野良」にリセットされます。専用部屋で配信するときだけ、最初の試合を記録するまでの間に切り替えてください。</p>
+<form method="post" action="/admin/room-type">
+  <div class="admin-field">
+    <label for="room_type">現在の設定</label>
+    <select id="room_type" name="room_type">
+      <option value="random" {% if room_type == "random" %}selected{% endif %}>random(野良)</option>
+      <option value="private" {% if room_type == "private" %}selected{% endif %}>private(専用部屋)</option>
+    </select>
+  </div>
+  <button type="submit">切り替え</button>
+</form>
+<h2>配信中の設定</h2>
 <form method="post" action="/admin">
   <div class="admin-field">
     <label for="allowed_players">許可リスト(得点・アシストを記録する対象のプレイヤー名、カンマ区切り)</label>

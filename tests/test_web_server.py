@@ -184,6 +184,52 @@ def test_fetch_winrate_splits_session_and_cumulative_counts(tmp_path: Path):
     }
 
 
+def test_fetch_winrate_excludes_private_room_matches_from_cumulative_only(tmp_path: Path, monkeypatch):
+    """Issue #358: 専用部屋(room_type='private')の試合は累計勝率から除外するが、
+    配信セッション単位の集計にはそのまま含めることを確認する(ランクを賭けない
+    試合のみroom_typeが現在設定の影響を受けるため、rank_before/rank_afterともNoneで保存する)。
+    """
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=None, rank_after=None, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    _save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=None, rank_after=None, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+    conn.close()
+
+    result = _fetch_winrate(db_path)
+
+    assert result["session"] == {"total": 2, "win": 1, "lose": 1, "draw": 0}
+    assert result["cumulative"] == {"total": 1, "win": 1, "lose": 0, "draw": 0}
+
+
+def test_matches_count_excludes_private_room_matches(tmp_path: Path, monkeypatch):
+    """Issue #358: /api/matches/count(累計)もroom_type='private'の試合を除外する。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=None, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/matches/count")
+
+    assert response.json() == {"total": 0, "win": 0, "lose": 0, "draw": 0}
+
+
 def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     db_path = tmp_path / "test.db"
@@ -1825,6 +1871,48 @@ def test_admin_get_shows_current_settings(tmp_path: Path, monkeypatch):
     assert 'value="Alice,Bob"' in response.text
     assert 'value="30"' in response.text
     assert '<option value="false" selected>' in response.text
+
+
+def test_admin_get_shows_current_room_type(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert '<option value="private" selected>' in response.text
+
+
+def test_admin_post_room_type_updates_without_persisting_to_env(tmp_path: Path, monkeypatch):
+    """Issue #358: /admin/room-typeは_EDITABLE_ENV_KEYSの5項目と異なり、
+    os.environ・.envのいずれも変更しないことを確認する。
+    """
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    monkeypatch.delenv("ROOM_TYPE", raising=False)
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.post("/admin/room-type", data={"room_type": "private"})
+
+    assert response.status_code == 200
+    assert response.url.path == "/admin"
+    assert response.url.params["status"] == "updated"
+    assert "ROOM_TYPE" not in os.environ
+
+    follow_up = client.get("/admin")
+    assert '<option value="private" selected>' in follow_up.text
+
+
+def test_admin_post_room_type_with_invalid_value_shows_error_and_does_not_update(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.post("/admin/room-type", data={"room_type": "not-a-real-room-type"})
+
+    assert response.status_code == 200
+    assert response.url.params["error"]
+
+    follow_up = client.get("/admin")
+    assert '<option value="random" selected>' in follow_up.text
 
 
 def test_admin_get_shows_overlay_widget_links(tmp_path: Path):

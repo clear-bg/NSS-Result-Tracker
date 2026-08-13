@@ -75,6 +75,17 @@ Issue #259: 全`/overlay/xxx`ページは、クエリパラメータ`?debug_bg=1
 ブラウザソースが実際に使うURLにはこのパラメータを付けないため、配信時の見た目(透過)には
 影響しない。`/admin`のoverlayリンク一覧(#257)はこのパラメータ付きのURLにすることで、
 通常のブラウザで開いても白文字(overlay.cssのcolor: #fff)が読めるようにする。
+
+Issue #358: `/admin`には上記5項目とは別に、野良/専用部屋の切り替えUI(`/admin/room-type`
+への独立したPOST)がある。`config.get_room_type`/`set_room_type`は`.env`へ永続化せず
+プロセス起動のたびに`'random'`へリセットされる値のため、`_EDITABLE_ENV_KEYS`の
+PRGフォーム(全項目必須の一括更新)とはあえて分けている。累計勝率
+(`_fetch_matches_count`のsession_id省略時)のみroom_type='random'の試合に絞り込み、
+配信セッション単位の集計・直近試合結果ログ(`/overlay/match-log`)はroom_typeを問わず
+従来通り表示する。得点/アシスト統計(`_fetch_goal_stats`)は元々配信セッション単位のみで
+累計表示が無いため、ランク推移グラフ(`_fetch_rank_history`)はランクが検出された試合が
+常にroom_type='random'として保存される(`database.db.save_match_result`参照)ため、
+いずれも対象外(自然と野良のみになる)。
 """
 
 import logging
@@ -97,7 +108,9 @@ from nss_tracker.config import (
     get_editable_settings,
     get_rank_delta_distribution_scope,
     get_rank_graph_match_limit,
+    get_room_type,
     is_allowed_player,
+    set_room_type,
     update_editable_settings,
 )
 from nss_tracker.database.db import (
@@ -141,7 +154,12 @@ def _fetch_matches_count(db_path: Path, session_id: Optional[int] = None) -> dic
     """試合数・勝ち数・負け数・引き分け数を集計する。
 
     session_idを指定すると、そのmatches.session_idに絞り込んだ集計になる
-    (Issue #94の「配信セッション単位」の勝率表示用)。省略時は累計(全件)。
+    (Issue #94の「配信セッション単位」の勝率表示用)。専用部屋で配信するときも
+    その場の結果を見たいため、野良・専用部屋を問わずそのまま含める。
+
+    session_idを省略した場合は累計(全件)集計になるが、Issue #358により
+    room_type = 'random'(野良)の試合のみを対象にする(専用部屋の試合を累計
+    勝率に混ぜたくないため)。
     """
     conn = _connect(db_path)
     try:
@@ -156,6 +174,8 @@ def _fetch_matches_count(db_path: Path, session_id: Optional[int] = None) -> dic
         if session_id is not None:
             query += " WHERE session_id = ?"
             params = (session_id,)
+        else:
+            query += " WHERE room_type = 'random'"
         row = conn.execute(query, params).fetchone()
     finally:
         conn.close()
@@ -1219,6 +1239,7 @@ def create_app(db_path: Path) -> FastAPI:
     def admin(request: Request, status: Optional[str] = None, error: Optional[str] = None):
         context = {
             "settings": get_editable_settings(),
+            "room_type": get_room_type(),
             "status": status,
             "error": error,
             "overlay_links": app.state.overlay_links,
@@ -1247,6 +1268,17 @@ def create_app(db_path: Path) -> FastAPI:
             _logger.warning("設定画面(/admin)からの更新が拒否されました: %s(送信値: %s)", exc, new_values)
             return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
         _logger.info("設定画面(/admin)から設定を更新しました: %s -> %s", old_values, new_values)
+        return RedirectResponse("/admin?status=updated", status_code=303)
+
+    @app.post("/admin/room-type")
+    def admin_room_type_update(room_type: str = Form(...)):
+        old_value = get_room_type()
+        try:
+            set_room_type(room_type)
+        except ConfigError as exc:
+            _logger.warning("設定画面(/admin)からの野良/専用部屋切り替えが拒否されました: %s", exc)
+            return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
+        _logger.info("設定画面(/admin)から野良/専用部屋設定を更新しました: %s -> %s", old_value, room_type)
         return RedirectResponse("/admin?status=updated", status_code=303)
 
     @app.get("/rank-entry")

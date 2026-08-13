@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -26,10 +27,12 @@ from nss_tracker.config import (
     get_rank_after_correction_enabled,
     get_rank_delta_distribution_scope,
     get_rank_graph_match_limit,
+    get_room_type,
     get_web_host,
     get_web_port,
     get_youtube_chat_dive_time_enabled,
     is_allowed_player,
+    set_room_type,
     update_editable_settings,
 )
 
@@ -470,3 +473,42 @@ def test_update_editable_settings_raises_and_applies_nothing_when_one_value_inva
     }
     persisted = dotenv_values(env_path)
     assert persisted["ALLOWED_PLAYERS"] == "OldName"
+
+
+def test_get_room_type_defaults_to_random(monkeypatch):
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    assert get_room_type() == "random"
+
+
+def test_set_room_type_updates_get_room_type(monkeypatch):
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+
+    set_room_type("private")
+
+    assert get_room_type() == "private"
+
+
+def test_set_room_type_does_not_persist_to_env(tmp_path, monkeypatch):
+    """Issue #358: _EDITABLE_ENV_KEYSの5項目と異なり、.envファイル・os.environの
+    いずれにも書き込まないことを確認する(アプリ再起動のたびに'random'へ戻すため)。
+    """
+    env_path = tmp_path / ".env"
+    _write_env_file(env_path)
+    monkeypatch.setattr("nss_tracker.config.find_dotenv", lambda: str(env_path))
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    monkeypatch.delenv("ROOM_TYPE", raising=False)
+
+    set_room_type("private")
+
+    assert "ROOM_TYPE" not in os.environ
+    persisted = dotenv_values(env_path)
+    assert "ROOM_TYPE" not in persisted
+
+
+def test_set_room_type_raises_for_invalid_value(monkeypatch):
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+
+    with pytest.raises(ConfigError, match="room_type"):
+        set_room_type("not-a-real-room-type")
+
+    assert get_room_type() == "random"  # 不正な値では更新されない
