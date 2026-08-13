@@ -68,7 +68,9 @@ OBSのブラウザソースは一度読み込むと明示的にリロードし�
 あくまでDB経由のポーリングのみで実現する(#83実装以降も含め、全ウィジェットで
 更新方式を統一するため)。更新間隔は`_OVERLAY_REFRESH_INTERVAL_MS`(既定5秒)だが、
 対戦相手ランク比較([#100](../issues/100))のみVS画面確定後できるだけ早く反映してほしい
-という要望から`_VS_RANK_COMPARISON_REFRESH_INTERVAL_MS`(1秒)を使う。
+という要望から`_VS_RANK_COMPARISON_REFRESH_INTERVAL_MS`(1秒)を使う。ランク推移グラフ
+(`/overlay/rank-graph`)は`_RANK_GRAPH_REFRESH_INTERVAL_MS`(0.5秒)を使う(Issue #361、
+下記「試合間シーン切替時の登場アニメーション」節参照)。
 
 Issue #259: 全`/overlay/xxx`ページは、クエリパラメータ`?debug_bg=1`(値は問わず有無のみ判定、
 `_overlay_debug_bg_style()`参照)が付いている場合だけ`<body>`の背景を黒にする。OBSの
@@ -86,6 +88,23 @@ PRGフォーム(全項目必須の一括更新)とはあえて分けている。
 累計表示が無いため、ランク推移グラフ(`_fetch_rank_history`)はランクが検出された試合が
 常にroom_type='random'として保存される(`database.db.save_match_result`参照)ため、
 いずれも対象外(自然と野良のみになる)。
+
+Issue #361: 試合間シーンへ切り替わった瞬間、ランク推移グラフ(`/overlay/rank-graph`)に
+控えめな登場アニメーション(折れ線が左から伸びる)を再生する。OBSのブラウザソースは
+シーン切り替わり自体をページへ通知しない(`window.obsstudio`が実機で`undefined`だった
+ことを確認済み、利用不可)ため、`main.py`の`machine.in_match`がTrue→Falseになった瞬間
+(OBSシーン自動切替と同じ検知箇所)に`match_transition.notify_between_matches()`で
+インメモリのエポックカウンタを1つ進め、`_render_rank_graph_svg`がレンダリングのたびに
+その値をsvg要素の`data-epoch`属性へ埋め込む。ブラウザ側は`static/overlay-refresh.js`の
+signalモード(`data-animate-on-change="signal"`、#360のcountモードの拡張)がポーリング
+前後でこの属性を比較し、変化していれば`nss-animate-entrance`クラスを一時的に付与する。
+実際の見た目(折れ線・塗り・点のアニメーション)は`static/rank_graph.css`側に委ねる。
+
+この方式はポーリングベースのため、実際のシーン切り替わりから最大でもポーリング間隔分
+遅れてアニメーションが再生される(ユーザー確認済みのトレードオフ。プッシュ通知方式
+(WebSocket/SSE)への転換はIssue #104で意図的に避けた設計のため、今回のスコープ外)。
+この遅れを人間の目に気にならない程度まで縮めるため、`/overlay/rank-graph`だけ
+`_RANK_GRAPH_REFRESH_INTERVAL_MS`(0.5秒)を使う。
 """
 
 import logging
@@ -101,7 +120,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from nss_tracker import youtube_chat
+from nss_tracker import match_transition, youtube_chat
 from nss_tracker.config import (
     ConfigError,
     get_allowed_players,
@@ -142,6 +161,13 @@ _logger = logging.getLogger("nss_tracker.web")
 # 「ほぼ即時」に近づける方針。#104のモジュールdocstring・issue参照)
 _OVERLAY_REFRESH_INTERVAL_MS = 5000
 _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS = 1000
+# Issue #361: ランク推移グラフの登場アニメーション(match_transition参照)は、実際の
+# OBSシーン切り替わりとポーリングでそれに気づくタイミングの間にどうしてもずれが生じる
+# (OBSの実ブラウザソースにwindow.obsstudioが注入されるか実機で確認したが、
+# `undefined`で利用できなかった)。人間の目に気にならない程度までずれを縮めるため、
+# 他ウィジェットの既定5秒より短い500msにする(ローカル1クライアントのみが見る用途の
+# ため、ポーリング頻度を上げること自体のコストは無視できる)
+_RANK_GRAPH_REFRESH_INTERVAL_MS = 500
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -370,6 +396,13 @@ _RANK_GRAPH_Y_PX_PER_UNIT = (
 # ユーザーが判断)、余裕を持って読める範囲としてユーザーと相談の上3に決定した
 _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE = 3
 
+# Issue #361: 試合間シーンへの登場アニメーション(overlay-refresh.jsのsignalモード、
+# static/rank_graph.cssのrank-graph-entrance-draw)で折れ線が左から伸びる所要時間(ms)。
+# 各点のポップイン(circle要素)のanimation-delayをこの時間内に均等分散させることで、
+# 線が実際にその点を通過するタイミングに合わせてポップさせる。CSS側のanimation-duration
+# と値を一致させる必要があるため、変更する場合は両方揃えること
+_RANK_GRAPH_ENTRANCE_LINE_DRAW_MS = 900
+
 
 def _rank_graph_y_tick_step(axis_range: int, max_tick_count: float = _RANK_GRAPH_Y_TICK_MAX_COUNT) -> int:
     """縦軸の目盛り間隔を、本数がmax_tick_countを超えないよう動的に決める。"""
@@ -482,7 +515,7 @@ def _rank_graph_summary_svg(summary: dict, width: int) -> str:
     return "".join(parts)
 
 
-def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None) -> str:
+def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None, epoch: int = 0) -> str:
     """ランク推移を、枠・縦横の目盛り付きの折れ線グラフとしてSVG文字列で描画する。
 
     JS・外部チャートライブラリは使わずサーバー側でSVGを組み立てる(配信環境の
@@ -499,14 +532,25 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None) 
     従来通り統計欄無しで描画する。データが無い(historyが空)場合でも、summary
     自体は別集計(DB全体からの現在/最高ランク)のため独立して出せることがあり、
     その場合は統計欄だけ表示し「データがありません」は据え置く。
+
+    Issue #361: epochはmatch_transition.get_between_matches_epoch()の値(試合間シーンへ
+    切り替わるたびに1ずつ増える、値自体に意味の無い通し番号)。svg要素のdata-epoch属性に
+    そのまま埋め込み、overlay-refresh.jsのsignalモード(data-animate-on-change="signal")が
+    ポーリング前後でこの値を比較し、変化していれば登場アニメーション用クラスを付与する
+    (static/rank_graph.css参照)。呼び出し元(/overlay/rank-graphルート)が省略した場合は
+    0のまま(常に変化なしとみなされ、アニメーションは再生されない)。
     """
     width = _RANK_GRAPH_VIEWBOX_WIDTH
     summary_offset = _RANK_GRAPH_SUMMARY_HEIGHT if summary is not None else 0
     summary_svg = _rank_graph_summary_svg(summary, width) if summary is not None else ""
+    svg_attrs = f'id="rank-graph-svg" data-animate-on-change="signal" data-epoch="{epoch}"'
 
     if not history:
         height = _RANK_GRAPH_VIEWBOX_HEIGHT + summary_offset
-        svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+        svg_open = (
+            f'<svg {svg_attrs} viewBox="0 0 {width} {height}" width="100%" height="100%" '
+            'xmlns="http://www.w3.org/2000/svg">'
+        )
         panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-graph-panel" />'
         title_svg = (
             f'<text x="{width / 2}" y="38" text-anchor="middle" class="rank-graph-title">{_RANK_GRAPH_TITLE}</text>'
@@ -526,7 +570,10 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None) 
     # 220px〜350pxの範囲で動的に決めていたが撤廃した、_RANK_GRAPH_VIEWBOX_HEIGHT参照)。
     # Issue #313: 統計タイル分(summary_offset)はこれとは別枠で上乗せする
     height = _RANK_GRAPH_VIEWBOX_HEIGHT + summary_offset
-    svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+    svg_open = (
+        f'<svg {svg_attrs} viewBox="0 0 {width} {height}" width="100%" height="100%" '
+        'xmlns="http://www.w3.org/2000/svg">'
+    )
     # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
     # 一番背面に来るようにする
     panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-graph-panel" />'
@@ -632,9 +679,22 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None) 
     # 領域の底辺まで下ろして閉じた多角形にする(線・点より先に描画し背面に敷く)
     area_points = f"{polyline_points} {coords[-1][0]:.1f},{plot_bottom:.1f} {coords[0][0]:.1f},{plot_bottom:.1f}"
     area_svg = [f'<polygon points="{area_points}" class="rank-graph-area" />']
-    line_svg = [f'<polyline points="{polyline_points}" class="rank-graph-line" />']
+    # Issue #361: pathLength="1000"で実際の座標・長さに関わらずstroke-dasharray/
+    # stroke-dashoffsetの基準を1000に正規化する(rank_graph.cssのrank-graph-entrance-draw
+    # 参照)。通常表示時(nss-animate-entranceクラス無し)はdasharray/dashoffsetとも
+    # CSSで指定していないためこの属性自体は何も見た目に影響しない
+    line_svg = [f'<polyline points="{polyline_points}" class="rank-graph-line" pathLength="1000" />']
 
-    markers = [f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" class="rank-graph-point" />' for x, y in coords]
+    # Issue #361: 登場アニメーション再生時、折れ線が実際にその点を通過するタイミングに
+    # 合わせて各点をポップさせるため、点ごとにanimation-delayを均等分散させる
+    # (_RANK_GRAPH_ENTRANCE_LINE_DRAW_MS参照)。通常表示時はanimation自体が発火しない
+    # (rank_graph.css参照)ためこの属性も見た目に影響しない
+    point_count = len(coords)
+    markers = [
+        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" class="rank-graph-point" '
+        f'style="animation-delay:{round(i / (point_count - 1) * _RANK_GRAPH_ENTRANCE_LINE_DRAW_MS) if point_count > 1 else 0}ms" />'
+        for i, (x, y) in enumerate(coords)
+    ]
 
     return (
         f"{svg_open}{panel_svg}{title_svg}{summary_svg}"
@@ -1329,10 +1389,11 @@ def create_app(db_path: Path) -> FastAPI:
     def overlay_rank_graph(request: Request):
         history = _fetch_rank_history(db_path)
         summary = _fetch_rank_graph_summary(db_path)
-        svg = _render_rank_graph_svg(history, summary)
+        epoch = match_transition.get_between_matches_epoch()
+        svg = _render_rank_graph_svg(history, summary, epoch=epoch)
         context = {
             "svg": svg,
-            "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
+            "refresh_interval_ms": _RANK_GRAPH_REFRESH_INTERVAL_MS,
             "debug_bg_style": _overlay_debug_bg_style(request),
         }
         return _TEMPLATES.TemplateResponse(request, "overlay_rank_graph.html", context)

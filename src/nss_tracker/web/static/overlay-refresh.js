@@ -24,6 +24,19 @@
 // 新旧いずれかが数値としてパースできない場合(セッション開始直後の初回表示、
 // 「-」→数値の遷移。#359参照)は無演出のまま最終値を表示する
 // (`parseInt("-", 10)`はNaNになるため、初回だけ除外する特別な分岐は不要)。
+//
+// Issue #361: 「値の変化そのものをカウントアップで見せる」#360のcountモードとは別に、
+// 「値が変わった一瞬だけ、見た目とは無関係などこかの要素にトリガー用クラスを付ける」
+// signalモードを追加する。対象要素に`id`と`data-animate-on-change="signal"`、
+// 比較対象の値を`data-epoch`属性で持たせておくと、bodyの差し替え前後でこの属性を比較し、
+// 変化していればクラス`nss-animate-entrance`をその要素へ一時的に付与する(countモードと
+// 違い、テキスト自体は書き換えない。値そのものに意味は無く「変化したかどうか」だけが
+// 重要な信号のため)。何をどう演出するか(付与されたクラスを起点にどのCSSアニメーションを
+// 再生するか)は各ウィジェット固有のCSSに委ねる(ランク推移グラフの登場アニメーションが
+// 最初の利用例、rank_graph.css参照)。クラスは一定時間(ENTRANCE_ANIMATION_HOLD_MS)
+// 経ってから外す。子要素ごとにstagger(段階的な遅延)を付けたCSSアニメーションが全て
+// 終わるより前にクラスを外すと、対象がまだアニメーション再生中でも`.nss-animate-entrance`
+// スコープのCSSセレクタが外れてしまい、アニメーションが途中で打ち切られてしまうため。
 (function () {
   var scriptTag = document.currentScript;
   var intervalMs = parseInt(scriptTag.getAttribute("data-interval-ms"), 10);
@@ -33,12 +46,19 @@
 
   var COUNT_ANIMATION_DURATION_MS = 600;
   var COUNT_ANIMATION_CLASS = "nss-animate-count";
+  var ENTRANCE_ANIMATION_CLASS = "nss-animate-entrance";
+  var ENTRANCE_ANIMATION_HOLD_MS = 2000;
   var reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   function snapshotAnimatedValues() {
     var snapshot = {};
     document.querySelectorAll("[data-animate-on-change]").forEach(function (el) {
-      if (el.id) {
+      if (!el.id) {
+        return;
+      }
+      if (el.getAttribute("data-animate-on-change") === "signal") {
+        snapshot[el.id] = el.getAttribute("data-epoch");
+      } else {
         snapshot[el.id] = el.textContent;
       }
     });
@@ -84,6 +104,23 @@
     });
   }
 
+  function triggerEntranceAnimations(previousValues) {
+    document.querySelectorAll('[data-animate-on-change="signal"]').forEach(function (el) {
+      if (!el.id || !(el.id in previousValues) || reducedMotion) {
+        return;
+      }
+      var fromValue = previousValues[el.id];
+      var toValue = el.getAttribute("data-epoch");
+      if (fromValue === toValue) {
+        return;
+      }
+      el.classList.add(ENTRANCE_ANIMATION_CLASS);
+      setTimeout(function () {
+        el.classList.remove(ENTRANCE_ANIMATION_CLASS);
+      }, ENTRANCE_ANIMATION_HOLD_MS);
+    });
+  }
+
   function refresh() {
     var previousValues = snapshotAnimatedValues();
     fetch(window.location.href, { cache: "no-store" })
@@ -94,6 +131,7 @@
         var newDocument = new DOMParser().parseFromString(html, "text/html");
         document.body.innerHTML = newDocument.body.innerHTML;
         playAnimationsForChangedValues(previousValues);
+        triggerEntranceAnimations(previousValues);
       })
       .catch(function () {
         // 通信エラー時は何もしない(次回のポーリングに任せる)
