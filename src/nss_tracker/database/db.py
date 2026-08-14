@@ -161,6 +161,12 @@ CREATE TABLE IF NOT EXISTS matches (
     room_type TEXT NOT NULL DEFAULT 'random', -- 'random'(野良) / 'private'(専用部屋)。Issue #358。
                                      -- ランクが検出された試合(rank_before_ocr/rank_after_ocrの
                                      -- いずれかが非NULL)は常に'random'を強制する(save_match_result参照)
+    league_change_label_detected TEXT, -- 'up' / 'down' / NULL。Issue #374。昇格演出/降格ラベルを
+                                     -- 視覚的に検知できたか(league_changedとは独立、数値化の
+                                     -- 成否に関わらず記録する)。rank_before_ocrがNULLの試合
+                                     -- (バッジ完全未読)でここが非NULLの場合、rank_beforeチェーンが
+                                     -- この試合を素通りする際にWARNINGを出す
+                                     -- (_warn_if_skipped_match_had_league_change_label参照)
     created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601, JST)
     updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601, JST)
 );
@@ -353,6 +359,23 @@ def _migrate_matches_add_room_type(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_matches_add_league_change_label_detected(conn: sqlite3.Connection) -> None:
+    """Issue #374: 既存DBファイルのmatchesテーブルにleague_change_label_detected列を追加する。
+
+    NOT NULL制約が絡まない列追加のため、ALTER TABLE ADD COLUMNだけで済む。既存行は
+    全てNULLのまま(過去の試合について、昇格演出/降格ラベルを検知していたかどうかを
+    遡って復元することはできない)。新規DBでは_SCHEMA自体に既にこの列を含むため、
+    この関数は無害にreturnする。
+    """
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    if any(c["name"] == "league_change_label_detected" for c in columns):
+        return
+
+    logger.info("matchesテーブルにleague_change_label_detected列を追加しています")
+    conn.execute("ALTER TABLE matches ADD COLUMN league_change_label_detected TEXT")
+    conn.commit()
+
+
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """DBに接続し、テーブルが無ければ作成して返す。
 
@@ -373,6 +396,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     _migrate_matches_add_rank_after_ocr(conn)
     _migrate_matches_add_rank_before_ocr(conn)
     _migrate_matches_add_room_type(conn)
+    _migrate_matches_add_league_change_label_detected(conn)
     logger.info("DBに接続しました: %s", Path(db_path).resolve())
     return conn
 
@@ -461,6 +485,42 @@ def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_r
     )
 
 
+def _warn_if_skipped_match_had_league_change_label(
+    conn: sqlite3.Connection, after_id: int, before_id: Optional[int] = None
+) -> None:
+    """Issue #374: rank_beforeチェーンがafter_idから(before_id指定時はその手前まで)
+    素通りした試合の中に、バッジ完全未読(rank_before_ocrがNULL)だが昇格/降格ラベルは
+    検知できていた(league_change_label_detectedが非NULL)試合が無いか確認し、あれば
+    WARNINGログを出す。
+
+    チェーンはrank_before_ocrが非NULLの行だけを見て辿るため(_resolve_rank_before/
+    _backfill_next_rank_before参照)、その間にある該当試合は素通りされ、これ以降の
+    rank_beforeが実態と1帯ズレたまま気づかれずに記録されてしまう(実際に発生した
+    ケースの詳細はGitHub Issue #374参照。7試合目でバッジが完全に読み取れないまま
+    降格ラベルだけ検知され、8試合目のrank_beforeが1帯ズレて記録された)。
+
+    数値の自動推定は行わない(スコープ外、Issue #374本文の「最小案」を参照)。
+    あくまで人間が気づいて/rank-entry等で手動修正できるようにする通知に留める。
+    """
+    query = (
+        "SELECT id, league_change_label_detected FROM matches "
+        "WHERE id > ? AND rank_before_ocr IS NULL AND league_change_label_detected IS NOT NULL"
+    )
+    params: tuple = (after_id,)
+    if before_id is not None:
+        query += " AND id < ?"
+        params = (after_id, before_id)
+    query += " ORDER BY id ASC"
+    for row in conn.execute(query, params).fetchall():
+        logger.warning(
+            "matches.id=%d は昇格/降格ラベル(%s)を検知しましたが、バッジが完全に読み取れず"
+            "数値化できませんでした。これ以降のrank_beforeチェーンは、この試合での帯の変化を"
+            "反映できていない可能性があります(実態と1帯ズレているかもしれません、要目視確認)",
+            row["id"],
+            row["league_change_label_detected"],
+        )
+
+
 def _resolve_rank_before(conn: sqlite3.Connection, rank_before_ocr: Optional[float]) -> Optional[float]:
     """新しい試合のrank_before(チェーン導出値)を決定する(Issue #308)。
 
@@ -480,14 +540,19 @@ def _resolve_rank_before(conn: sqlite3.Connection, rank_before_ocr: Optional[flo
     戻り値は_round_rank()で丸め済み(フォールバックのrank_before_ocrは呼び出し元の
     生の値のため、ここで丸める。チェーン由来のrank_afterは既に丸め済みのはずだが
     念のため通す)。
+
+    Issue #374: 上記「直近の試合」を探す際、間に素通りした試合(rank_before_ocrが
+    NULL)が実は昇格/降格ラベルを検知していた場合、WARNINGログを出す
+    (_warn_if_skipped_match_had_league_change_label参照。今回返す値自体は補正しない)。
     """
     if rank_before_ocr is None:
         return None
     row = conn.execute(
-        "SELECT rank_after FROM matches WHERE rank_before_ocr IS NOT NULL ORDER BY id DESC LIMIT 1"
+        "SELECT id, rank_after FROM matches WHERE rank_before_ocr IS NOT NULL ORDER BY id DESC LIMIT 1"
     ).fetchone()
     if row is None:
         return _round_rank(rank_before_ocr)
+    _warn_if_skipped_match_had_league_change_label(conn, row["id"])
     return _round_rank(row["rank_after"])
 
 
@@ -500,6 +565,10 @@ def _backfill_next_rank_before(conn: sqlite3.Connection, confirmed_match_id: int
     次の試合へ連鎖的に辿る(通常の運用では古い順に1件ずつ確定させるため高々1件
     しか埋まらないはずだが、まとめて何件も未確定のまま溜まっていた場合等の
     保険として複数件に対応できるようにしている)。
+
+    Issue #374: 各ステップで素通りした試合(rank_before_ocrがNULL)が昇格/降格
+    ラベルを検知していた場合、WARNINGログを出す
+    (_warn_if_skipped_match_had_league_change_label参照)。
     """
     current_rank_after = rank_after
     after_id = confirmed_match_id
@@ -511,6 +580,7 @@ def _backfill_next_rank_before(conn: sqlite3.Connection, confirmed_match_id: int
         ).fetchone()
         if row is None or row["rank_before"] is not None:
             return
+        _warn_if_skipped_match_had_league_change_label(conn, after_id, row["id"])
         now = now_jst().isoformat()
         conn.execute(
             "UPDATE matches SET rank_before = ?, updated_at = ? WHERE id = ?",
@@ -598,6 +668,12 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
     いずれかが非None(=ランクが検出された試合)の場合は、ランクを賭けた対戦は
     仕組み上野良でしか成立しないため、現在設定によらず必ず'random'を強制する
     (切り替え忘れによる誤混入を防ぐ安全装置、ユーザー確認済み)。
+
+    Issue #374: match.league_change_label_detected(昇格演出/降格ラベルの検知結果、
+    数値化の成否に関わらず独立に持ち回る)もそのままleague_change_label_detected列へ
+    保存する。バッジ完全未読(rank_before_ocrがNULL)の試合でここが非NULLだと、
+    後続の試合のrank_beforeチェーンがこの試合を素通りする際にWARNINGが出る
+    (_warn_if_skipped_match_had_league_change_label参照)。
     """
     _maybe_correct_previous_match_rank_after(conn, match.rank_before)
     rank_before = _resolve_rank_before(conn, match.rank_before)
@@ -607,8 +683,9 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
     cursor = conn.execute(
         "INSERT INTO matches "
         "(session_id, detected_at, result, rank_before, rank_before_ocr, rank_after_ocr, "
-        "mine_team_color, opponent_team_color, room_type, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "mine_team_color, opponent_team_color, room_type, league_change_label_detected, "
+        "created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             session_id,
             match.detected_at.isoformat(),
@@ -619,6 +696,7 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
             match.mine_team_color,
             match.opponent_team_color,
             room_type,
+            match.league_change_label_detected,
             now,
             now,
         ),
