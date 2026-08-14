@@ -746,6 +746,14 @@ class MatchResult:
     opponent_team_color: Optional[str] = None
     # Issue #236: VsScreenEventと同じ理由でセッション内の試合番号を持ち回る
     session_match_no: int = 0
+    # Issue #374: 昇格演出(is_league_change_screen)/降格ラベル(is_demotion_label_candidate)を
+    # 視覚的に検知できたかどうかを、rank_before/rank_afterの数値化成否とは独立に
+    # 持ち回る。"up" / "down" / None。バッジが完全に読み取れずrank_before/rank_after
+    # がどちらもNoneのまま記録される試合でも、帯が変化したこと自体は分かっている
+    # ことがあるため、database.db側でrank_beforeチェーンの整合性チェックに使う
+    # (通常はleague_changedと同じ内容になるが、数値ベースのleague_changedが
+    # Noneになる場面でもこちらは独立して立ちうる)
+    league_change_label_detected: Optional[str] = None
 
 
 class MatchStateMachine:
@@ -1672,6 +1680,16 @@ class MatchStateMachine:
             elif rank_after_tier < self._pending_rank_before_tier:
                 league_changed = "down"
 
+        # Issue #374: 昇格演出/降格ラベルの検知結果は、上記league_changed(数値ベース)
+        # とは独立に持ち回る。バッジが完全に読み取れずrank_before/rank_afterが
+        # どちらもNoneになる試合でも、帯が変化したこと自体は分かっていることがある
+        # ため(database.db側のrank_beforeチェーンの整合性チェックに使う)
+        league_change_label_detected = None
+        if self._promotion_confirmed_this_match:
+            league_change_label_detected = "up"
+        elif self._demotion_confirmed_this_match:
+            league_change_label_detected = "down"
+
         match_result = MatchResult(
             result=self._pending_result,
             rank_before=self._pending_rank_before,
@@ -1684,6 +1702,7 @@ class MatchStateMachine:
             mine_team_color=self._pending_mine_team_color,
             opponent_team_color=self._pending_opponent_team_color,
             session_match_no=self._session_match_no,
+            league_change_label_detected=league_change_label_detected,
         )
         self._pending_result = None
         self._pending_rank_before = None
