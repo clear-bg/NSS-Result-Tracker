@@ -89,6 +89,8 @@ _BROADCAST_SEARCH_INTERVAL_SECONDS = 60
 # APIエラー(クォータ超過・一時的な通信障害等)発生時のリトライまでの待機秒数
 _ERROR_BACKOFF_SECONDS = 30
 _HTTP_TIMEOUT_SECONDS = 10.0
+# Issue #372: 403/429等のエラーログに含めるレスポンス本文の最大文字数
+_HTTP_ERROR_BODY_MAX_LENGTH = 500
 
 _FULLWIDTH_TO_HALFWIDTH = str.maketrans("０１２３４５６７８９：", "0123456789:")
 _MINUTE_ONLY_PATTERN = re.compile(r"^\d{1,2}$")
@@ -191,6 +193,27 @@ def _parse_snipe_comment(text: str) -> Optional[str]:
     return match.group(1).strip()
 
 
+def _describe_http_error(exc: httpx.HTTPError) -> str:
+    """Issue #372: YouTube Data APIの呼び出し失敗ログに、原因特定のためのレスポンス
+    本文を付加情報として返す。
+
+    実配信で403 Forbiddenが約80分間ずっと続いた事象があったが、既存のログ
+    (str(exc)、ステータスコードとURLのみ)ではクォータ超過(reason=quotaExceeded)
+    なのか他の原因なのか判別できなかった。`httpx.HTTPStatusError`はレスポンス
+    本文にAPIの`error.errors[].reason`が入っているため、これをログに含める。
+
+    接続エラー・タイムアウト等(`httpx.HTTPStatusError`以外の`httpx.HTTPError`)は
+    レスポンス自体が無いため空文字列を返す。長すぎる本文はログを圧迫しないよう
+    切り詰める。
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return ""
+    body = exc.response.text
+    if len(body) > _HTTP_ERROR_BODY_MAX_LENGTH:
+        body = body[:_HTTP_ERROR_BODY_MAX_LENGTH] + "...(truncated)"
+    return f" レスポンス本文: {body}"
+
+
 class DiveTimeWatcher:
     """配信中の放送を自動検出し、自分自身のチャットコメントから
     「次に潜る時間」を検知してモジュールレベルの状態を更新するバックグラウンド監視。
@@ -238,7 +261,11 @@ class DiveTimeWatcher:
                 else:
                     self._poll_chat_messages()
             except httpx.HTTPError as exc:
-                logger.warning("YouTube Data APIの呼び出しに失敗しました: %s", exc)
+                logger.warning(
+                    "YouTube Data APIの呼び出しに失敗しました: %s%s",
+                    exc,
+                    _describe_http_error(exc),
+                )
                 self._stopped.wait(_ERROR_BACKOFF_SECONDS)
 
     def _access_token(self) -> Optional[str]:
