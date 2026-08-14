@@ -1,6 +1,8 @@
+import logging
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 import pytest
 
 from nss_tracker import youtube_chat
@@ -258,3 +260,61 @@ def test_poll_chat_messages_returns_to_time_state_from_snipe(monkeypatch):
     watcher._poll_chat_messages()
 
     assert youtube_chat.get_dive_time_state() == DiveTimeState(mode="time", time="23:40")
+
+
+def _make_http_status_error(status_code: int, body: str) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://example.invalid")
+    response = httpx.Response(status_code, text=body, request=request)
+    return httpx.HTTPStatusError(f"{status_code} error", request=request, response=response)
+
+
+def test_describe_http_error_includes_response_body_for_http_status_error():
+    """Issue #372: 403等のレスポンス本文(reasonフィールド等)をログに含められるよう、
+    _describe_http_error()がhttpx.HTTPStatusErrorの本文を返すことを確認する。
+    """
+    exc = _make_http_status_error(403, '{"error": {"errors": [{"reason": "quotaExceeded"}]}}')
+
+    detail = youtube_chat._describe_http_error(exc)
+
+    assert "quotaExceeded" in detail
+
+
+def test_describe_http_error_truncates_long_body():
+    """本文が長すぎる場合はログを圧迫しないよう切り詰められることを確認する。"""
+    exc = _make_http_status_error(403, "x" * 1000)
+
+    detail = youtube_chat._describe_http_error(exc)
+
+    assert len(detail) < 1000
+    assert detail.endswith("...(truncated)")
+
+
+def test_describe_http_error_empty_for_connection_error():
+    """接続エラー等(レスポンス自体が無い)では空文字列を返すことを確認する。"""
+    exc = httpx.ConnectTimeout("timeout")
+
+    detail = youtube_chat._describe_http_error(exc)
+
+    assert detail == ""
+
+
+def test_run_logs_response_body_on_http_status_error(monkeypatch, caplog):
+    """Issue #372: _run()のループが403等を捕まえた際、WARNINGログにレスポンス
+    本文(reasonフィールド等)が含まれることを確認する(_describe_http_error()の
+    呼び出し配線自体の検証)。
+    """
+    watcher = _make_watcher_with_fake_credentials(monkeypatch)
+    watcher._live_chat_id = "chat123"  # _find_active_broadcast()を飛ばして_poll_chat_messages()へ
+    exc = _make_http_status_error(403, '{"error": {"errors": [{"reason": "quotaExceeded"}]}}')
+
+    def fake_poll_chat_messages() -> None:
+        # ループを1回だけで終わらせる(次のwhileチェック前に停止フラグを立てる)
+        watcher._stopped.set()
+        raise exc
+
+    monkeypatch.setattr(watcher, "_poll_chat_messages", fake_poll_chat_messages)
+
+    with caplog.at_level(logging.WARNING, logger="nss_tracker.youtube_chat"):
+        watcher._run()
+
+    assert "quotaExceeded" in caplog.text
