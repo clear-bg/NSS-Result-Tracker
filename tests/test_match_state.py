@@ -2098,14 +2098,20 @@ def test_pop_vs_screen_event_fires_once_at_confirmation(monkeypatch):
     assert machine.pop_vs_screen_event() is None, "同じVS画面が続いている間は再度発火しない"
 
 
-def test_in_match_true_after_vs_screen_confirmed_and_false_after_finalize(monkeypatch):
+def test_in_match_true_after_vs_screen_confirmed_and_false_after_match_end(monkeypatch):
     """Issue #83: OBSシーン自動切替のトリガーであるin_matchが、VS画面確定でTrueになり、
-    試合結果確定(ランク確定含む_finalize())後、暗転検知から一定時間後にFalseに戻る
-    ことを確認する(Issue #224で、Falseに戻るタイミングを暗転検知基準に変更した)。
+    試合が終わると暗転検知から一定時間後にFalseに戻ることを確認する(Issue #224で、
+    Falseに戻るタイミングを暗転検知基準に変更した)。
     Issue #190対応後は「試合終了」バナーをOCR確認できた試合のみFalseに戻るため、
     ここでは確認できたケースとしてis_match_end_screen/confirm_match_end_textを
     Trueにする。テスト用フレームは全黒(np.zeros)のため、is_full_blackout()は
     毎フレームTrueを返す(暗転検知のタイミング自体はこのテストの関心事ではない)。
+
+    Issue #371: 暗転待ちの起点が_finalize()から「試合終了」OCR確認へ前倒しされたため、
+    in_matchがFalseに戻るのはMatchResultの確定より前になりうる(このテストのように
+    毎フレーム暗転扱いになる条件下では実際にそうなる)。したがって「確定直後もまだ
+    True」という以前の期待は成り立たなくなった。ここでは、切替がMatchResultの
+    確定タイミングに依存しないことそのものを検証する。
     """
     frame_idx = {"n": 0}
 
@@ -2144,26 +2150,28 @@ def test_in_match_true_after_vs_screen_confirmed_and_false_after_finalize(monkey
 
     result = None
     in_match_became_true_frame = None
+    in_match_became_false_frame = None
     for _ in range(30):
         result = machine.process_frame(frame)
         if in_match_became_true_frame is None and machine.in_match:
             in_match_became_true_frame = frame_idx["n"]
+        elif in_match_became_true_frame is not None and in_match_became_false_frame is None and not machine.in_match:
+            in_match_became_false_frame = frame_idx["n"]
         frame_idx["n"] += 1
         if result is not None:
             break
 
     assert in_match_became_true_frame is not None, "VS画面確定後にin_matchがTrueにならなかった"
     assert result is not None, "MatchResultが確定しなかった"
-    assert machine.in_match is True, "確定直後はまだ暗転検知からの遅延待ちでTrueのはず"
-
-    # Issue #224: 暗転検知(全黒フレームのため即座にTrue)からobs_switch_delay_after_blackout_frames
-    # (=2)経過後にFalseへ戻る
-    for _ in range(3):
-        machine.process_frame(frame)
-        if machine.in_match is False:
-            break
-
-    assert machine.in_match is False, "「試合終了」を確認できた試合は、暗転検知から一定時間後にin_matchがFalseに戻るはず"
+    assert in_match_became_false_frame is not None, (
+        "「試合終了」を確認できた試合は、暗転検知から一定時間後にin_matchがFalseに戻るはず"
+    )
+    # Issue #371: 「試合終了」確認(frame_idx=2)を起点に、暗転(全黒フレームのため
+    # 即座にTrue)からobs_switch_delay_after_blackout_frames(=2)経過して戻る
+    assert in_match_became_false_frame > in_match_became_true_frame, (
+        "in_matchはTrueになった後にFalseへ戻るはず"
+    )
+    assert machine.in_match is False, "試合終了後はin_matchがFalseのままのはず"
 
 
 def test_obs_switch_waits_for_blackout_after_finalize(monkeypatch):
@@ -2324,6 +2332,92 @@ def test_obs_switch_uses_first_blackout_when_finalize_itself_triggered_by_blacko
     # 暗転1のフレーム自体が1カウント目のため、delay(=5)到達は暗転1からdelay-1フレーム後
     assert in_match_became_false_frame == BLACKOUT1_FRAME + 5 - 1, (
         "暗転1からobs_switch_delay_after_blackout_frames(=5)分経過後にFalseへ戻るはず"
+    )
+
+
+def test_obs_switch_uses_first_blackout_even_when_finalize_is_delayed(monkeypatch):
+    """Issue #371: ランク確定(_finalize())が大きく遅れた試合でも、OBSシーン切替は
+    「試合終了」OCR確認を起点とした最初の暗転(暗転1)で行われることを確認する。
+
+    実配信(2026-08-14)では、ランクバッジを最後まで読み取れなかった試合で
+    GRACEフェーズが長引き、_finalize()が暗転1どころか暗転2も過ぎた後に呼ばれた
+    結果、OBSシーン切替が2〜4分遅延した。ここではその状況を、
+    read_precise_rank()が常にNoneを返す(バッジが読めない)ことで再現する:
+    _grace_candidate_rank_tierがNoneのままになるため、Issue #209の
+    「暗転を検知したら即確定」パスが働かず、確定はgrace期間の満了まで遅れる。
+
+    修正前は_pending_obs_switchが_finalize()でしか立たなかったため、この状況では
+    暗転1・暗転2とも取りこぼしていた。修正後は暗転1を起点にFalseへ戻る。
+    """
+    frame_idx = {"n": 0}
+
+    def fake_is_vs_screen(frame):
+        return frame_idx["n"] < 2
+
+    def fake_is_match_end_screen(frame):
+        return 2 <= frame_idx["n"] < 4
+
+    def fake_classify_banner(frame):
+        return "lose" if 5 <= frame_idx["n"] < 8 else None
+
+    BLACKOUT1_FRAME = 10
+    BLACKOUT2_FRAME = 20
+    GRACE_FRAMES = 40  # 暗転1・暗転2のどちらよりも後にfinalizeが来るようにする
+    OBS_SWITCH_DELAY = 5
+
+    def fake_is_full_blackout(frame):
+        n = frame_idx["n"]
+        return n == BLACKOUT1_FRAME or n == BLACKOUT2_FRAME
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
+    # ランクを賭けた試合(VS画面では自分のランクを検知できている)だが、
+    # 結果画面ではバッジを読み取れない、という実配信で起きた状況を再現する
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([SlotRank("∞", 10)], []))
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", fake_is_match_end_screen)
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: None)
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: None)
+    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
+
+    machine = MatchStateMachine(
+        vs_screen_confirm_frames=2,
+        banner_confirm_frames=2,
+        banner_confirm_frames_after_match_end=2,
+        match_end_confirm_frames=1,
+        league_change_grace_frames=GRACE_FRAMES,
+        rank_recheck_interval_frames=10_000,
+        obs_switch_delay_after_blackout_frames=OBS_SWITCH_DELAY,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    in_match_became_false_frame = None
+    finalize_frame = None
+    for _ in range(BLACKOUT2_FRAME + GRACE_FRAMES + 20):
+        result = machine.process_frame(frame)
+        if result is not None and finalize_frame is None:
+            finalize_frame = frame_idx["n"]
+        if in_match_became_false_frame is None and machine.in_match is False and frame_idx["n"] > 2:
+            in_match_became_false_frame = frame_idx["n"]
+        frame_idx["n"] += 1
+        if finalize_frame is not None:
+            break
+
+    assert finalize_frame is not None, "MatchResultが確定しなかった"
+    assert in_match_became_false_frame is not None, "in_matchがFalseに戻らなかった"
+    # 暗転1のフレーム自体が1カウント目のため、delay到達は暗転1からdelay-1フレーム後
+    assert in_match_became_false_frame == BLACKOUT1_FRAME + OBS_SWITCH_DELAY - 1, (
+        "「試合終了」確認を起点に、暗転1からdelay分経過した時点でFalseへ戻るはず"
+    )
+    assert in_match_became_false_frame < finalize_frame, (
+        "OBSシーン切替がランク確定(_finalize())の完了を待たずに行われているはず"
+        "(修正前は_finalize()でしかフラグが立たず、暗転1・暗転2とも取りこぼしていた)"
     )
 
 
