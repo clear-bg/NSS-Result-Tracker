@@ -224,8 +224,11 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
         league_change_grace_frames=round(fps * 5.0),
         rank_recheck_interval_frames=round(fps * 0.25),
         rank_tier_rescan_wait_frames=round(fps / 6),
-        # Issue #224: 試合終了時のOBSシーン切替は、暗転を最初に検知してから1秒後
-        obs_switch_delay_after_blackout_frames=round(fps * 1.0),
+        # Issue #224: 試合終了時のOBSシーン切替は、暗転を最初に検知してから一定時間後。
+        # Issue #371: 起点が「試合終了」OCR確認へ前倒しになり、拾う暗転が暗転2から
+        # 暗転1(実測で試合終了の7〜9秒後)へ変わったため、1秒→5秒に延長して
+        # 体感の切替タイミングを従来どおり(試合終了の12〜14秒後)に保つ
+        obs_switch_delay_after_blackout_frames=round(fps * 5.0),
         rank_stability_monitor=StabilityMonitor(roi=RANK_ROI, stable_frames_required=round(fps * 0.5)),
     )
 
