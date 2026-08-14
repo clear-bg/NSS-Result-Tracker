@@ -501,6 +501,62 @@ def test_rank_read_failure_is_logged(monkeypatch, caplog):
     assert "試合終了時点でも" in caplog.text
 
 
+def test_rank_read_failure_still_reports_confirmed_demotion_label(monkeypatch):
+    """Issue #374: ランクバッジが最後まで読み取れない(rank_after=None)試合でも、
+    降格ラベル自体は独立して検知できていれば、MatchResult.league_change_label_detected
+    に"down"として持ち回ることを確認する(実際に7試合目で起きたケース: バッジ完全
+    未読のまま降格ラベルだけ検知され、その情報が失われて次の試合のrank_beforeが
+    1帯ズレて記録された。database.db側の対応(#374実装)はこのフィールドを前提にする)。
+    """
+    calls = {"n": 0}
+
+    def fake_classify_banner(frame):
+        n = calls["n"]
+        calls["n"] += 1
+        if n < 3:
+            return None
+        if n < 6:
+            return "lose"
+        return None
+
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: None)
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: None)
+    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "confirm_demotion_label_text", lambda frame: True)
+
+    machine = MatchStateMachine(
+        banner_confirm_frames=2,
+        banner_absence_confirm_frames=2,
+        goal_confirm_frames=2,
+        league_change_grace_frames=1,
+        rank_recheck_interval_frames=1,
+        demotion_label_confirm_frames=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    machine._vs_confirmed_this_match = True
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(30):
+        r = machine.process_frame(frame)
+        if r is not None:
+            result = r
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert result.rank_before is None
+    assert result.rank_after is None
+    assert result.league_change_label_detected == "down"
+
+
 def test_read_rank_before_prefers_vs_screen_tier_over_conflicting_ocr(monkeypatch, caplog):
     """Issue #283: 結果バナー確定時点の帯番号OCRがVS画面の読み取りと食い違う場合、
     VS画面側(精度が高い)を優先して採用することを確認する(実機で41→0と誤読した

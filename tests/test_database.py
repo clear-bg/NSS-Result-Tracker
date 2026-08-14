@@ -650,6 +650,84 @@ def test_save_match_result_skips_rank_before_chain_for_unranked_match():
     assert row["rank_before_ocr"] is None
 
 
+def test_save_match_result_stores_league_change_label_detected():
+    """Issue #374: 昇格演出/降格ラベルの検知結果(league_change_label_detected)が
+    数値化の成否に関わらずそのままDBへ保存されることを確認する。
+    """
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="lose",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+        league_change_label_detected="down",
+    )
+
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT league_change_label_detected FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["league_change_label_detected"] == "down"
+
+
+def test_save_match_result_warns_when_chain_skips_match_with_league_change_label(caplog):
+    """Issue #374: バッジ完全未読(rank_before_ocrがNULL)だが昇格/降格ラベルは
+    検知できていた試合を、rank_beforeチェーンが素通りする際にWARNINGを出すことを
+    確認する(実際に発生したケース: 7試合目がバッジ完全未読のまま降格ラベルだけ
+    検知され、8試合目のrank_beforeが1帯ズレて記録された)。
+    """
+    conn = connect(":memory:")
+    promoted = MatchResult(
+        result="win", rank_before=42.80, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    promoted_id = save_match_result(conn, promoted)
+    save_manual_rank_after(conn, promoted_id, 43.06)
+
+    # バッジ完全未読だが降格ラベルは検知できた試合(実際に7試合目で起きたケース)
+    unread_with_label = MatchResult(
+        result="lose",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+        league_change_label_detected="down",
+    )
+    unread_id = save_match_result(conn, unread_with_label)
+
+    next_match = MatchResult(
+        result="win", rank_before=42.70, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    with caplog.at_level("WARNING", logger="nss_tracker.database"):
+        next_id = save_match_result(conn, next_match)
+
+    row = conn.execute("SELECT rank_before FROM matches WHERE id = ?", (next_id,)).fetchone()
+    # チェーン自体の数値は補正しない(最小案のスコープ外、Issue #374本文参照)。
+    # promotedのrank_after(43.06)がそのまま引き継がれる
+    assert row["rank_before"] == 43.06
+    assert f"matches.id={unread_id}" in caplog.text
+    assert "down" in caplog.text
+
+
+def test_save_match_result_does_not_warn_when_no_skipped_match_has_league_change_label(caplog):
+    """通常どおりバッジが読み取れている(rank_before_ocrが非NULL)試合が連続する
+    間は、WARNINGが出ないことを確認する(誤検知防止の裏取り)。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="win", rank_before=42.80, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    first_id = save_match_result(conn, first)
+    save_manual_rank_after(conn, first_id, 43.06)
+
+    second = MatchResult(
+        result="lose", rank_before=43.06, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    with caplog.at_level("WARNING", logger="nss_tracker.database"):
+        save_match_result(conn, second)
+
+    assert caplog.text == ""
+
+
 def test_save_manual_rank_after_backfills_next_blocked_rank_before():
     """Issue #308: 未確定だった試合のrank_afterを確定すると、それを引き継ぎ元として
     待っていた次の試合のrank_beforeが自動的に埋まることを確認する。
@@ -670,6 +748,43 @@ def test_save_manual_rank_after_backfills_next_blocked_rank_before():
 
     row = conn.execute("SELECT rank_before FROM matches WHERE id = ?", (second_id,)).fetchone()
     assert row["rank_before"] == 39.10
+
+
+def test_save_manual_rank_after_backfill_warns_when_skipping_match_with_league_change_label(caplog):
+    """Issue #374: _backfill_next_rank_before()経由(チェーンが詰まっていた場合)でも、
+    素通りする試合がバッジ完全未読だが昇格/降格ラベルは検知できていた場合に
+    WARNINGを出すことを確認する。
+    """
+    conn = connect(":memory:")
+    first = MatchResult(
+        result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    first_id = save_match_result(conn, first)
+
+    unread_with_label = MatchResult(
+        result="lose",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+        league_change_label_detected="down",
+    )
+    unread_id = save_match_result(conn, unread_with_label)
+
+    third = MatchResult(
+        result="win", rank_before=38.90, rank_after=None, league_changed=None, detected_at=datetime.now(timezone.utc)
+    )
+    third_id = save_match_result(conn, third)
+    row = conn.execute("SELECT rank_before FROM matches WHERE id = ?", (third_id,)).fetchone()
+    assert row["rank_before"] is None, "前提: firstが未確定のためチェーンが詰まっているはず"
+
+    with caplog.at_level("WARNING", logger="nss_tracker.database"):
+        save_manual_rank_after(conn, first_id, 39.10)
+
+    row = conn.execute("SELECT rank_before FROM matches WHERE id = ?", (third_id,)).fetchone()
+    assert row["rank_before"] == 39.10
+    assert f"matches.id={unread_id}" in caplog.text
+    assert "down" in caplog.text
 
 
 def test_save_manual_rank_after_cascades_backfill_across_multiple_blocked_matches():
