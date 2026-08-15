@@ -168,6 +168,38 @@ classify_banner()を組み替えた。"lose"は引き分けのようなテキス
 この変更によりLOSE_SAT_RANGE自体は変更しておらず、"lose"の判定には
 影響しない。fixtures/screenshots全件・fixtures/videos全件を新旧ロジックで
 比較し、89番以外に判定結果が変わるフレームが無いことを確認済み。
+
+Issue #373対応(2026-08-15、ランクを賭けた対戦の引き分けが"lose"に誤判定される):
+実配信(2026-08-14)で、ランクバッジ表示ありの引き分け(結果は"lose"として
+誤記録)が発生した。当初はDRAW_TEXT_ROIが試合中常時表示のOBSオーバーレイ
+ウィジェット(対戦相手ランク比較、Issue #145/#362)と重なっていることが原因と
+推測したが、これは誤りだった。Python側が実際に読んでいるのはOBS Virtual
+Camera経由の映像(Switch画面のみ、オーバーレイ非合成)であり、当初の調査で
+参照していたOBSローカル録画(mkv、配信アーカイブ用にオーバーレイ込みで録画
+した別ファイル)とは別物だった。`clips/rank_entry_clips/`(Issue #307、
+`web/rank-entry`用にmain.pyの検知ループが直接バッファする実フレームの保存先)
+で該当試合(match_id=10)の実フレームを確認したところ、オーバーレイは一切
+写っておらず、その状態でも_is_draw_text()はFalseを返した。
+
+原因は、DRAW_TEXT_ROI内でHueのみ(S/V条件を外す)でフィルタすると該当画素が
+63%も見つかる一方、V(明度)の中央値が131・下位25%が112と、DRAW_TEXT_VAL_MIN
+(当時140)を大きく下回っていたこと。fixture 89(mkvローカル録画由来)を
+960x540にダウンスケールしても割合はほぼ変化しなかった(0.2657→0.2658)ため
+単純な解像度差ではなく、**OBS Virtual Camera出力はOBSローカル録画より
+明度が低く出る**(内部的なクロマサブサンプリング等が疑われるが未確定)ことが
+実質的な原因と判断した。fixtures/screenshots・fixtures/videos全件と、
+clips/rank_entry_clips由来の実測フレーム(負けバナー側、match_id=11)を
+新閾値(DRAW_TEXT_VAL_MIN=115)で再スキャンし、新たな誤検知が無いことを
+確認済み(詳細はDRAW_TEXT_VAL_MIN定義側のコメント参照)。新規fixture
+107_result_draw_with_rank_pink_hdr_offは、上記の事情によりOBSローカル録画
+ではなくclips/rank_entry_clips/10.mp4(実フレーム、960x540)から切り出し、
+1920x1080へアップスケールしたもの。
+
+この一連の調査から、**fixtures/screenshots・fixtures/videosの大半がOBS
+ローカル録画から切り出されている**(docs/screen_states.md参照)ことが
+判明した。他の色閾値も同様のズレを抱えている可能性はあるが、大半は
+マージンが広く実運用で問題化していない。今回のDRAW_TEXT_VAL_MINのように
+閾値が際どいケースで顕在化しうる点は留意すること。
 """
 
 from typing import Literal, Optional
@@ -232,7 +264,16 @@ DRAW_TEXT_ROI = get_detection_value("banner", "DRAW_TEXT_ROI", (270, 45, 650, 25
 # 勝ち55% / 引き分け25-27% / 負け0%(DRAW_TEXT_ROI内でのミントグリーン画素の割合)
 DRAW_TEXT_HUE_RANGE = get_detection_value("banner", "DRAW_TEXT_HUE_RANGE", (75, 95))
 DRAW_TEXT_SAT_MIN = get_detection_value("banner", "DRAW_TEXT_SAT_MIN", 100)
-DRAW_TEXT_VAL_MIN = get_detection_value("banner", "DRAW_TEXT_VAL_MIN", 140)
+# Issue #373: 当初140だったが、ランクを賭けた対戦の引き分け実データ(107番、
+# モジュールdocstring参照)でVAL_MIN=140だと0.055しか拾えず"lose"に誤判定される
+# ことが判明した。同じフレームでHueのみ(S/V条件無し)でフィルタすると63%が該当し
+# 縁取り自体は写っているため、原因はSATではなくVALの足切りが実運用フレームでは
+# 厳しすぎたことだった(OBS Virtual Camera経由の生フレームはOBSローカル録画より
+# 明度が低く出る、モジュールdocstring参照)。115に緩めると107番は0.26まで回復する
+# 一方、負けバナー(78・81・97・98・106番、実データのclips/rank_entry_clips/11.mp4
+# 由来のフレーム含む)はVAL_MINを100まで緩めても0.0000のまま変化せず、緩和による
+# "lose"→"draw"誤検知のリスクは無いことを確認済み
+DRAW_TEXT_VAL_MIN = get_detection_value("banner", "DRAW_TEXT_VAL_MIN", 115)
 DRAW_TEXT_TEAL_FRACTION_MIN = get_detection_value("banner", "DRAW_TEXT_TEAL_FRACTION_MIN", 0.10)
 
 
