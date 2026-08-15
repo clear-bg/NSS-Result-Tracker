@@ -39,6 +39,7 @@ EXPECTED = {
     "103_match_end_knockout_hdr_off.png": None,
     "104_goal_with_assist_red_hdr_off_2.png": None,
     "106_result_lose_with_rank_demotion_red_hdr_off_2.png": "lose",
+    "107_result_draw_with_rank_pink_hdr_off.png": "draw",
 }
 
 
@@ -81,6 +82,12 @@ EXPECTED = {
 # 2件目の参照素材(106、別セッション)でも同水準のVが確認できたため、
 # LOSE_VAL_RANGEの下限を65→50に再較正して解消した(詳細はdetection/banner.pyの
 # モジュールdocstring参照)。98・106とも通常どおりEXPECTEDで"lose"を期待する。
+
+# Issue #373(解消済み): 107番(ランクを賭けた対戦の引き分け)は当初classify_banner()
+# が"lose"を返していた(DRAW_TEXT_VAL_MIN=140が実機のOBS Virtual Camera経由フレーム
+# には厳しすぎたため)。DRAW_TEXT_VAL_MINを115に再較正して解消した(詳細は
+# detection/banner.pyのモジュールdocstring参照)。107番も通常どおりEXPECTEDで
+# "draw"を期待する。
 
 
 @requires_fixtures
