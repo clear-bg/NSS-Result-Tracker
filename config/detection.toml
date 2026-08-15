@@ -26,7 +26,9 @@ BANNER_HUE_STD_MAX = 10.0
 DRAW_TEXT_ROI = [270, 45, 650, 250]
 DRAW_TEXT_HUE_RANGE = [75, 95]
 DRAW_TEXT_SAT_MIN = 100
-DRAW_TEXT_VAL_MIN = 140
+# Issue #373: OBS Virtual Camera経由の実フレームはOBSローカル録画より明度が
+# 低く出るため、140→115に再較正(根拠はdetection/banner.pyのモジュールdocstring参照)
+DRAW_TEXT_VAL_MIN = 115
 DRAW_TEXT_TEAL_FRACTION_MIN = 0.10
 
 [rank_ocr]
