@@ -268,6 +268,32 @@ def test_finish_applies_retention_keeping_only_max_clips(tmp_path):
     assert remaining == [11, 12, 13], "直近3件(11,12,13)のみ残り、最古の10は削除されるはず"
 
 
+def test_apply_retention_uses_creation_order_not_match_id_after_db_reset(tmp_path):
+    """Issue #381: DBファイルが作り直されてmatch_idが1から振り直されても、
+    実際に新しく作られたクリップがファイル名の数字の小ささだけを理由に
+    誤って削除されないことを確認する(以前はmatch_id昇順=生成順という前提が
+    崩れ、リセット直後の最新クリップが即座に削除される不具合があった)。
+    """
+    recorder = RankEntryClipRecorder(output_dir=tmp_path, target_sample_fps=10.0, max_clips=3)
+
+    # DBリセット前: match_id 9, 10, 11の順で生成(リセット後もフォルダに残り続ける想定)
+    for match_id in [9, 10, 11]:
+        recorder.start(source_fps=10.0)
+        recorder.add_frame(_make_frame())
+        recorder.finish(match_id=match_id)
+        recorder._last_encode_thread.join(timeout=10)
+
+    # DBリセット後: match_idが1から振り直される
+    for match_id in [1, 2]:
+        recorder.start(source_fps=10.0)
+        recorder.add_frame(_make_frame())
+        recorder.finish(match_id=match_id)
+        recorder._last_encode_thread.join(timeout=10)
+
+    remaining = sorted(int(p.stem) for p in tmp_path.glob("*.mp4"))
+    assert remaining == [1, 2, 11], "リセット後に生成した1・2は残り、生成順が最も古い9・10が削除されるはず"
+
+
 def test_finish_when_ffmpeg_fails_does_not_raise(tmp_path):
     """ffmpegの起動自体に失敗しても、バックグラウンドスレッド内で完結し
     呼び出し元(検知ループ)には例外を伝播させないことを確認する。
