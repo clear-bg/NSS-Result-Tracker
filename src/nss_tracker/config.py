@@ -79,9 +79,12 @@ os.environと`.env`ファイルの両方を更新する(`.env`側も更新する
 キャプチャ設定やOBS接続情報等は配信開始前に一度決めれば十分なため対象外とした。
 
 `get_room_type`/`set_room_type`(Issue #358)は野良/専用部屋の現在設定を保持するが、
-上記5項目とは異なり`.env`へ永続化しない(モジュールレベル変数のみで完結し、
-アプリ起動のたびに必ず`"random"`にリセットされる。切り替え忘れたまま前回配信の
-設定を引き継ぐ事故を防ぐため)。詳細は各関数のdocstring参照。
+上記5項目とは異なり`.env`へ永続化しない(モジュールレベル変数のみで完結する)。
+Issue #379で、アプリ起動のたびに`"random"`へ自動的にリセットする方式から、
+起動のたびに未選択(`None`)へリセットし`/admin`で明示的に選び直すまで起動確認ゲート
+(`startup_gate.py`)を通過できない方式へ変更した(「起動できたことに満足して
+切り替えを忘れる」事故を、暗黙のデフォルト値そのものを無くすことで防ぐため)。
+詳細は各関数のdocstringおよび`startup_gate.py`のモジュールdocstring参照。
 """
 
 import logging
@@ -396,21 +399,26 @@ def update_editable_settings(values: dict[str, str]) -> None:
 
 _VALID_ROOM_TYPES = ("random", "private")
 
-# Issue #358: 野良/専用部屋の現在設定。_EDITABLE_ENV_KEYSの5項目と異なり.envには
+# Issue #358/#379: 野良/専用部屋の現在設定。_EDITABLE_ENV_KEYSの5項目と異なり.envには
 # 永続化しない(切り替え忘れたまま前回配信の設定を引き継ぐリスクを避けるため、
-# アプリ起動のたびに必ず'random'にリセットする運用。モジュールインポート時に
-# この初期値へ一度だけ初期化されるため、プロセス起動ごとに自然とリセットされる。
-# os.environではなくモジュールレベル変数で保持するのは、.envから読み込む他の
-# 設定値と混同しないようにするため)。
-_current_room_type = "random"
+# アプリ起動のたびに必ず未選択(None)にリセットし、/adminで明示的に選び直すまで
+# 起動確認ゲート(startup_gate.py)を通過できないようにする運用。以前は'random'に
+# 自動リセットしていたが、暗黙のデフォルト値自体が「起動できたことに満足して
+# 選び忘れる」事故の温床だったため、Issue #379でNoneへ変更した。モジュール
+# インポート時にこの初期値へ一度だけ初期化されるため、プロセス起動ごとに自然と
+# リセットされる。os.environではなくモジュールレベル変数で保持するのは、
+# .envから読み込む他の設定値と混同しないようにするため)。
+_current_room_type: Optional[str] = None
 
 
-def get_room_type() -> str:
-    """現在の野良/専用部屋設定を取得する('random'(野良) / 'private'(専用部屋))。
+def get_room_type() -> Optional[str]:
+    """現在の野良/専用部屋設定を取得する('random'(野良) / 'private'(専用部屋) / None(未選択))。
 
-    database.db.save_match_result()が試合ごとのmatches.room_typeを決めるのに使う
-    (ただしランクが検出された試合は野良でしか成立しないため、この値によらず
-    常に'random'を強制する。db.py参照)。
+    起動直後・/adminで選び直す前はNone(未選択)であり、その間はstartup_gate.can_confirm_start()が
+    Falseのままになる(Issue #379)。database.db.save_match_result()が試合ごとのmatches.room_typeを
+    決めるのに使うが、起動確認ゲートを通過するまで検知ループ(試合記録)自体が始まらないため、
+    実際に呼ばれる時点では必ず非Noneになっている(ただしランクが検出された試合は野良でしか
+    成立しないため、この値によらず常に'random'を強制する。db.py参照)。
     """
     return _current_room_type
 

@@ -142,6 +142,10 @@ OBSが未起動・obs-websocketが無効・パスワード不一致等で接続�
 
 `ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・`RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`の5項目は、`main.py`起動時に自動的に開くブラウザの設定画面(`http://<WEB_HOST>:<WEB_PORT>/admin`)からGUIで編集できる。「更新」ボタンを押すと即座に反映され(検知ループの再起動不要)、`.env`ファイルにも書き込まれるため次回起動時にも引き継がれる。この5項目以外(キャプチャ設定・OBS接続情報等)は配信開始前に一度決めれば十分なため対象外で、`.env`の手動編集が必要。
 
+### 起動時の設定確認ゲート
+
+`main.py`はWebサーバー起動・`/admin`/`/rank-entry`の自動オープンまでを終えると、OBS Virtual Camera・OBS(obs-websocket)・YouTube連携への接続を始める前に一旦停止する。`/admin`の「野良/専用部屋」「OBSシーン自動切替」を選択したうえで「確認完了・接続開始」ボタンを押すと、そこから先の接続を開始する(押すまでは`/admin`・`/rank-entry`のブラウザ画面が開くだけで、キャプチャ・OBS・YouTubeへは一切接続しない)。「起動できたことに満足して専用部屋なのにrandomのまま配信してしまう」といった設定忘れを防ぐための仕組みで、この2項目は起動のたびに未選択に戻る。
+
 ## フォルダ構成
 
 ```txt

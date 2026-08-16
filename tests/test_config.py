@@ -475,9 +475,22 @@ def test_update_editable_settings_raises_and_applies_nothing_when_one_value_inva
     assert persisted["ALLOWED_PLAYERS"] == "OldName"
 
 
-def test_get_room_type_defaults_to_random(monkeypatch):
+def test_get_room_type_returns_current_value(monkeypatch):
     monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
     assert get_room_type() == "random"
+
+
+def test_room_type_module_level_default_is_unselected():
+    """Issue #379: 起動のたびに'random'ではなく未選択(None)へリセットされることを確認する。
+
+    他のテストがmonkeypatchで_current_room_typeを一時的に書き換えても、
+    monkeypatchはテストごとに元の値へ自動的に戻すため、モジュールインポート時の
+    実際のデフォルト値をここで直接検証できる。
+    """
+    import nss_tracker.config as config_module
+
+    assert config_module._current_room_type is None
+    assert get_room_type() is None
 
 
 def test_set_room_type_updates_get_room_type(monkeypatch):

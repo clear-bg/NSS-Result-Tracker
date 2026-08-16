@@ -16,6 +16,10 @@ capture(FfmpegFrameReader) → state(MatchStateMachine) → database(db)を
 実キャプチャを試みる。OBS/Switchをまだ用意していない段階でも配線全体を
 確認できるよう、`uv run python main.py --video path/to/file.mp4` を渡すと
 fixtures/videos等の動画ファイルを入力に差し替えて同じループを試せる。
+
+Issue #379: 起動直後はWebサーバー(`/admin`・`/rank-entry`)だけを起動し、
+OBS Virtual Camera・OBS(obs-websocket)・YouTube連携への接続は`/admin`で
+「確認完了」ボタンが押されるまで行わない(`nss_tracker.startup_gate`参照)。
 """
 
 import argparse
@@ -65,7 +69,7 @@ from nss_tracker.detection.rank_ocr import (
     read_rank,
 )
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
-from nss_tracker import match_transition
+from nss_tracker import match_transition, startup_gate
 from nss_tracker.obs_control import ObsSceneController
 from nss_tracker.rank_entry_clips import (
     DEFAULT_CLIPS_DIR,
@@ -539,6 +543,15 @@ def main() -> None:
         webbrowser.open(rank_entry_url)
     except Exception:
         logger.warning("ランク手動入力画面を自動的に開けませんでした。手動で開いてください: %s", rank_entry_url)
+
+    # Issue #379: 「起動できたことに満足して専用部屋なのにrandomのまま等の設定忘れ」を
+    # 防ぐため、/adminで「確認完了」ボタンが押されるまでOBS Virtual Camera・OBS
+    # (obs-websocket)・YouTube連携への接続を一切行わない(startup_gate.pyのモジュール
+    # docstring参照)。タイムアウトは設けず無期限に待つ
+    logger.info("設定確認待ちです。%sで設定を確認し、「確認完了」ボタンを押してください", admin_url)
+    startup_gate.wait_for_confirmation()
+    logger.info("設定確認が完了しました。OBS・YouTube連携への接続を開始します")
+
     obs_controller = ObsSceneController(
         host=obs_host,
         port=obs_port,

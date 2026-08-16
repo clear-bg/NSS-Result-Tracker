@@ -80,8 +80,9 @@ Issue #259: 全`/overlay/xxx`ページは、クエリパラメータ`?debug_bg=1
 
 Issue #358: `/admin`には上記5項目とは別に、野良/専用部屋の切り替えUI(`/admin/room-type`
 への独立したPOST)がある。`config.get_room_type`/`set_room_type`は`.env`へ永続化せず
-プロセス起動のたびに`'random'`へリセットされる値のため、`_EDITABLE_ENV_KEYS`の
-PRGフォーム(全項目必須の一括更新)とはあえて分けている。累計勝率
+プロセス起動のたびにリセットされる値のため、`_EDITABLE_ENV_KEYS`のPRGフォーム
+(全項目必須の一括更新)とはあえて分けている(Issue #379で、リセット先が`'random'`から
+未選択(`None`)へ変更された。下記「起動確認ゲート」節参照)。累計勝率
 (`_fetch_matches_count`のsession_id省略時)のみroom_type='random'の試合に絞り込み、
 配信セッション単位の集計・直近試合結果ログ(`/overlay/match-log`)はroom_typeを問わず
 従来通り表示する。得点/アシスト統計(`_fetch_goal_stats`)は元々配信セッション単位のみで
@@ -105,6 +106,15 @@ signalモード(`data-animate-on-change="signal"`、#360のcountモードの拡�
 (WebSocket/SSE)への転換はIssue #104で意図的に避けた設計のため、今回のスコープ外)。
 この遅れを人間の目に気にならない程度まで縮めるため、`/overlay/rank-graph`だけ
 `_RANK_GRAPH_REFRESH_INTERVAL_MS`(0.5秒)を使う。
+
+Issue #379: `/admin`には「確認完了」ボタン(`/admin/confirm-start`へのPOST)がある。
+`main.py`はWebサーバー起動・`/admin`/`/rank-entry`の自動オープンまでを終えた後、
+このボタンが押されて`startup_gate.confirm_start()`が呼ばれるまでOBS Virtual Camera・
+OBS(obs-websocket)・YouTube連携への接続を一切行わずブロックする(詳細は
+`startup_gate.py`のモジュールdocstring参照)。ボタンは`room_type`と
+`OBS_SCENE_SWITCHING_ENABLED`が今回の起動で明示的に選択済みになるまでdisabled
+にする(`can_confirm_start`)。この2項目は`/admin`の他フィールドと異なり、
+起動のたびに前回値をプリフィルせず空欄から始まる(`admin.html`参照)。
 """
 
 import logging
@@ -120,7 +130,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from nss_tracker import match_transition, youtube_chat
+from nss_tracker import match_transition, startup_gate, youtube_chat
 from nss_tracker.config import (
     ConfigError,
     get_allowed_players,
@@ -1300,6 +1310,9 @@ def create_app(db_path: Path) -> FastAPI:
         context = {
             "settings": get_editable_settings(),
             "room_type": get_room_type(),
+            "obs_scene_switching_confirmed": startup_gate.is_obs_scene_switching_confirmed(),
+            "can_confirm_start": startup_gate.can_confirm_start(),
+            "startup_confirmed": startup_gate.is_confirmed(),
             "status": status,
             "error": error,
             "overlay_links": app.state.overlay_links,
@@ -1327,6 +1340,10 @@ def create_app(db_path: Path) -> FastAPI:
         except ConfigError as exc:
             _logger.warning("設定画面(/admin)からの更新が拒否されました: %s(送信値: %s)", exc, new_values)
             return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
+        # Issue #379: この一括フォームはOBS_SCENE_SWITCHING_ENABLEDが必須項目のため、
+        # ここまで到達した時点でユーザーが明示的に選択・送信したことが確定する
+        # (テンプレート側は起動確認が済むまでこの項目の初期表示を空欄にしている)
+        startup_gate.mark_obs_scene_switching_confirmed()
         _logger.info("設定画面(/admin)から設定を更新しました: %s -> %s", old_values, new_values)
         return RedirectResponse("/admin?status=updated", status_code=303)
 
@@ -1339,6 +1356,17 @@ def create_app(db_path: Path) -> FastAPI:
             _logger.warning("設定画面(/admin)からの野良/専用部屋切り替えが拒否されました: %s", exc)
             return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
         _logger.info("設定画面(/admin)から野良/専用部屋設定を更新しました: %s -> %s", old_value, room_type)
+        return RedirectResponse("/admin?status=updated", status_code=303)
+
+    @app.post("/admin/confirm-start")
+    def admin_confirm_start():
+        """起動確認ゲート(Issue #379)を解除する。main.pyのwait_for_confirmation()のブロックが解ける。"""
+        try:
+            startup_gate.confirm_start()
+        except ConfigError as exc:
+            _logger.warning("設定画面(/admin)からの起動確認が拒否されました: %s", exc)
+            return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
+        _logger.info("設定画面(/admin)から起動確認が完了しました。OBS・YouTube連携への接続を開始します")
         return RedirectResponse("/admin?status=updated", status_code=303)
 
     @app.get("/rank-entry")
