@@ -49,10 +49,19 @@ ffmpeg本体のパスを取得し、サブプロセスへ生フレーム(bgr24, 
 
 直近`max_clips`件(既定3件、ユーザー確認済み)のみをディスクに保持し、
 新しいクリップが出来るたびに古いものを削除する。ファイル名は
-`{match_id}.mp4`とし、保持数の判定はファイル名(match_id、数値)の大小で行う
-(mtimeより確実なため)。rank_afterの確定状況とは無関係に「直近3試合分」を
+`{match_id}.mp4`とする。rank_afterの確定状況とは無関係に「直近3試合分」を
 機械的に保持する(ユーザー確認済み、確定したら消すのではなく単純なローリング
 ウィンドウ)。
+
+保持数の判定(「古い」の基準)は、当初はファイル名(match_id、数値)の大小
+(mtimeより確実なため)で行っていたが、Issue #381でファイルの実際の更新日時
+(mtime)へ変更した。match_idは`matches`テーブルのAUTOINCREMENTのため、DBファイル
+を作り直す(または空にする)とmatch_idが1から振り直される。一方このフォルダは
+DBとは別のライフサイクルで残り続けるため、DBリセット直後は「番号は小さいが
+実際には直前に作られたばかりの最新クリップ」が、リセット前の番号が大きい
+古いファイルより先に削除されてしまう不具合が実機で見つかった。通常運用(DBを
+作り直さない限り)ではmatch_idの昇順と生成順は一致するため、この変更で
+既存の動作は変わらない。
 
 ## ゲージクローズアップ動画(Issue #312)
 
@@ -380,9 +389,20 @@ class RankEntryClipRecorder:
         logger.info("試合(match_id=%d)の動画クリップを生成しました: %s(%d フレーム)", match_id, output_path, len(frames))
 
     def _apply_retention(self) -> None:
+        """max_clips件を超えた分を古いものから削除する。
+
+        Issue #381: 以前はファイル名の数字(match_id)の昇順を「古い」とみなしていたが、
+        match_idはmatchesテーブルのAUTOINCREMENTのため、DBファイルを作り直す(または
+        空にする)とmatch_idが1から振り直される。一方このフォルダ側は別のライフサイクル
+        (DBを跨いで残り続ける)のため、DBリセット直後は「番号は小さいが実際には
+        直前に作られたばかりの最新クリップ」が、DBリセット前の番号が大きい古いファイル
+        より先に削除されてしまう不具合が実機で見つかった。ファイルの実際の更新日時
+        (mtime)でソートすることで、match_idの採番がリセットされても常に実際に古い
+        ファイルから削除されるようにする。
+        """
         clip_files = sorted(
             (p for p in self._output_dir.glob("*.mp4") if p.stem.isdigit()),
-            key=lambda p: int(p.stem),
+            key=lambda p: p.stat().st_mtime,
         )
         while len(clip_files) > self._max_clips:
             oldest = clip_files.pop(0)
