@@ -829,6 +829,9 @@ class MatchStateMachine:
         # 一時的なノイズが_latest_gauge_fillへ混入するのを防ぐためのデバウンス用
         self._pending_gauge_fill: Optional[float] = None
         self._pending_gauge_streak = 0
+        # Issue #384: ランクゲージDEBUGログを値変化時のみ出力するための、
+        # 直近ログ出力時の生値(_pending_gauge_fillとは別に保持する)
+        self._last_logged_gauge_fill: Optional[float] = None
         # Issue #303: 帯番号の定期再チェック(read_rank())を_tier_recheck_executorで
         # 非同期実行するための状態(モジュールdocstring参照)。_tier_recheck_futureが
         # 非Noneの間は多重に投げない
@@ -1330,6 +1333,7 @@ class MatchStateMachine:
             self._latest_gauge_fill = None
             self._pending_gauge_fill = None
             self._pending_gauge_streak = 0
+            self._last_logged_gauge_fill = None
             self._tier_recheck_future = None
             self._promotion_confirmed_this_match = False
             self._demotion_confirmed_this_match = False
@@ -1424,12 +1428,17 @@ class MatchStateMachine:
         # _latest_gauge_fillへは反映されず、直前の確定値が保持され続ける
         fill = read_rank_gauge_fill(frame, GAUGE_ROI_ENLARGED)
         if fill is not None:
-            logger.debug(
-                "%d試合目 ランクゲージ: tier=%s fill=%.3f",
-                self._session_match_no,
-                self._grace_candidate_rank_tier,
-                fill,
-            )
+            # Issue #384: 毎フレーム同じ値が流れ続けてDEBUGログのノイズになって
+            # いたため、前回ログ出力時の値からRANK_RECHECK_CHANGE_TOLERANCEを
+            # 超えて変化した時だけ出力する(他のデバウンス判定と同じ許容誤差)
+            if self._last_logged_gauge_fill is None or abs(fill - self._last_logged_gauge_fill) > RANK_RECHECK_CHANGE_TOLERANCE:
+                logger.debug(
+                    "%d試合目 ランクゲージ: tier=%s fill=%.3f",
+                    self._session_match_no,
+                    self._grace_candidate_rank_tier,
+                    fill,
+                )
+                self._last_logged_gauge_fill = fill
             if self._pending_gauge_fill is not None and abs(fill - self._pending_gauge_fill) <= RANK_RECHECK_CHANGE_TOLERANCE:
                 self._pending_gauge_streak += 1
             else:
