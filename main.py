@@ -95,6 +95,11 @@ LOG_DIR = Path("logs")
 # これは--video指定時、動画ファイルからのfps自動検出(_detect_fps)が失敗した
 # 場合にのみ使うフォールバック値
 DEFAULT_CAPTURE_FPS = 30.0
+# Issue #383: watching状態(次の試合待ち)が長引く間、検知ループの処理速度に
+# 異常が無いかを事後に追えるよう、一定間隔でframes_produced/frames_consumedを
+# DEBUGログへ出すハートビートの間隔。tracking_rank状態は毎フレームDEBUGログ
+# (ランクゲージ)が既にあるため対象外(_run()参照)
+WATCHING_HEARTBEAT_INTERVAL_SECONDS = 5.0
 
 logger = logging.getLogger("nss_tracker")
 
@@ -368,6 +373,9 @@ def run(
     # の時点で判明するまではNone(録画自体はそれより前、tracking_rank突入時点で
     # 始まっているため)。clip_recorder.is_recordingがFalseの間は常にNone
     pending_clip_match_id: Optional[int] = None
+    # Issue #383: watching状態に入り直すたびにリセットし、その状態に留まって
+    # いる間だけWATCHING_HEARTBEAT_INTERVAL_SECONDSごとにハートビートを出す
+    last_watching_heartbeat = time.monotonic()
 
     _warmup_ocr_engines()
 
@@ -415,6 +423,21 @@ def run(
                     reader.frames_consumed,
                 )
                 prev_state = machine.current_state
+                last_watching_heartbeat = time.monotonic()
+
+            # Issue #383: watching状態が長引く間、検知ループの処理速度に異常が
+            # 無いかを事後に追えるよう一定間隔でハートビートを出す。状態遷移を
+            # またいでいない間はframes_produced/frames_consumedのログが無く、
+            # 処理レートが実際に落ちていた期間をログだけから特定できなかったため
+            if machine.current_state == "watching":
+                now = time.monotonic()
+                if now - last_watching_heartbeat >= WATCHING_HEARTBEAT_INTERVAL_SECONDS:
+                    logger.debug(
+                        "watching状態ハートビート: frames_produced=%d frames_consumed=%d",
+                        reader.frames_produced,
+                        reader.frames_consumed,
+                    )
+                    last_watching_heartbeat = now
 
             if machine.in_match != prev_in_match:
                 obs_controller.set_in_match(machine.in_match)
