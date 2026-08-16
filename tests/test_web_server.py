@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nss_tracker import match_transition
+from nss_tracker import match_transition, startup_gate
 from nss_tracker.database import db
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.web import server as server_module
@@ -53,6 +54,27 @@ from nss_tracker.web.server import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_startup_gate(monkeypatch):
+    """Issue #379: startup_gateはモジュールレベルの状態(threading.Eventはset()が
+    不可逆)のため、/adminへの成功POSTがテスト間で状態を漏らさないよう、
+    このファイルの全テストの前後で未確認状態にリセットする。
+    """
+    monkeypatch.setattr(startup_gate, "_obs_scene_switching_confirmed", False)
+    monkeypatch.setattr(startup_gate, "_confirmed_event", threading.Event())
+
+
+@pytest.fixture(autouse=True)
+def _default_room_type(monkeypatch):
+    """Issue #379: room_typeは起動のたびに未選択(None)にリセットされるため、
+    room_type自体を検証対象にしていないテスト(db.save_match_resultがランクを
+    賭けない試合でget_room_type()を呼ぶ箇所)がNOT NULL制約で失敗しないよう、
+    既定で'random'を設定しておく。room_typeの挙動自体を検証するテストは
+    個別にmonkeypatchで上書きする。
+    """
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+
+
 def _save_match_result(conn, match: MatchResult, session_id=None) -> int:
     """Issue #306: db.save_match_result()はrank_after/league_changedを書かなく
     なった(手動入力専用、rank_after_ocrへ移動)ため、このモジュールの既存テストが
@@ -69,6 +91,13 @@ def _save_match_result(conn, match: MatchResult, session_id=None) -> int:
         )
         conn.commit()
     return match_id
+
+
+def _extract_select_block(html: str, select_id: str) -> str:
+    """指定id(<select id="...">)の要素をタグごと抜き出す(他のselectとの取り違えを避けるため)。"""
+    match = re.search(rf'<select id="{select_id}".*?</select>', html, re.DOTALL)
+    assert match is not None, f"select#{select_id} が見つかりません"
+    return match.group(0)
 
 
 def _extract_rank_entry_clips(html: str) -> list[dict]:
@@ -1964,6 +1993,9 @@ def test_admin_get_shows_current_settings(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "30")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
     monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "false")
+    # Issue #379: OBS_SCENE_SWITCHING_ENABLEDは今回の起動で選び直し済みという体で確認する
+    # (未確認のままだと現在値によらずプレースホルダーが表示されるため)
+    startup_gate.mark_obs_scene_switching_confirmed()
     client = TestClient(create_app(tmp_path / "test.db"))
 
     response = client.get("/admin")
@@ -1982,6 +2014,34 @@ def test_admin_get_shows_current_room_type(tmp_path: Path, monkeypatch):
 
     assert response.status_code == 200
     assert '<option value="private" selected>' in response.text
+
+
+def test_admin_get_room_type_shows_unselected_placeholder_by_default(tmp_path: Path, monkeypatch):
+    """Issue #379: room_typeは起動のたびに未選択(None)から始まる。"""
+    monkeypatch.setattr("nss_tracker.config._current_room_type", None)
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    select_html = _extract_select_block(response.text, "room_type")
+    assert '<option value="" disabled selected>未選択</option>' in select_html
+    assert 'value="random" selected' not in select_html
+    assert 'value="private" selected' not in select_html
+
+
+def test_admin_get_obs_scene_switching_shows_unselected_placeholder_by_default(tmp_path: Path, monkeypatch):
+    """Issue #379: OBS_SCENE_SWITCHING_ENABLEDも.envの現在値によらず、今回の起動で
+    まだ選び直していない間はプレースホルダーのまま(前回値をプリフィルしない)。
+    """
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    select_html = _extract_select_block(response.text, "obs_scene_switching_enabled")
+    assert '<option value="" disabled selected>未選択</option>' in select_html
+    assert 'value="true" selected' not in select_html
+    assert 'value="false" selected' not in select_html
 
 
 def test_admin_post_room_type_updates_without_persisting_to_env(tmp_path: Path, monkeypatch):
@@ -2014,6 +2074,97 @@ def test_admin_post_room_type_with_invalid_value_shows_error_and_does_not_update
 
     follow_up = client.get("/admin")
     assert '<option value="random" selected>' in follow_up.text
+
+
+def test_admin_post_marks_obs_scene_switching_confirmed(tmp_path: Path, monkeypatch):
+    """Issue #379: /adminへの一括フォーム送信が成功すると、OBS_SCENE_SWITCHING_ENABLEDを
+    今回の起動で明示的に選び直したことになる(startup_gate.can_confirm_startの条件の1つ)。
+    """
+    env_path = tmp_path / ".env"
+    _write_admin_env_file(env_path)
+    monkeypatch.setattr("nss_tracker.config.find_dotenv", lambda: str(env_path))
+    monkeypatch.setenv("ALLOWED_PLAYERS", "OldName")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
+    client = TestClient(create_app(tmp_path / "test.db"))
+    assert startup_gate.is_obs_scene_switching_confirmed() is False
+
+    client.post(
+        "/admin",
+        data={
+            "allowed_players": "NewName",
+            "goal_record_mode": "allowlist",
+            "rank_graph_match_limit": "10",
+            "rank_delta_distribution_scope": "session",
+            "obs_scene_switching_enabled": "false",
+        },
+    )
+
+    assert startup_gate.is_obs_scene_switching_confirmed() is True
+
+
+def test_admin_get_confirm_start_button_disabled_when_not_ready(tmp_path: Path, monkeypatch):
+    """Issue #379: room_type・OBS_SCENE_SWITCHING_ENABLEDのどちらか一方でも
+    未選択の間は、「確認完了」ボタン自体をdisabledにする。
+    """
+    monkeypatch.setattr("nss_tracker.config._current_room_type", None)
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert '<button type="submit" disabled>確認完了・接続開始</button>' in response.text
+
+
+def test_admin_get_confirm_start_button_enabled_when_both_selected(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    startup_gate.mark_obs_scene_switching_confirmed()
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert '<button type="submit" >確認完了・接続開始</button>' in response.text
+
+
+def test_admin_post_confirm_start_succeeds_when_ready(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    startup_gate.mark_obs_scene_switching_confirmed()
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.post("/admin/confirm-start")
+
+    assert response.status_code == 200
+    assert response.url.path == "/admin"
+    assert response.url.params["status"] == "updated"
+    assert startup_gate.is_confirmed() is True
+
+
+def test_admin_post_confirm_start_rejected_when_not_ready(tmp_path: Path, monkeypatch):
+    """disabled属性をバイパスして直接POSTされた場合も、サーバー側で拒否する。"""
+    monkeypatch.setattr("nss_tracker.config._current_room_type", None)
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.post("/admin/confirm-start")
+
+    assert response.status_code == 200
+    assert response.url.params["error"]
+    assert startup_gate.is_confirmed() is False
+
+
+def test_admin_get_shows_startup_confirmed_message_instead_of_button(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    startup_gate.mark_obs_scene_switching_confirmed()
+    startup_gate.confirm_start()
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert "確認完了済みです" in response.text
+    assert "確認完了・接続開始" not in response.text
 
 
 def test_admin_get_shows_overlay_widget_links(tmp_path: Path):

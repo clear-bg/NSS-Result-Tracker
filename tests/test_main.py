@@ -59,6 +59,11 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     """
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
     monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder: None)
+    # Issue #379: main()は/admin側の「確認完了」ボタンが押されるまでOBS/YouTube接続の
+    # 手前でブロックする。ここでは実際のブラウザ操作を伴わないよう待ち自体は無効化しつつ、
+    # 呼ばれたこと自体(配線が壊れていないこと)はspyで確認する
+    wait_calls = []
+    monkeypatch.setattr(main.startup_gate, "wait_for_confirmation", lambda: wait_calls.append(True))
 
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
@@ -102,12 +107,17 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     # Issue #129: 設定画面(/admin)を起動時に自動的に開くことを確認する
     # Issue #306: ランク手動入力画面(/rank-entry)も同様に自動的に開く
     assert opened_urls == ["http://127.0.0.1:8768/admin", "http://127.0.0.1:8768/rank-entry"]
+    # Issue #379: ブラウザを開いた後、OBS/YouTube接続の手前で起動確認ゲートを待つ
+    assert wait_calls == [True]
 
 
 def test_main_continues_when_browser_cannot_be_opened(monkeypatch, tmp_path):
     """Issue #129: ブラウザが無い環境等で設定画面の自動起動に失敗しても、アプリ全体は止めない。"""
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
     monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder: None)
+    # Issue #379: main()は/admin側の「確認完了」ボタンが押されるまでOBS/YouTube接続の
+    # 手前でブロックするため、ここではその待ち自体を検証対象外として無効化する
+    monkeypatch.setattr(main.startup_gate, "wait_for_confirmation", lambda: None)
 
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DB_PATH", str(db_path))

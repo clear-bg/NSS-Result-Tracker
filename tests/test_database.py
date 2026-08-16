@@ -28,6 +28,17 @@ from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchResult
 
 
+@pytest.fixture(autouse=True)
+def _default_room_type(monkeypatch):
+    """Issue #379: room_typeは起動のたびに未選択(None)にリセットされるため、
+    room_type自体を検証対象にしていないテスト(save_match_resultがランクを賭けない
+    試合でget_room_type()を呼ぶ箇所)がNOT NULL制約で失敗しないよう、既定で
+    'random'を設定しておく。room_typeの挙動自体を検証するテストは個別に
+    monkeypatchで上書きする。
+    """
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+
+
 def test_connect_creates_matches_table():
     conn = connect(":memory:")
     tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
