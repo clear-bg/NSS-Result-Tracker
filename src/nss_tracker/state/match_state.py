@@ -542,6 +542,7 @@ Falseに戻った瞬間、つまりVS画面が視覚的に消えて数フレー�
 
 import concurrent.futures
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
@@ -566,7 +567,7 @@ from nss_tracker.detection.league_change import (
 )
 from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end_screen
 from nss_tracker.detection.matchmaking import is_vs_screen
-from nss_tracker.detection.motion import StabilityMonitor, is_full_blackout
+from nss_tracker.detection.motion import StabilityMonitor, frame_brightness_stats, is_full_blackout
 from nss_tracker.detection.rank_ocr import (
     GAUGE_ROI_COMPACT,
     GAUGE_ROI_ENLARGED,
@@ -895,6 +896,13 @@ class MatchStateMachine:
         self._pending_obs_switch = False
         # 暗転を最初に検知してからの経過フレーム数。Noneはまだ暗転未検知
         self._blackout_switch_counter: Optional[int] = None
+        # Issue #383: 暗転の取りこぼし原因究明用。_pending_obs_switchがTrueに
+        # なった時刻(time.monotonic())と、その間に観測した最小輝度平均。
+        # 「暗転自体は早期に検知できているのに切替が遅い」のか「暗転そのものを
+        # 長時間観測できていない」のかをDEBUGログから切り分けるために使う
+        # (_check_pending_obs_switch()参照)
+        self._pending_obs_switch_started_at: Optional[float] = None
+        self._pending_obs_switch_min_mean: Optional[float] = None
         # Issue #71: セッション内の試合数カウンタ。「試合開始」ログ(VS画面確定時)
         # でのみ増加する。VS画面を見逃した試合では増加しないため、その場合の
         # 「試合終了」「結果」ログは直前に増加させた番号を使い回す(ユーザーと
@@ -961,18 +969,59 @@ class MatchStateMachine:
         7〜9秒後)になる。ランク確定(_finalize())がどれだけ長引いても
         取りこぼさない一方、暗転1から実際の切替までの間隔は
         obs_switch_delay_after_blackout_frames(既定5秒相当)がそのまま決める。
+
+        Issue #383: 暗転自体を取りこぼす(=このメソッドに暗転を満たすフレームが
+        一度も渡ってこない)事象が実配信で見つかったが、既存のログでは
+        「暗転をいつ検知したか」「検知できなかった間どれだけ暗いフレームを
+        観測できていたか」が一切分からず原因究明ができなかった。そこで
+        暗転をまだ検知していない間、フレームごとの輝度をこのメソッド内で
+        直接見て以下の2種類のDEBUGログを出す(is_full_blackout()を素通しで
+        呼ぶだけだと閾値の内訳が分からないため、frame_brightness_stats()で
+        平均・標準偏差を自前で見て閾値判定する。呼んでいる関数・使っている
+        閾値定数自体はis_full_blackout()と同一で、判定結果は変えていない):
+
+        - 暗転待ち区間で観測した最小輝度平均を更新するたびに1行(「一番暗い
+          フレームでもどこまでしか暗くならなかったか」を残す。区間全体で
+          最も暗かったフレームの記録なので、更新のたびに出しても頻度は
+          自然に低い)
+        - 暗転(候補)を検知した瞬間(_blackout_switch_counterがNone→0になる
+          瞬間)に1行(「試合終了」からの経過秒数込み)。これがあれば、次に
+          同様の遅延が起きた際「暗転自体は早期に検知できているのに切替までの
+          5秒待ちの方に問題があるのか」「暗転そのものを長時間観測できて
+          いないのか」をログだけで切り分けられる
         """
         if not self._pending_obs_switch:
             return
         if self._blackout_switch_counter is None:
+            # Issue #383: 判定そのものは既存どおりis_full_blackout()(テストで
+            # monkeypatch対象になっているモジュール直下の名前)に委ね、
+            # frame_brightness_stats()はログ表示用の値取得にのみ使う
+            # (判定結果は変えない)
+            mean, std = frame_brightness_stats(frame)
+            if self._pending_obs_switch_min_mean is None or mean < self._pending_obs_switch_min_mean:
+                self._pending_obs_switch_min_mean = mean
+                logger.debug(
+                    "暗転待ち中の最小輝度を更新しました: mean=%.1f std=%.1f (試合終了から%.1f秒)",
+                    mean,
+                    std,
+                    time.monotonic() - self._pending_obs_switch_started_at,
+                )
             if not is_full_blackout(frame):
                 return
+            logger.debug(
+                "暗転(候補)を検知しました: mean=%.1f std=%.1f (試合終了から%.1f秒)",
+                mean,
+                std,
+                time.monotonic() - self._pending_obs_switch_started_at,
+            )
             self._blackout_switch_counter = 0
         self._blackout_switch_counter += 1
         if self._blackout_switch_counter >= self._obs_switch_delay_after_blackout_frames:
             self._in_match = False
             self._pending_obs_switch = False
             self._blackout_switch_counter = None
+            self._pending_obs_switch_started_at = None
+            self._pending_obs_switch_min_mean = None
 
     def _check_for_vs_screen(self, frame: np.ndarray) -> None:
         # Issue #234: VS画面確定直後はロック中(この秒数は新規のVS画面検知自体を
@@ -1014,8 +1063,19 @@ class MatchStateMachine:
             # 完了しないまま次の試合のVS画面が先に確定した場合(実際にはほぼ
             # 起きないはずのレアケース)、in_match=Trueが優先されるべきなので
             # 古い切替待ちは破棄する
+            if self._pending_obs_switch and self._pending_obs_switch_started_at is not None:
+                # Issue #383: 暗転待ちが次の試合開始まで一度も完了しなかった
+                # (=暗転を検知できないまま破棄された)ケースを追えるようにする
+                logger.warning(
+                    "前の試合の暗転待ちが完了しないまま次の試合が始まったため破棄します"
+                    "(待機時間: 約%.1f秒、観測できた最小輝度平均: %s)",
+                    time.monotonic() - self._pending_obs_switch_started_at,
+                    f"{self._pending_obs_switch_min_mean:.1f}" if self._pending_obs_switch_min_mean is not None else "観測なし",
+                )
             self._pending_obs_switch = False
             self._blackout_switch_counter = None
+            self._pending_obs_switch_started_at = None
+            self._pending_obs_switch_min_mean = None
             self._session_match_no += 1
             logger.info("%d試合目開始", self._session_match_no)
             # Issue #189: read_vs_screen_ranks()は最大16回のPaddleOCR推論を伴い
@@ -1087,6 +1147,8 @@ class MatchStateMachine:
                 # 引きずられて暗転1より後になることがあり、その場合に切替が
                 # 暗転2以降まで持ち越されてしまうため(モジュールdocstring参照)
                 self._pending_obs_switch = True
+                self._pending_obs_switch_started_at = time.monotonic()
+                self._pending_obs_switch_min_mean = None
                 logger.info("%d試合目 試合終了", self._session_match_no)
 
     def _check_for_goal(self, frame: np.ndarray) -> None:
@@ -1102,6 +1164,10 @@ class MatchStateMachine:
             and self._goal_ocr_future is None
         ):
             self._goal_recorded_this_event = True
+            # Issue #383: 暗転の取りこぼしがCPU競合(PaddleOCR実行中の負荷)と
+            # 時間的に重なっていないかを事後に突き合わせられるよう、投入時刻を
+            # 出す(完了時刻は_poll_goal_ocr()の「ゴール検知」ログで既に出ている)
+            logger.debug("ゴールOCR一式を投入しました(別プロセス、goal-ocr)")
             self._goal_ocr_future = self._goal_ocr_executor.submit(_run_goal_ocr, frame)
 
     def _poll_goal_ocr(self, wait: bool = False) -> None:
@@ -1484,6 +1550,8 @@ class MatchStateMachine:
         """
         if self._tier_recheck_future is not None:
             return
+        # Issue #383: goal-ocr投入ログと同じ理由で、CPU負荷の時間帯を突き合わせられるよう出す
+        logger.debug("帯番号再チェックを投入しました(別プロセス、tier-recheck)")
         self._tier_recheck_future = self._tier_recheck_executor.submit(read_rank, frame, RANK_NUMBER_ROI_ENLARGED)
 
     def _poll_tier_recheck(self) -> None:

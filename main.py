@@ -100,6 +100,12 @@ DEFAULT_CAPTURE_FPS = 30.0
 # DEBUGログへ出すハートビートの間隔。tracking_rank状態は毎フレームDEBUGログ
 # (ランクゲージ)が既にあるため対象外(_run()参照)
 WATCHING_HEARTBEAT_INTERVAL_SECONDS = 5.0
+# Issue #383: フレーム読み取り間隔(前回reader.read()が返ってから今回までの
+# 経過時間)が「想定フレーム間隔(1/fps)のこの倍数」を超えたら、検知ループの
+# 処理が一時的に詰まっていた可能性ありとしてDEBUGログを出す。frames_produced/
+# frames_consumedのハートビート(5秒間隔)では均されてしまう短時間のスパイクを
+# 直接捉える目的(_run()参照)
+FRAME_READ_STALL_LOG_THRESHOLD_MULTIPLIER = 5.0
 
 logger = logging.getLogger("nss_tracker")
 
@@ -376,6 +382,12 @@ def run(
     # Issue #383: watching状態に入り直すたびにリセットし、その状態に留まって
     # いる間だけWATCHING_HEARTBEAT_INTERVAL_SECONDSごとにハートビートを出す
     last_watching_heartbeat = time.monotonic()
+    # Issue #383: reader.read()が実際にフレームを返すたびの間隔を計測し、
+    # 想定フレーム間隔を大きく超えた場合にDEBUGログを出す(FRAME_READ_STALL_LOG_
+    # THRESHOLD_MULTIPLIER参照)。frames_produced/frames_consumedの5秒間隔
+    # ハートビートでは均されてしまう短時間の詰まりを直接捉える目的
+    expected_frame_interval_seconds = 1.0 / fps
+    last_frame_read_at = time.monotonic()
 
     _warmup_ocr_engines()
 
@@ -397,6 +409,21 @@ def run(
                 else:
                     logger.error("ffmpegプロセスが終了し、フレームが取得できなくなりました")
                 break
+
+            now = time.monotonic()
+            read_gap_seconds = now - last_frame_read_at
+            if read_gap_seconds >= expected_frame_interval_seconds * FRAME_READ_STALL_LOG_THRESHOLD_MULTIPLIER:
+                # Issue #383: このgapは主に「前回ループの処理(process_frame以下)に
+                # かかった時間」を表す(reader側は常に最新フレームを返すため、
+                # 処理が詰まっていなければ次のread()はほぼ即座に返る)。暗転の
+                # 取りこぼしと時間的に重なっていないかを事後に突き合わせる用途
+                logger.debug(
+                    "フレーム読み取り間隔が異常に空きました: %.0fms(想定間隔の約%.1f倍、推定%d フレーム分)",
+                    read_gap_seconds * 1000,
+                    read_gap_seconds / expected_frame_interval_seconds,
+                    round(read_gap_seconds / expected_frame_interval_seconds),
+                )
+            last_frame_read_at = now
 
             result = machine.process_frame(frame)
 

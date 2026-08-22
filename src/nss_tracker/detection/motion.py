@@ -47,6 +47,18 @@ FULL_BLACKOUT_MAX_MEAN_BRIGHTNESS = get_detection_value("motion", "FULL_BLACKOUT
 FULL_BLACKOUT_MAX_BRIGHTNESS_STD = get_detection_value("motion", "FULL_BLACKOUT_MAX_BRIGHTNESS_STD", 15.0)
 
 
+def frame_brightness_stats(frame: np.ndarray) -> tuple[float, float]:
+    """フレーム全体のグレースケール輝度平均・標準偏差を返す。
+
+    Issue #383: is_full_blackout()の閾値判定そのものに使う値だが、暗転を
+    取りこぼした際の原因究明(「閾値にどれだけ近づけていたか」を暗転待ち中の
+    DEBUGログに残す用途、state/match_state.py参照)のため単体で呼べるように
+    切り出した。
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return float(gray.mean()), float(gray.std())
+
+
 def is_full_blackout(frame: np.ndarray) -> bool:
     """画面全体が暗転しているかを判定する(Issue #209)。
 
@@ -54,8 +66,8 @@ def is_full_blackout(frame: np.ndarray) -> bool:
     シーン(夜間演出等)ではなく一様な黒であることを確認する(モジュール
     docstring参照)。
     """
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    return bool(gray.mean() <= FULL_BLACKOUT_MAX_MEAN_BRIGHTNESS and gray.std() <= FULL_BLACKOUT_MAX_BRIGHTNESS_STD)
+    mean, std = frame_brightness_stats(frame)
+    return bool(mean <= FULL_BLACKOUT_MAX_MEAN_BRIGHTNESS and std <= FULL_BLACKOUT_MAX_BRIGHTNESS_STD)
 
 
 def region_diff(prev_frame: np.ndarray, curr_frame: np.ndarray, roi: tuple[int, int, int, int]) -> float:
