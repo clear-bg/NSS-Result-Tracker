@@ -47,11 +47,9 @@ ffmpeg本体のパスを取得し、サブプロセスへ生フレーム(bgr24, 
 
 ## 保持数管理
 
-直近`max_clips`件(既定3件、ユーザー確認済み)のみをディスクに保持し、
-新しいクリップが出来るたびに古いものを削除する。ファイル名は
-`{match_id}.mp4`とする。rank_afterの確定状況とは無関係に「直近3試合分」を
-機械的に保持する(ユーザー確認済み、確定したら消すのではなく単純なローリング
-ウィンドウ)。
+直近`max_clips`件(既定3件、ユーザー確認済み)を基本の保持数とし、
+新しいクリップが出来るたびにこれを超えた古いものを削除する。ファイル名は
+`{match_id}.mp4`とする。
 
 保持数の判定(「古い」の基準)は、当初はファイル名(match_id、数値)の大小
 (mtimeより確実なため)で行っていたが、Issue #381でファイルの実際の更新日時
@@ -62,6 +60,38 @@ DBとは別のライフサイクルで残り続けるため、DBリセット直�
 古いファイルより先に削除されてしまう不具合が実機で見つかった。通常運用(DBを
 作り直さない限り)ではmatch_idの昇順と生成順は一致するため、この変更で
 既存の動作は変わらない。
+
+### 未確定試合のクリップは削除しない(Issue #389)
+
+`rank_before`のチェーン(直近の「ランクを賭けた試合」から`rank_after`を古い順に
+連鎖して解決する仕組み、`database.db`のモジュールdocstring参照)は、途中の1試合が
+未確定(`/rank-entry`での入力待ち)のままだと、それ以降の試合すべてが連続して
+`rank_before`を解決できないまま止まってしまう。この状態で`max_clips`件による
+機械的なローリングウィンドウ削除をそのまま適用すると、チェーンを塞いでいる
+最古の未確定試合のクリップが`/rank-entry`のUIから選べる範囲(直近3件)の外に
+押し出されて削除されてしまい、二度とその試合を確定できなくなる(=以降の
+試合も永久に未確定のまま)デッドロックが実配信で見つかった。
+
+対策として、`max_clips`件を超えて削除の対象になった古いクリップのうち、
+対応する試合が未確定(`matches.rank_before_ocr`が非NULLかつ`rank_after`が
+NULL、`database.db.fetch_match`で判定)のものは削除せずそのまま残す。
+`/rank-entry`側(`web/server.py`)はディスク上に残っている全クリップを表示
+対象にするため、UIからは通常の直近3件に加えて「3つ前」「4つ前」...という
+形で選択肢が伸びる(表示側の実装は`_build_rank_entry_context`参照)。
+直近3件という基本の見せ方・削除ポリシー自体は変更せず、未確定の試合だけが
+例外的に残り続ける。
+
+削除対象の判定にはDBへの接続が要る(`RankEntryClipRecorder`はコンストラクタで
+`db_path`を受け取る)。`_apply_retention()`はバックグラウンドスレッド
+(`_encode_and_apply_retention`)から呼ばれるため、`main.py`側の検知ループが
+使っているコネクションは(sqlite3のcheck_same_thread制約により)使い回せず、
+`web/server.py`と同じ「呼び出しのたびに新規コネクションを開いて閉じる」方式にした。
+
+このポリシーだと、配信者が確定作業を何セッションも放置すると未確定クリップが
+際限なく溜まりディスクを圧迫しうる。あえて上限は設けず(ユーザーとの相談で
+決定、個人利用のため実害が出るケースは考えにくい)、代わりに未確定のまま
+保持されているクリップが`PENDING_CLIP_WARNING_THRESHOLD`(既定5件)を超えたら
+WARNINGログを出し、配信者が確定作業を溜め込みすぎていることに気付けるようにする。
 
 ## ゲージクローズアップ動画(Issue #312)
 
@@ -126,6 +156,8 @@ import cv2
 import imageio_ffmpeg
 import numpy as np
 
+from nss_tracker.database import db
+
 logger = logging.getLogger("nss_tracker.rank_entry_clips")
 
 # main.py(生成側)・web/server.py(配信側)の両方から参照する、クリップの
@@ -142,6 +174,9 @@ TARGET_SAMPLE_FPS = 8.0
 TARGET_WIDTH = 960
 MAX_DURATION_SECONDS = 60.0
 DEFAULT_MAX_CLIPS = 3
+# Issue #389: 未確定のため削除せず残っているクリップがこの件数を超えたら
+# WARNINGログを出す(上限として削除するわけではない、モジュールdocstring参照)
+PENDING_CLIP_WARNING_THRESHOLD = 5
 # Issue #312: ゲージのROI(実測290x32px程度)をどの幅まで拡大して見せるか
 GAUGE_TARGET_WIDTH = 1160
 GAUGE_TICK_SEGMENTS = 20
@@ -258,6 +293,7 @@ class RankEntryClipRecorder:
         ffmpeg_path: Optional[str] = None,
         crop_roi: Optional[tuple[int, int, int, int]] = None,
         overlay_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+        db_path: Optional[Path] = None,
     ) -> None:
         self._output_dir = output_dir
         self._max_clips = max_clips
@@ -267,6 +303,9 @@ class RankEntryClipRecorder:
         self._ffmpeg_path = ffmpeg_path or imageio_ffmpeg.get_ffmpeg_exe()
         self._crop_roi = crop_roi
         self._overlay_fn = overlay_fn
+        # Issue #389: 未確定の試合のクリップを削除しないための判定に使う
+        # (省略時はdb.connect()と同じくconfig.get_db_path()を都度評価する)
+        self._db_path = db_path
 
         self._frames: list[np.ndarray] = []
         self._sample_interval = 1
@@ -389,7 +428,9 @@ class RankEntryClipRecorder:
         logger.info("試合(match_id=%d)の動画クリップを生成しました: %s(%d フレーム)", match_id, output_path, len(frames))
 
     def _apply_retention(self) -> None:
-        """max_clips件を超えた分を古いものから削除する。
+        """max_clips件を超えた分を古いものから削除する。ただし対応する試合が
+        未確定(rank_before_ocrが非NULLかつrank_afterがNULL)のクリップは
+        削除しない(Issue #389、モジュールdocstring参照)。
 
         Issue #381: 以前はファイル名の数字(match_id)の昇順を「古い」とみなしていたが、
         match_idはmatchesテーブルのAUTOINCREMENTのため、DBファイルを作り直す(または
@@ -404,7 +445,30 @@ class RankEntryClipRecorder:
             (p for p in self._output_dir.glob("*.mp4") if p.stem.isdigit()),
             key=lambda p: p.stat().st_mtime,
         )
-        while len(clip_files) > self._max_clips:
-            oldest = clip_files.pop(0)
-            oldest.unlink(missing_ok=True)
-            logger.info("古い動画クリップを削除しました: %s", oldest)
+        excess = len(clip_files) - self._max_clips
+        if excess <= 0:
+            return
+
+        conn = db.connect(self._db_path)
+        try:
+            pending_kept = 0
+            for path in clip_files[:excess]:
+                match_id = int(path.stem)
+                row = db.fetch_match(conn, match_id)
+                if row is not None and row["rank_before_ocr"] is not None and row["rank_after"] is None:
+                    # Issue #389: rank_beforeチェーンを塞いでいる可能性がある未確定
+                    # 試合のクリップは、max_clips件を超えていても削除せず残す
+                    pending_kept += 1
+                    continue
+                path.unlink(missing_ok=True)
+                logger.info("古い動画クリップを削除しました: %s", path)
+        finally:
+            conn.close()
+
+        if pending_kept > PENDING_CLIP_WARNING_THRESHOLD:
+            logger.warning(
+                "未確定のため削除せず残っている動画クリップが%d件あります"
+                "(閾値%d件超)。/rank-entryでの確定作業が溜まっていないか確認してください",
+                pending_kept,
+                PENDING_CLIP_WARNING_THRESHOLD,
+            )

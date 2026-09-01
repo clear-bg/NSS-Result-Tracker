@@ -611,7 +611,7 @@ def main() -> None:
     if youtube_chat_dive_time_enabled:
         dive_time_watcher = DiveTimeWatcher()
         dive_time_watcher.start()
-    clip_recorder = RankEntryClipRecorder(output_dir=DEFAULT_CLIPS_DIR)
+    clip_recorder = RankEntryClipRecorder(output_dir=DEFAULT_CLIPS_DIR, db_path=db_path)
     # Issue #312: ゲージのROI(GAUGE_ROI_ENLARGED)だけを切り出し、目盛り線を
     # 合成したクローズアップ動画を並行して生成する(rank_entry_clips.pyの
     # モジュールdocstring参照)
@@ -620,6 +620,7 @@ def main() -> None:
         target_width=GAUGE_TARGET_WIDTH,
         crop_roi=GAUGE_ROI_ENLARGED,
         overlay_fn=_draw_gauge_ticks,
+        db_path=db_path,
     )
     try:
         run(reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder)

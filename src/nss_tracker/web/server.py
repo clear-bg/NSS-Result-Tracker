@@ -1237,12 +1237,19 @@ def _build_rank_entry_clip_info(row: sqlite3.Row, index: int, has_clip: bool, ha
 
 
 def _build_rank_entry_context(db_path: Path) -> dict:
-    """/rank-entryページ用に、直近の動画クリップ(最大3件、Issue #307)とそれぞれに
-    対応する試合情報を新しい順に返す。
+    """/rank-entryページ用に、ディスク上の動画クリップとそれぞれに対応する
+    試合情報を新しい順に返す。
 
     テンプレート側は先頭(最新)をデフォルト選択として表示し、JS側で選択を
     切り替えるたびに同じ形のデータで左側の試合情報・入力フォームを差し替える
     (動画の切り替えと連動させたいというユーザー要望、Issue #307)。
+
+    通常は直近3件(`rank_entry_clips.DEFAULT_MAX_CLIPS`)だが、Issue #389で
+    `RankEntryClipRecorder._apply_retention()`が未確定の試合のクリップを
+    削除せず残すようになったため、確定作業が滞っている間はそれ以上の件数が
+    ディスクに残ることがある。この関数は`_list_clip_match_ids()`でディレクトリを
+    そのまま列挙するだけなので、件数に関わらず全て「最新」「1つ前」「2つ前」…と
+    連番のラベルで表示される(`_rank_entry_recency_label`参照、追加の分岐は不要)。
 
     クリップが1件も無い場合(Issue #307導入前からの未確定分、またはまだ
     エンコードが完了していない直後等)は、Issue #306/#308までの表示に
