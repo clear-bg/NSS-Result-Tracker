@@ -229,9 +229,9 @@ src/
 
 ### 検知パラメータ(ROI・色閾値)のconfig化
 
-- `detection/`配下の各モジュール(上記9ファイル全て)が持つROI・HSV色閾値・ピクセル差分閾値、および`state/match_state.py`の一部の検知閾値(fpsに依存しないもの)は、ルート直下`config/detection.toml`(git追跡対象、デフォルト値入り)から読み込む。読み込みは`src/nss_tracker/detection_config.py`の`get_detection_value(section, key, default)`が担当し、各モジュールのモジュールレベル定数の初期化時に1回呼ばれる
+- `detection/`配下の各モジュール(上記9ファイル全て)が持つROI・HSV色閾値・ピクセル差分閾値、および`state/match_state.py`の検知閾値は、ルート直下`config/detection.toml`(git追跡対象、デフォルト値入り)から読み込む。読み込みは`src/nss_tracker/detection_config.py`の`get_detection_value(section, key, default)`が担当し、各モジュールのモジュールレベル定数の初期化時に1回呼ばれる
 - `config/detection.toml`はモジュールごとに`[banner]` / `[rank_ocr]` / `[league_change]` / `[goal]` / `[motion]` / `[matchmaking]` / `[vs_rank]` / `[team_color]` / `[match_end]` / `[match_state]`のテーブルを持つ。ファイル自体が無い、またはテーブル・キーが無い場合は各モジュール側のPythonデフォルト値(=元々ハードコードされていた値)にフォールバックする
-  - `state/match_state.py`の`DEFAULT_BANNER_CONFIRM_FRAMES`等のフレーム数系デフォルト値は対象外(`main.py`が実際のfpsに応じて動的に再計算して上書きするため、素の値を外に出すと二重管理になる。Issue #49参照)
+  - Issue #388以前は`state/match_state.py`の`DEFAULT_BANNER_CONFIRM_FRAMES`等のフレーム数系デフォルト値を対象外としていた(`main.py`が実際のfpsに応じて動的に再計算して上書きするため、素の値を外に出すと二重管理になるという理由、Issue #49参照)。Issue #388でこれらのデバウンス閾値をすべて実時間(秒)ベースに変更し、fps依存の再計算自体が不要になったため、この除外は撤廃し`[match_state]`の対象に含めた(下記「MatchStateMachineのデバウンス閾値」節参照)。`StabilityMonitor`(ピクセル差分ベースの安定監視、Issue #388の対象外)の`stable_frames_required`は引き続き`main.py`側でfpsに応じて計算しており対象外のまま
 - fixture実測に基づく閾値決定の根拠コメントは、詳細を失わないよう各detectionモジュールのPython定数側に残す(config/detection.toml側は簡潔なコメントのみ)
 - 将来キャプチャ以外のカテゴリの設定が増えた場合も、`config/`配下に種別ごとのファイルを追加していく想定(例: 将来`config/xxx.toml`)。デバイス名・解像度(Issue #30)は値がシンプルなKEY=VALUEで足りるため、従来どおり`.env`(`config.py`)で扱う
 - TOML読み込みには標準ライブラリの`tomllib`を使うため、`requires-python`は`>=3.11`(2026-07時点で`>=3.10`から引き上げ済み)
@@ -278,7 +278,8 @@ src/
 - 現段階では手動でターミナルから`uv run python main.py`を実行する運用のみを想定し、タスクスケジューラ等の自動起動・自動復旧の仕組みは作らない
 - 実際に配信で運用してみて自動復旧などの必要性が具体化した段階で改めて検討する
 - `main.py`でcapture(`FfmpegFrameReader`)→state(`MatchStateMachine`)→database(`db`)の配線を実装済み。OBS/Switchが無い段階でも配線を確認できるよう、`--video path/to/file.mp4`で動画ファイルをOBS Virtual Cameraの代わりに読み込める(動作確認は完了)。実機OBS Virtual Cameraでの疎通確認も完了済み(`docs/capture_verification.md`参照)。ただし`main.py`を実キャプチャ相手にend-to-endで動かし、実際に試合をプレイしてbanner検知・ランクOCR・ゴール検知が正しく発火するかの確認はまだ行っていない
-  - `MatchStateMachine`のフレーム数ベースの閾値(`banner_confirm_frames`等)は30fps想定のデフォルト値のため、呼び出し側(`main.py`)で実際のfpsに応じてスケーリングする必要がある(`state/match_state.py`のdocstring参照)。`--video`指定時はファイルのfpsを自動検出、実キャプチャ時は`.env`の`CAPTURE_FPS`を使う(Issue #255。OBS Virtual Cameraの実際の出力fpsは環境ごとに異なりうるため、以前ハードコードしていた「30fps想定」を撤廃した。OBSの実際の出力fpsとズレていると、フレーム数ベースのデバウンス閾値が想定と異なる実時間で条件を満たしてしまい誤検知の原因になる。実際に30fps想定のまま60fps環境で運用してランク読み取りを誤ったケースが2026-08-07の実機テストで見つかった)
+  - Issue #255: `--video`指定時はファイルのfpsを自動検出、実キャプチャ時は`.env`の`CAPTURE_FPS`を使う(OBS Virtual Cameraの実際の出力fpsは環境ごとに異なりうるため、以前ハードコードしていた「30fps想定」を撤廃した)。この検出したfpsは`main.py`が`StabilityMonitor`(ピクセル差分ベースの安定監視、Issue #388の対象外)の閾値換算にのみ使う
+  - Issue #388: `MatchStateMachine`のデバウンス閾値(`banner_confirm_seconds`等)は、以前はフレーム数(30fps想定)で持ち`main.py`が実際のfpsに応じて`round(fps * 秒数)`へ動的にスケーリングしていたが、検知ループの実効fpsは処理内容(OCR負荷・OBS Virtual Camera側の詰まり等)次第で大きく変動することが実配信で判明した(Issue #383/#387)。実効fpsが想定より落ちると同じフレーム数を稼ぐのに想定より長い実時間がかかり、表示時間の短い結果(「勝ち」バナー等)の確定を取りこぼす実害が出たため(#387で解析)、閾値をすべて実時間(秒)ベースに変更した(`state/match_state.py`のモジュールdocstring参照)。これにより`main.py`側のfps換算は不要になった(30fps想定のまま60fps環境で運用してランク読み取りを誤ったケースが2026-08-07の実機テストで見つかっていたが、この種の閾値のズレ自体が構造的に起きなくなった)
   - EasyOCR・PaddleOCRは初回呼び出し時にモデル読み込みで数秒かかる(実測: 約3.8秒、2回目以降は0.2秒未満)。キャプチャループ開始前に一度呼び出して済ませておかないと、ちょうどランクバッジの安定待ちが始まる直後にこの数秒間が重なり、`FfmpegFrameReader`の「追いつかない間は古いフレームを破棄する」設計と組み合わさって肝心の区間のフレームを丸ごと読み飛ばしてしまう(`main.py`の`_warmup_ocr_engines`で対応済み)
 
 ## フォルダの位置づけ

@@ -6,15 +6,29 @@ CLAUDE.md記載の「試合後の状態遷移」(結果バナー表示→ラン�
 試合の記録が完了した瞬間だけ MatchResult を返す。
 
 「暗転」を明示的な輝度閾値で検知するのではなく、結果バナーが一定時間
-確実に消えたこと(banner=Noneがbanner_absence_confirm_frames回連続)を
+確実に消えたこと(banner=Noneがbanner_absence_confirm_seconds回連続)を
 もって次の試合への再武装(WATCHING状態への復帰)とみなす。暗転〜マッチング
 画面のどこかで必ずバナーが消えるため、この方が輝度閾値を新たに調整するより
 頑健(検証済みの banner判定・デバウンスの仕組みをそのまま再利用できる)。
 
 banner判定は単体だと一瞬誤検知しうるため(detection.banner参照)、ここでも
-banner_confirm_frames 回連続した判定のみを採用する。デフォルト値は30fps想定で
-約2秒(Issue #67対応、後述)。60fps等より高フレームレートで使う場合は、呼び出し側で
-fpsに応じて調整すること。
+banner_confirm_seconds 秒以上連続した判定のみを採用する(デフォルト2秒、
+Issue #67対応、後述)。
+
+Issue #388: このクラスのデバウンス閾値(banner_confirm_seconds等、末尾が
+_secondsのコンストラクタ引数)はすべて実時間(秒)で持つ。以前はフレーム数で
+持ち、呼び出し側(main.py)が起動時のfpsから`round(fps * 秒数)`へ換算していたが、
+検知ループの実効fpsは処理内容(OCR負荷・OBS Virtual Camera側の詰まり等)次第で
+大きく変動することが実配信で判明した(Issue #383/#387)。実効fpsが想定より
+落ちると、同じフレーム数を稼ぐのに想定より長い実時間がかかり、「1秒デバウンス」
+のつもりの閾値が実際には数倍の実時間デバウンスとして働いてしまい、表示時間の
+短い結果(「勝ち」バナー等)の確定を取りこぼす実害が出た(#387で解析、詳細は
+#388参照)。`now_fn`(既定`time.monotonic`、テストでは差し替え可能)で取得した
+実時刻を基準に「その状態が実際に何秒持続したか」で判定することで、実効fpsが
+変動してもデバウンスの意味(秒数)が変わらないようにした。process_frame()の
+呼び出し自体が実フレーム到着時にしかトリガーされないため、フレームが1枚も
+来ないまま経過秒数だけが人工的に進むことは構造的に起きない(フレーム数の
+下限を別途設けなくても安全、ユーザーとの相談で確認済み)。
 
 Issue #67: 実プレイ配信のアーカイブ映像で、試合中(ゴール演出とは無関係な通常プレイ中)に
 画面上部(BANNER_ROI)へスタジアムの背景(建造物等)が写り込み、classify_bannerが
@@ -27,7 +41,7 @@ is_goal_event()が終始Falseの通常プレイ中であり、この案は実デ
 確定に必要な連続フレーム区間の途中で条件を満たさなくなり、いずれも本物の確定を
 壊してしまうことが実データ検証で判明した。この種の誤検知パターンの参照サンプルが
 現時点で1件のみで、閾値を「範囲+マージン」で決められるだけのデータが無いため、
-根本的な検知改善は今後の課題とし、今回は対症療法としてbanner_confirm_framesを
+根本的な検知改善は今後の課題とし、今回は対症療法としてbanner_confirm_secondsを
 1秒から2秒に延長した(誤検知は1.3秒程度しか持続せず、本物のバナーは数秒以上
 表示され続けるため、2秒あれば今回のサンプルは確実に防げる。検知遅延が数秒増える
 が、バックグラウンドでの記録用途のため実用上の影響はない)。回帰テストは
@@ -38,13 +52,13 @@ fixtures/videos/metadata.json参照)。
 Issue #76: Issue #67の2秒デバウンスは対症療法であり検知が遅くなる副作用がある。
 これを改善するため、試合の本当の終了時点にのみ表示される「試合終了」バナー
 (detection.match_end参照)を補助信号として使う。WATCHING中に
-is_match_end_screen()を毎フレーム軽量にチェックし、match_end_confirm_frames回
+is_match_end_screen()を毎フレーム軽量にチェックし、match_end_confirm_seconds回
 連続したタイミングで1回だけconfirm_match_end_text()を呼んでOCRで文字を確認する
 (「試合終了」と色味が酷似する「延長戦」「キックオフ」バナーとの誤認識を防ぐため。
 detection.match_end参照)。「試合終了」を確認できていれば、_watch_for_banner()の
-確定に必要なbanner_streakの閾値をbanner_confirm_frames_after_match_end
+確定に必要なbanner_streakの閾値をbanner_confirm_seconds_after_match_end
 (短い、デフォルトはIssue #67修正前と同じ1秒相当)に切り替える。確認できていない
-場合は通常どおりbanner_confirm_frames(長い、2秒相当)のままとする。
+場合は通常どおりbanner_confirm_seconds(長い、2秒相当)のままとする。
 
 この設計を「VS画面〜試合終了検知までの間はバナー判定自体を行わない」という
 完全なゲート方式にしなかったのは、「試合終了」検知自体を見逃す実データケースが
@@ -59,7 +73,7 @@ Issue #186: is_goal_event()(「ゴール!」バナーの色ベース候補判定
 「試合終了」と同じ理由で青空・スタジアム天蓋の映り込みに誤反応することが
 広域監査で判明した(本物の青ゴールバナーとHSVが実測で重複しており、色閾値の
 みでの安全な分離は不可)。同じ2段構成の考え方で、_check_for_goal()は
-goal_confirm_frames回連続したタイミングで1回だけconfirm_goal_text()を呼び、
+goal_confirm_seconds回連続したタイミングで1回だけconfirm_goal_text()を呼び、
 得点者名パネルのラベル文字(「ゴール」「アシスト」「オウンゴール」、固定語彙で
 OCRの信頼性が高い)が実際に読み取れた場合のみゴールとして確定する
 (detection.goalのモジュールdocstring参照)。確認できなかった場合はその
@@ -80,7 +94,7 @@ Issue #71: 実プレイでの動作確認をしやすくするため、試合の
 ランク確定判定(TRACKING_RANK)は、ピクセル差分が一旦安定しても「リーグ昇格」の
 全画面演出がそのあとに続く場合があることが実データで判明している
 (fixtures/videos/01_win_blue_2-1.mp4)。安定を検知した直後にすぐ
-確定させず、league_change_grace_frames分だけ様子を見て、その間に演出が現れたら
+確定させず、league_change_grace_seconds分だけ様子を見て、その間に演出が現れたら
 演出が終わるまで待ち、再度安定するのを待ってから確定する(detection.league_change
 参照)。なお、この全画面演出が出るのは**昇格時のみ**。降格時は全画面演出が出ず
 ランクバッジ上に小さな「降格」ラベルが乗るだけでバッジ自体は隠れない
@@ -95,7 +109,7 @@ Issue #71: 実プレイでの動作確認をしやすくするため、試合の
 「安定」の判定が崩れず、GRACE突入直後に読んだ値が古いまま確定されてしまう
 (例: 00は真の最終値40.43より先に一時的な40.77を確定、03は降格後の
 39台への遷移を見逃す)。これに対処するため、GRACE中も帯番号(数値OCR、重い
-処理)はrank_recheck_interval_framesおきに読み直して古くなっていないか確認する。
+処理)はrank_recheck_interval_secondsおきに読み直して古くなっていないか確認する。
 
 Issue #178: ゲージの塗りつぶし(小数部)側は、上記の間引き読み直しだけでは
 不十分なケースが実データ(本番運用中に記録されたmatches.id=19/20の元動画)で
@@ -111,7 +125,7 @@ Issue #178: ゲージの塗りつぶし(小数部)側は、上記の間引き読
 従来通りの間引き読み直しのままでよい(数値OCRは重く、かつ帯自体は基本的に
 1試合で1回しか変わらないため)。
 
-Issue #178で追加した、GRACE中に「バナー消灯+直近rank_recheck_interval_frames分
+Issue #178で追加した、GRACE中に「バナー消灯+直近rank_recheck_interval_seconds分
 ゲージが変化していない」ことを合図に早期確定するパスは、Issue #209の対策
 (_latest_gauge_fillが帯上限付近のときはこの早期確定を使わない、という
 near_tier_capガード)を挟んでもなお、Issue #235で別系統の不具合を引き起こして
@@ -126,7 +140,7 @@ near_tier_capガード)を挟んでもなお、Issue #235で別系統の不具�
 リーグ昇格演出が始まる前に確定してしまい昇格そのものを見逃す、等)。
 
 Issue #235でこの早期確定パス自体を廃止した。GRACE中の確定手段は「本当の
-暗転(is_full_blackout)を検知した瞬間の即時確定」と「league_change_grace_frames
+暗転(is_full_blackout)を検知した瞬間の即時確定」と「league_change_grace_seconds
 (既定5秒)満了による確定」の2つのみになった。バナー消灯後すぐには確定せず
 常に暗転または猶予満了まで待つ形になるため、昇格演出が無い普通の試合でも
 確定までの待ち時間が数秒(最大5秒)伸びるが、バックグラウンドで動くロガー
@@ -145,22 +159,22 @@ _latest_gauge_fillへ反映してしまい、本当の最終値(実測0.10前後
 
 Issue #235(追加対応)で、_latest_gauge_fillの更新自体にもデバウンスを
 導入した。生値を直接反映するのではなく、_pending_gauge_fill/
-_pending_gauge_streakで直近rank_recheck_interval_frames分連続して同じ値
+_pending_gauge_debounceで直近rank_recheck_interval_seconds秒連続して同じ値
 (RANK_RECHECK_CHANGE_TOLERANCE許容)が続いて初めて_latest_gauge_fillを
-更新する(banner_confirm_frames等、他の検知と同じデバウンスの考え方)。
+更新する(banner_confirm_seconds等、他の検知と同じデバウンスの考え方)。
 ワイプ演出の急騰・フェードによる急落とも、値が一方向に動き続けるため
 連続一致の条件を満たさず、直前の確定値(上記の例では0.10)が保持され
 続けたまま暗転を迎える。本当にゲージが緩やかに動き続けているケース
 (Issue #178)は、動きが止まって安定すればそのぶん遅れて正しく確定値に
 反映されるため、既存の挙動を壊さない。
 
-ただし上記のleague_change_grace_frames満了待ちには依然として上限時間が
+ただし上記のleague_change_grace_seconds満了待ちには依然として上限時間が
 あるため、理論上はそれより長く昇格演出の開始が遅れた場合(例: 何らかの理由で
 結果画面のまま長時間状態が変化しない)、同じ形の見逃しが再現しうる。この
 残存リスクに対する最終的な安全装置として、CLAUDE.md記載の「4. 暗転」
 (ランク確定〜昇格演出を含む一連の演出が完全に終わった直後、マッチング画面に
 戻る前に必ず一度全画面が真っ黒になる区間、detection.motion.is_full_blackout
-参照)を検知したら、grace_counterの状態に一切関わらず直ちに確定するように
+参照)を検知したら、GRACE期間の経過状況に一切関わらず直ちに確定するように
 した(Issue #209、Issue #235で早期確定パス自体を廃止した後もこの安全装置は
 そのまま残している)。暗転はランク確定と
 無関係なタイミング(マッチング開始直後・対戦相手が集まらずゲーム再起動する際等)
@@ -181,7 +195,7 @@ _pending_gauge_streakで直近rank_recheck_interval_frames分連続して同じ�
 
 VS画面(マッチング完了、Issue #39)もWATCHING中にのみ起こりうる(結果バナーより
 前、試合開始時点の一瞬だけ表示される)ため、ゴールと同様_watch_for_banner()と
-並行してチェックする。banner判定と同じデバウンス(vs_screen_confirm_frames回
+並行してチェックする。banner判定と同じデバウンス(vs_screen_confirm_seconds回
 連続)で確定させ、確定した瞬間に1回だけdetection.vs_rank.read_vs_screen_ranks()
 を呼び出してMatchResult.vs_mine_ranks/vs_opponent_ranksとして払い出す
 (detection.vs_rank側のOCRは重い処理のため、CLAUDE.mdのサンプリング戦略どおり
@@ -218,11 +232,11 @@ Issue #145: 対戦相手ランク比較ウィジェット(web/server.py)は、�
 ポーリングし、Noneでなければその場でDBへ即時反映する)。
 
 Issue #190: 実プレイ中(ゴール演出とは無関係な通常プレイ中)の背景誤検知が
-banner_confirm_frames(2秒デバウンス)を突破し、OBSシーンが誤って試合中→
+banner_confirm_seconds(2秒デバウンス)を突破し、OBSシーンが誤って試合中→
 試合間(ワイプ)へ切り替わってしまう事象が実配信で確認された。特にランクを
 賭けない試合(rank_before=Noneのため_is_tier_change_plausible等の数値ベースの
 安全装置が一切効かない)は、StabilityMonitorの「安定」判定さえ誤検知フレームで
-たまたま満たされれば、あとはbanner_confirm_framesの2秒デバウンスだけが最後の
+たまたま満たされれば、あとはbanner_confirm_secondsの2秒デバウンスだけが最後の
 砦になる。配信者体験として「マッチング待機中に誤って試合中シーンのままになる」
 より「実プレイ中に誤ってワイプへ切り替わる」方がはるかに困るという優先順位が
 示されたため、_check_for_match_end()で「試合終了」バナーのOCR確認
@@ -230,7 +244,7 @@ banner_confirm_frames(2秒デバウンス)を突破し、OBSシーンが誤っ�
 戻す(OBSシーン切替を実行する)ことにした。確認できなかった試合は、
 MatchResultの記録自体(勝敗・ランク)は従来どおり行うが、in_matchはTrueの
 ままにする(OBSシーン切替は見送り、試合中シーンに留まる)。既存の
-banner_confirm_frames_after_match_end(デバウンス短縮)用途とは別に
+banner_confirm_seconds_after_match_end(デバウンス短縮)用途とは別に
 _match_end_confirmed_this_matchで確認結果を_finalize()まで持ち越す
 (_match_end_seenは短縮用のフラグのままbanner確定時にリセットされるため、
 そのままでは_finalize()到達時点で常にFalseになってしまう)。
@@ -242,7 +256,7 @@ VS画面確定(既にTrueなので実質no-op)を経て、次にmatch_endを確�
 DB記録自体は毎試合従来どおり行われるため実害は無い(モジュールトップの
 Issue #76と同じ「見逃しても既存フローの正しさは損なわれない」設計)。
 
-あわせて、match_end_confirm_frames(色候補判定→OCR確認までのデバウンス)を
+あわせて、match_end_confirm_seconds(色候補判定→OCR確認までのデバウンス)を
 1フレームに短縮した。このデバウンスは実質「誤検知を防ぐ安全マージン」としては
 機能しておらず、実際に真偽を決めているのはOCRの文字一致(confirm_match_end_text)
 そのものである(色条件を満たした最初のフレームで即OCRを呼んでも、「延長戦」
@@ -293,7 +307,7 @@ PaddleOCR推論)が原因と判明した。実測でCPU上9〜16秒かかり、�
 代入位置をOCR呼び出しより前に移動するだけでは解決しない(`process_frame()`
 自体が同期呼び出しである以上、関数全体がOCR完了まで戻らないため)。
 
-対策として、VS画面確定を検知した瞬間(`_vs_screen_confirm_frames`のデバウンス
+対策として、VS画面確定を検知した瞬間(`_vs_screen_confirm_seconds`のデバウンス
 成立時)に`self._in_match = True`・`self._session_match_no`のインクリメント・
 「試合開始」ログを即座に行い、`read_vs_screen_ranks()`/`read_team_colors()`は
 `_run_vs_ocr()`としてバックグラウンドスレッドに切り出した。OCR完了後に
@@ -308,10 +322,10 @@ PaddleOCR推論)が原因と判明した。実測でCPU上9〜16秒かかり、�
 `_vs_screen_event_lock`で保護する。
 
 Issue #303: Issue #189と同じクラスの不具合が、TRACKING_RANK(GRACEフェーズ)側の
-帯番号定期再チェックでも見つかった。`_track_rank()`は`rank_recheck_interval_frames`
+帯番号定期再チェックでも見つかった。`_track_rank()`は`rank_recheck_interval_seconds`
 (ゲージ塗りつぶしのデバウンス用に設計された間隔、既定0.25秒)おきに`read_rank()`で
 帯番号を読み直していたが、Issue #288で`read_rank()`をEasyOCR→PaddleOCRに変更した
-ことで1回あたり約1.2〜1.6秒(実測)かかるようになった。`league_change_grace_frames`
+ことで1回あたり約1.2〜1.6秒(実測)かかるようになった。`league_change_grace_seconds`
 (既定5秒)に達するまでに20回再チェックが走るため、実時間で最大約28秒
 `process_frame()`全体がブロックされ、OBSシーン切替も同じだけ遅延する事象が
 2026-08-09の実機動画・ログで確認された。
@@ -389,7 +403,7 @@ Issue #224: 試合終了時のOBSシーン切替(in_match=False)が、結果画�
 暗転による即時確定のいずれか)から切り離した。`_finalize()`は「試合終了」確認済み
 なら`_pending_obs_switch`フラグを立てるだけにとどめ、実際に`in_match`をFalseに
 戻すのは`_check_pending_obs_switch()`が毎フレーム(状態に関わらず)監視し、
-`is_full_blackout()`を最初に検知してから`obs_switch_delay_after_blackout_frames`
+`is_full_blackout()`を最初に検知してから`obs_switch_delay_after_blackout_seconds`
 (既定30フレーム=1秒相当)経過した時点で行う。暗転自体の実測継続時間は
 0.3〜0.5秒程度(detection.motion.is_full_blackoutのモジュールdocstring参照)と
 1秒より短いため、「暗転が続いている間だけ数える」のではなく、最初に検知した
@@ -432,7 +446,7 @@ Trueになるのは`process_frame()`呼び出しの途中(状態振り分け先�
 という要件は、この「暗転1を正しく捕まえたら、以降は数えるだけ」という
 設計で自然に満たされる。
 
-なお、`_finalize()`がgrace期間満了(league_change_grace_frames、既定5秒)
+なお、`_finalize()`がgrace期間満了(league_change_grace_seconds、既定5秒)
 経由で暗転1より後に呼ばれてしまう極端なケース(ゲージの緩やかな変動で
 スタビリティ判定が長引く等)は、この修正の範囲外の既知の弱点として残って
 いる。この場合`_check_pending_obs_switch()`が次に検知する暗転は暗転2(場合
@@ -458,7 +472,7 @@ GRACEの長さに一切依存せず毎回安定して成功しているため、
 早めた)。Issue #190の「「試合終了」を確認できた試合に限り切り替える」という
 ゲート自体も、フラグを立てる条件がまさにその確認そのものになるため維持される。
 
-あわせて`obs_switch_delay_after_blackout_frames`を1秒→5秒に延長した。実配信の
+あわせて`obs_switch_delay_after_blackout_seconds`を1秒→5秒に延長した。実配信の
 録画を`is_full_blackout`相当の計算で走査したところ、試合終了後の暗転は
 以下の並びであることが分かったため:
 
@@ -547,7 +561,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from logging import getLogger
-from typing import NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional
 
 import numpy as np
 
@@ -588,48 +602,51 @@ logger = getLogger("nss_tracker.state")
 # Issue #71: 勝敗結果ログ用の表示文言
 _BANNER_RESULT_LABELS = {"win": "勝ち", "lose": "負け", "draw": "引き分け"}
 
+# Issue #388: 以下のDEFAULT_XXX_SECONDSはすべてconfig/detection.tomlの
+# [match_state]で上書き可能。以前はフレーム数(30fps想定)で持っていたが、
+# 検知ループの実効fpsが変動しても閾値の意味(秒数)が変わらないよう実時間ベースに
+# 変更した(モジュールdocstring参照)。
+
 # Issue #67: 通常プレイ中の背景誤検知(1.3秒程度持続)を確実に防ぐため、
-# 他のconfirm系(1秒相当)より長い2秒相当のデフォルト値にしている
-DEFAULT_BANNER_CONFIRM_FRAMES = 60
-# Issue #76: 「試合終了」バナーを確認できている場合のbanner_confirm_frames。
-# Issue #67修正前のデフォルト(1秒相当)と同じ値に戻す(本当の試合終了直前だと
+# 他のconfirm系(1秒)より長い2秒をデフォルト値にしている
+DEFAULT_BANNER_CONFIRM_SECONDS = get_detection_value("match_state", "BANNER_CONFIRM_SECONDS", 2.0)
+# Issue #76: 「試合終了」バナーを確認できている場合のbanner_confirm_seconds。
+# Issue #67修正前のデフォルト(1秒)と同じ値に戻す(本当の試合終了直前だと
 # 分かっているため、通常プレイ中の背景誤検知を心配する必要が無い)
-DEFAULT_BANNER_CONFIRM_FRAMES_AFTER_MATCH_END = 30
-DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES = 30
-DEFAULT_GOAL_CONFIRM_FRAMES = 30
-DEFAULT_VS_SCREEN_CONFIRM_FRAMES = 30
+DEFAULT_BANNER_CONFIRM_SECONDS_AFTER_MATCH_END = get_detection_value(
+    "match_state", "BANNER_CONFIRM_SECONDS_AFTER_MATCH_END", 1.0
+)
+DEFAULT_BANNER_ABSENCE_CONFIRM_SECONDS = get_detection_value("match_state", "BANNER_ABSENCE_CONFIRM_SECONDS", 1.0)
+DEFAULT_GOAL_CONFIRM_SECONDS = get_detection_value("match_state", "GOAL_CONFIRM_SECONDS", 1.0)
+DEFAULT_VS_SCREEN_CONFIRM_SECONDS = get_detection_value("match_state", "VS_SCREEN_CONFIRM_SECONDS", 1.0)
 # Issue #234: VS画面確定直後、演出中(キック演出のスウォッシュ等)の一瞬の
 # is_vs_screen判定揺れによって同じVS画面のまま試合開始が二重に発火する不具合が
 # 実データで見つかった。確定後はこの秒数、新規のVS画面検知自体を行わないことで
-# 対症療法的に防ぐ。他のDEFAULT_XXX_FRAMESと異なりfpsに依存しない実時間の長さ
-# そのものが意味を持つ値のため、config/detection.tomlの[match_state]で
-# 上書き可能にしている(30fps換算のフレーム数はDEFAULT_VS_SCREEN_LOCKOUT_FRAMES
-# 参照、main.py側が実際のfpsに応じて再計算する点は他のフレーム数系デフォルトと同じ)
+# 対症療法的に防ぐ
 VS_SCREEN_LOCKOUT_SECONDS = get_detection_value("match_state", "VS_SCREEN_LOCKOUT_SECONDS", 30.0)
-DEFAULT_VS_SCREEN_LOCKOUT_FRAMES = round(VS_SCREEN_LOCKOUT_SECONDS * 30)
 # Issue #176: 降格ラベルは実測で2秒以上安定して表示され続けるため(detection/
-# league_change.pyのモジュールdocstring参照)、goal/vs_screenと同じ1秒相当で良い
-DEFAULT_DEMOTION_LABEL_CONFIRM_FRAMES = 30
+# league_change.pyのモジュールdocstring参照)、goal/vs_screenと同じ1秒で良い
+DEFAULT_DEMOTION_LABEL_CONFIRM_SECONDS = get_detection_value("match_state", "DEMOTION_LABEL_CONFIRM_SECONDS", 1.0)
 # Issue #190: このデバウンスは誤検知を防ぐ安全マージンとしては機能しておらず
 # (実際の真偽はOCR文字一致confirm_match_end_textが決める)、「試合終了」バナーは
 # 実データで最短7フレーム程度(60fps)しか綺麗に表示されないケースがあったため、
-# 色候補判定を満たした最初のフレームで即OCR確認する(モジュールdocstring参照)
-DEFAULT_MATCH_END_CONFIRM_FRAMES = 1
+# 色候補判定を満たした最初のフレームで即OCR確認する(0.0秒=即時、モジュール
+# docstring参照)
+DEFAULT_MATCH_END_CONFIRM_SECONDS = get_detection_value("match_state", "MATCH_END_CONFIRM_SECONDS", 0.0)
 # 実測(fixtures/videos/01_win_blue_2-1.mp4, 60fps):
-# ランク数値が一旦静止してから昇格演出が始まるまで約270フレーム(4.5秒)の間があった
-DEFAULT_LEAGUE_CHANGE_GRACE_FRAMES = 150
-# GRACE中にゲージの緩やかな変化を見逃さないよう再読み取りする間隔(フレーム数)
-DEFAULT_RANK_RECHECK_INTERVAL_FRAMES = 15
+# ランク数値が一旦静止してから昇格演出が始まるまで約270フレーム(60fpsで4.5秒)の間があった
+DEFAULT_LEAGUE_CHANGE_GRACE_SECONDS = get_detection_value("match_state", "LEAGUE_CHANGE_GRACE_SECONDS", 5.0)
+# GRACE中にゲージの緩やかな変化を見逃さないよう再読み取りする間隔(秒)
+DEFAULT_RANK_RECHECK_INTERVAL_SECONDS = get_detection_value("match_state", "RANK_RECHECK_INTERVAL_SECONDS", 0.5)
 # 再読み取りで「値が変わった」とみなす閾値。ゲージ読み取り自体の測定誤差
 # (tests/test_rank_ocr.pyでabs=0.02を許容)より大きく取り、ノイズで
 # 猶予期間を無駄に延長し続けないようにする
-# (config/detection.tomlの[match_state]で上書き可能)
 RANK_RECHECK_CHANGE_TOLERANCE = get_detection_value("match_state", "RANK_RECHECK_CHANGE_TOLERANCE", 0.05)
 
 # Issue #136: 試合前後で帯番号(整数)が2以上急変した場合の再スキャンまでの
-# 待機フレーム数(30fps想定)。同一フレームへの再OCRは同じ誤読を繰り返すだけ
-# のため、数フレーム後の別フレームで読み直す
-DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES = 5
+# 待機秒数。同一フレームへの再OCRは同じ誤読を繰り返すだけのため、少し時間を
+# 置いた別フレームで読み直す
+DEFAULT_RANK_TIER_RESCAN_WAIT_SECONDS = get_detection_value("match_state", "RANK_TIER_RESCAN_WAIT_SECONDS", 5.0 / 30)
 
 # Issue #136: 再スキャンしても帯番号が不自然なまま(1帯を超える変化、または
 # 昇格演出未確認の+1、または勝敗と矛盾する向きの変化)だった場合、ゲージ小数部
@@ -639,15 +656,73 @@ DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES = 5
 RANK_TIER_WRAP_MIN_MAGNITUDE = get_detection_value("match_state", "RANK_TIER_WRAP_MIN_MAGNITUDE", 0.5)
 
 # Issue #224: 試合終了時のOBSシーン切替(in_match=False)は、ランク値の確定
-# タイミングとは切り離し、「暗転(is_full_blackout)を最初に検知してから
-# この値(フレーム数、30fps想定)経過後」に統一する。暗転自体の実測継続時間は
-# 0.3〜0.5秒程度(detection.motion.is_full_blackoutのモジュールdocstring参照)と
-# この値より短いため、暗転が続いている間だけ数えるのではなく、最初に検知した
-# 瞬間からの単純な経過フレーム数で数える(モジュールdocstring参照)。
-# Issue #371: 1秒相当(30)から5秒相当(150)へ延長した。切替の起点が暗転2から
-# 暗転1へ前倒しになった分、そのままでは体感の切替タイミングが6〜7秒早まって
-# しまうため(実測値の根拠はモジュールdocstring参照、ユーザーとの相談で決定)
-DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_FRAMES = 150
+# タイミングとは切り離し、「暗転(is_full_blackout)を最初に検知してからこの
+# 秒数経過後」に統一する。暗転自体の実測継続時間は0.3〜0.5秒程度
+# (detection.motion.is_full_blackoutのモジュールdocstring参照)とこの値より
+# 短いため、暗転が続いている間だけ数えるのではなく、最初に検知した瞬間からの
+# 単純な経過秒数で数える(モジュールdocstring参照)。
+# Issue #371: 1秒から5秒へ延長した。切替の起点が暗転2から暗転1へ前倒しになった分、
+# そのままでは体感の切替タイミングが6〜7秒早まってしまうため(実測値の根拠は
+# モジュールdocstring参照、ユーザーとの相談で決定)
+DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS = get_detection_value(
+    "match_state", "OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS", 5.0
+)
+
+
+class _Debounce:
+    """値が一定時間以上連続して陽性だったかを実時間ベースで判定する(Issue #388)。
+
+    フレーム数ではなくnow(呼び出し元がtime.monotonic()系のクロックから渡す)で
+    経過秒数を測ることで、検知ループの実効fpsが変動しても閾値の意味(秒数)が
+    変わらないようにする(モジュールdocstring参照)。「同じ値が持続しているか」の
+    判定に使う(banner確定・goal確定・vs_screen確定・match_end確定・降格ラベル
+    確定・ゲージ塗りつぶしの許容誤差内デバウンス)。値そのものの追跡(banner候補や
+    ゲージ値そのもの)は呼び出し側の責務とし、このクラスは「陽性/陰性」の
+    ブール値のみを扱う。
+
+    ストリークの起点(_started_at)は、陽性に転じたそのフレーム自身ではなく
+    直前に観測した(陰性だった)フレームの時刻を使う。これは「実際に陽性へ
+    転じたタイミングは直前の観測より後、今回の観測以前のどこか」という
+    最も保守的な下限の見積もりであり、fixture動画で判明した実害を防ぐために
+    必要: 一定fpsでサンプリングされた実映像では、ある状態がちょうどN個の
+    連続フレームぶん映る場合、その実時間の長さはフレーム間隔×N(各フレームが
+    1/fps秒分の時間を占めるとみなす)だが、フレーム自身の時刻の差分(1個目から
+    N個目まで)はフレーム間隔×(N-1)にしかならない。起点をそのフレーム自身に
+    すると実時間を後者(1フレーム分短く)しか測れず、旧来のフレーム数閾値と
+    ちょうど同じ長さしか映らなかった実データ(fixtures/videos/
+    33_lose_pink_overtime_hdr_off.mp4のVS画面)で確定を取りこぼす回帰があった。
+    直前の観測フレームの時刻を起点にすることで、この1フレーム分のずれを
+    解消する。ただしこのデバウンス自身が生成されて以降、一度も陰性の観測が
+    無いまま最初から陽性が続いている場合(直前の観測が存在しない)は、今回の
+    フレームを起点にするしかない。
+    """
+
+    def __init__(self, seconds: float) -> None:
+        self._seconds = seconds
+        self.streak = 0
+        self._started_at: Optional[float] = None
+        self._last_observed_at: Optional[float] = None
+
+    def observe(self, positive: bool, now: float) -> bool:
+        """今回のフレームが陽性かどうかを渡し、閾値(seconds)に到達したかを返す。"""
+        if not positive:
+            self.reset()
+            self._last_observed_at = now
+            return False
+        self.streak += 1
+        if self._started_at is None:
+            self._started_at = self._last_observed_at if self._last_observed_at is not None else now
+        self._last_observed_at = now
+        return (now - self._started_at) >= self._seconds
+
+    def reset(self) -> None:
+        self.streak = 0
+        self._started_at = None
+        # 呼び出し元(_watch_for_banner・_finalize等)が試合の区切りで明示的に
+        # reset()する場合も含め、古い試合の時刻を次の試合のストリーク起点に
+        # 誤って引き継がないようクリアする(observe(positive=False, ...)から
+        # 呼ばれた場合はこの直後にそちらがnowで上書きする)
+        self._last_observed_at = None
 
 
 class _State(Enum):
@@ -763,34 +838,39 @@ class MatchStateMachine:
     def __init__(
         self,
         rank_roi: tuple[int, int, int, int] = RANK_ROI,
-        banner_confirm_frames: int = DEFAULT_BANNER_CONFIRM_FRAMES,
-        banner_confirm_frames_after_match_end: int = DEFAULT_BANNER_CONFIRM_FRAMES_AFTER_MATCH_END,
-        banner_absence_confirm_frames: int = DEFAULT_BANNER_ABSENCE_CONFIRM_FRAMES,
-        league_change_grace_frames: int = DEFAULT_LEAGUE_CHANGE_GRACE_FRAMES,
-        goal_confirm_frames: int = DEFAULT_GOAL_CONFIRM_FRAMES,
-        rank_recheck_interval_frames: int = DEFAULT_RANK_RECHECK_INTERVAL_FRAMES,
-        vs_screen_confirm_frames: int = DEFAULT_VS_SCREEN_CONFIRM_FRAMES,
-        vs_screen_lockout_frames: int = DEFAULT_VS_SCREEN_LOCKOUT_FRAMES,
-        match_end_confirm_frames: int = DEFAULT_MATCH_END_CONFIRM_FRAMES,
-        rank_tier_rescan_wait_frames: int = DEFAULT_RANK_TIER_RESCAN_WAIT_FRAMES,
-        demotion_label_confirm_frames: int = DEFAULT_DEMOTION_LABEL_CONFIRM_FRAMES,
-        obs_switch_delay_after_blackout_frames: int = DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_FRAMES,
+        banner_confirm_seconds: float = DEFAULT_BANNER_CONFIRM_SECONDS,
+        banner_confirm_seconds_after_match_end: float = DEFAULT_BANNER_CONFIRM_SECONDS_AFTER_MATCH_END,
+        banner_absence_confirm_seconds: float = DEFAULT_BANNER_ABSENCE_CONFIRM_SECONDS,
+        league_change_grace_seconds: float = DEFAULT_LEAGUE_CHANGE_GRACE_SECONDS,
+        goal_confirm_seconds: float = DEFAULT_GOAL_CONFIRM_SECONDS,
+        rank_recheck_interval_seconds: float = DEFAULT_RANK_RECHECK_INTERVAL_SECONDS,
+        vs_screen_confirm_seconds: float = DEFAULT_VS_SCREEN_CONFIRM_SECONDS,
+        vs_screen_lockout_seconds: float = VS_SCREEN_LOCKOUT_SECONDS,
+        match_end_confirm_seconds: float = DEFAULT_MATCH_END_CONFIRM_SECONDS,
+        rank_tier_rescan_wait_seconds: float = DEFAULT_RANK_TIER_RESCAN_WAIT_SECONDS,
+        demotion_label_confirm_seconds: float = DEFAULT_DEMOTION_LABEL_CONFIRM_SECONDS,
+        obs_switch_delay_after_blackout_seconds: float = DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
         tier_recheck_executor: Optional["concurrent.futures.Executor"] = None,
         goal_ocr_executor: Optional["concurrent.futures.Executor"] = None,
+        now_fn: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._banner_confirm_frames = banner_confirm_frames
-        self._banner_confirm_frames_after_match_end = banner_confirm_frames_after_match_end
-        self._banner_absence_confirm_frames = banner_absence_confirm_frames
-        self._league_change_grace_frames = league_change_grace_frames
-        self._goal_confirm_frames = goal_confirm_frames
-        self._rank_recheck_interval_frames = rank_recheck_interval_frames
-        self._vs_screen_confirm_frames = vs_screen_confirm_frames
-        self._vs_screen_lockout_frames = vs_screen_lockout_frames
-        self._match_end_confirm_frames = match_end_confirm_frames
-        self._rank_tier_rescan_wait_frames = rank_tier_rescan_wait_frames
-        self._demotion_label_confirm_frames = demotion_label_confirm_frames
-        self._obs_switch_delay_after_blackout_frames = obs_switch_delay_after_blackout_frames
+        self._now_fn = now_fn
+        self._league_change_grace_seconds = league_change_grace_seconds
+        self._rank_recheck_interval_seconds = rank_recheck_interval_seconds
+        self._vs_screen_lockout_seconds = vs_screen_lockout_seconds
+        self._rank_tier_rescan_wait_seconds = rank_tier_rescan_wait_seconds
+        self._obs_switch_delay_after_blackout_seconds = obs_switch_delay_after_blackout_seconds
+        # Issue #388: 「同じ値が持続しているか」を確認するデバウンスは共通の
+        # _Debounceヘルパーに委ねる(モジュールdocstring参照)
+        self._banner_debounce = _Debounce(banner_confirm_seconds)
+        self._banner_debounce_after_match_end = _Debounce(banner_confirm_seconds_after_match_end)
+        self._banner_absence_debounce = _Debounce(banner_absence_confirm_seconds)
+        self._goal_debounce = _Debounce(goal_confirm_seconds)
+        self._vs_screen_debounce = _Debounce(vs_screen_confirm_seconds)
+        self._match_end_debounce = _Debounce(match_end_confirm_seconds)
+        self._demotion_label_debounce = _Debounce(demotion_label_confirm_seconds)
+        self._pending_gauge_debounce = _Debounce(rank_recheck_interval_seconds)
         self._rank_monitor = rank_stability_monitor or StabilityMonitor(roi=rank_roi)
         # Issue #303: 未指定時はThreadPoolExecutorを使う(同一プロセス内で動くため
         # テストのread_rankモンキーパッチがそのまま効く)。本番はmain.pyが
@@ -809,10 +889,10 @@ class MatchStateMachine:
 
         self._state = _State.WATCHING
         self._rank_phase = _RankPhase.WAITING_STABLE
-        self._grace_counter = 0
+        # Issue #388: GRACE満了待ちの起点(None=GRACE未開始)。
+        # now - self._grace_started_at >= self._league_change_grace_seconds で判定
+        self._grace_started_at: Optional[float] = None
         self._banner_candidate: BannerResult = None
-        self._banner_streak = 0
-        self._absence_streak = 0
         self._pending_result: BannerResult = None
         # 帯番号(int)はleague_changed判定に、小数のランク値(float)はMatchResultの
         # 報告値に使う。ゲージの溜まり具合による僅かな変動をリーグ変動と
@@ -822,14 +902,14 @@ class MatchStateMachine:
         self._grace_candidate_rank_tier: Optional[int] = None
         # Issue #178: ゲージの塗りつぶし(小数部)の確定値。確定時にはスナップショット
         # ではなくこの値を使う。Issue #235: 生値をそのまま信頼せず、下記
-        # _pending_gauge_fill/_pending_gauge_streakによるデバウンスを経て
-        # 直近rank_recheck_interval_frames分連続で一致して初めて更新される
+        # _pending_gauge_fill/_pending_gauge_debounceによるデバウンスを経て
+        # 直近rank_recheck_interval_seconds秒分連続で一致して初めて更新される
         self._latest_gauge_fill: Optional[float] = None
-        # Issue #235: 確定候補中のゲージ値と、その値が何フレーム連続しているか。
-        # 遷移演出(ワイプ演出による急騰・バッジ消失によるフェード後の急落)由来の
-        # 一時的なノイズが_latest_gauge_fillへ混入するのを防ぐためのデバウンス用
+        # Issue #235: 確定候補中のゲージ値。遷移演出(ワイプ演出による急騰・
+        # バッジ消失によるフェード後の急落)由来の一時的なノイズが
+        # _latest_gauge_fillへ混入するのを防ぐためのデバウンス用
+        # (何秒連続で一致しているかは_pending_gauge_debounceが持つ)
         self._pending_gauge_fill: Optional[float] = None
-        self._pending_gauge_streak = 0
         # Issue #384: ランクゲージDEBUGログを値変化時のみ出力するための、
         # 直近ログ出力時の生値(_pending_gauge_fillとは別に保持する)
         self._last_logged_gauge_fill: Optional[float] = None
@@ -837,6 +917,10 @@ class MatchStateMachine:
         # 非同期実行するための状態(モジュールdocstring参照)。_tier_recheck_futureが
         # 非Noneの間は多重に投げない
         self._tier_recheck_future: Optional["concurrent.futures.Future"] = None
+        # Issue #388: 次に帯番号の再チェックを試行する時刻(None=GRACE未開始)。
+        # GRACE開始時にgrace_started_at+intervalへ設定し、以後は投入の成否に
+        # 関わらずinterval秒おきに固定間隔で進める(_track_rank参照)
+        self._next_tier_recheck_at: Optional[float] = None
         # Issue #327: ゴール検知のOCR一式(_run_goal_ocr)を_goal_ocr_executorで
         # 非同期実行するための状態。_goal_ocr_futureが非Noneの間は多重に投げない
         self._goal_ocr_future: Optional["concurrent.futures.Future"] = None
@@ -848,17 +932,15 @@ class MatchStateMachine:
         # この試合中に確認できたか。_infer_tier_from_gauge_continuity()で
         # ゲージ小数部の間接推測より優先して使う独立信号
         self._demotion_confirmed_this_match = False
-        self._demotion_label_streak = 0
         self._demotion_label_recorded_this_event = False
-        self._rescan_counter = 0
-        self._goal_streak = 0
+        # Issue #388: 帯番号再スキャン待ちの起点(None=待機していない)
+        self._rescan_started_at: Optional[float] = None
         self._goal_recorded_this_event = False
         self._pending_goals: list[GoalEvent] = []
-        self._vs_streak = 0
         self._vs_recorded_this_match = False
-        # Issue #234: VS画面確定直後からカウントダウンする残りロックフレーム数。
-        # 0の間は通常通りVS画面検知を行う(_check_for_vs_screen参照)
-        self._vs_lockout_counter = 0
+        # Issue #234/#388: VS画面確定直後からロックする締切時刻。Noneまたは
+        # now以前の間は通常通りVS画面検知を行う(_check_for_vs_screen参照)
+        self._vs_lockout_until: Optional[float] = None
         # Issue #229: _vs_recorded_this_matchはVS画面が視覚的に消えた(is_vs_screenが
         # Falseに戻った)瞬間にFalseへ戻ってしまう(_check_for_vs_screen参照。VS画面
         # OCRの重複発火を防ぐための「今まさにVS画面が出ていて記録済みか」という
@@ -877,7 +959,6 @@ class MatchStateMachine:
         # pop_vs_screen_event()側の読み取り+クリアと衝突しないよう保護する
         self._vs_screen_event_lock = threading.Lock()
         self._vs_ocr_thread: Optional[threading.Thread] = None
-        self._match_end_streak = 0
         self._match_end_recorded_this_event = False
         self._match_end_seen = False
         # Issue #190: _match_end_seenはbanner確定時のデバウンス短縮用にすぐ
@@ -886,7 +967,7 @@ class MatchStateMachine:
         # (MatchResultの記録自体は従来どおり、このフラグの有無に関わらず行う)
         self._match_end_confirmed_this_match = False
         # Issue #83: OBSシーン切替のトリガー用。VS画面確定でTrue、暗転検知から
-        # obs_switch_delay_after_blackout_frames経過後にFalseに戻す(Issue #224)
+        # obs_switch_delay_after_blackout_seconds経過後にFalseに戻す(Issue #224)
         self._in_match = False
         # Issue #224: 「試合終了」を確認済み(=in_matchをFalseに戻す予定がある)だが、
         # まだ暗転を検知できていない間True。_check_pending_obs_switch()がこのフラグを
@@ -894,8 +975,8 @@ class MatchStateMachine:
         # Issue #371: Trueにする場所は_finalize()から_check_for_match_end()へ移した
         # (_finalize()はランク確定の長さに引きずられ、暗転1に間に合わないため)
         self._pending_obs_switch = False
-        # 暗転を最初に検知してからの経過フレーム数。Noneはまだ暗転未検知
-        self._blackout_switch_counter: Optional[int] = None
+        # 暗転を最初に検知した時刻。Noneはまだ暗転未検知(Issue #388)
+        self._blackout_switch_started_at: Optional[float] = None
         # Issue #383: 暗転の取りこぼし原因究明用。_pending_obs_switchがTrueに
         # なった時刻(time.monotonic())と、その間に観測した最小輝度平均。
         # 「暗転自体は早期に検知できているのに切替が遅い」のか「暗転そのものを
@@ -935,31 +1016,34 @@ class MatchStateMachine:
         return event
 
     def process_frame(self, frame: np.ndarray) -> Optional[MatchResult]:
+        # Issue #388: このフレームの処理全体を通して同じ時刻を使う
+        # (デバウンス判定の途中で時刻がずれないよう、1回だけ取得する)
+        now = self._now_fn()
         if self._state is _State.WATCHING:
-            self._check_for_vs_screen(frame)
-            self._check_for_goal(frame)
-            self._check_for_match_end(frame)
-            result = self._watch_for_banner(frame)
+            self._check_for_vs_screen(frame, now)
+            self._check_for_goal(frame, now)
+            self._check_for_match_end(frame, now)
+            result = self._watch_for_banner(frame, now)
         elif self._state is _State.TRACKING_RANK:
-            result = self._track_rank(frame)
+            result = self._track_rank(frame, now)
         else:
-            result = self._watch_for_banner_absence(frame)
+            result = self._watch_for_banner_absence(frame, now)
         # Issue #224: 状態振り分けの「後」で呼ぶこと。_finalize()がis_full_blackout()
         # 自体をトリガーに呼ばれるケース(Issue #209の暗転即時確定パス)では、
         # _pending_obs_switchがTrueになるのはこのprocess_frame()呼び出しの
         # 途中(_track_rank内)のため、先頭で呼ぶとまだFalseのまま素通りしてしまい、
         # 同じフレームが暗転そのものであることに気づけない(モジュールdocstring参照)
-        self._check_pending_obs_switch(frame)
+        self._check_pending_obs_switch(frame, now)
         # Issue #327: ゴールOCRの結果が届いた時点で状態がWATCHINGから進んでいても
         # (_pending_goalsへの追加は_finalize()まで有効なため)取りこぼさないよう、
         # 状態に関わらず毎フレーム呼ぶ(_check_pending_obs_switchと同じ考え方)
         self._poll_goal_ocr()
         return result
 
-    def _check_pending_obs_switch(self, frame: np.ndarray) -> None:
+    def _check_pending_obs_switch(self, frame: np.ndarray, now: float) -> None:
         """Issue #224: 「試合終了」確認済みで暗転待ちの間、毎フレーム暗転を監視する。
 
-        暗転を最初に検知した瞬間からobs_switch_delay_after_blackout_frames分の
+        暗転を最初に検知した瞬間からobs_switch_delay_after_blackout_seconds分の
         単純なタイマーを開始し(暗転自体の継続時間は0.3〜0.5秒程度とこの既定値
         より短いため、その後暗転が終わってもタイマーはリセットしない)、
         経過したらin_matchをFalseに戻す(モジュールdocstring参照)。
@@ -968,7 +1052,7 @@ class MatchStateMachine:
         前倒しされたため、ここで最初に捕まえる暗転は暗転1(実測で試合終了の
         7〜9秒後)になる。ランク確定(_finalize())がどれだけ長引いても
         取りこぼさない一方、暗転1から実際の切替までの間隔は
-        obs_switch_delay_after_blackout_frames(既定5秒相当)がそのまま決める。
+        obs_switch_delay_after_blackout_seconds(既定5秒相当)がそのまま決める。
 
         Issue #383: 暗転自体を取りこぼす(=このメソッドに暗転を満たすフレームが
         一度も渡ってこない)事象が実配信で見つかったが、既存のログでは
@@ -997,15 +1081,15 @@ class MatchStateMachine:
           フレームでもどこまでしか暗くならなかったか」を残す。区間全体で
           最も暗かったフレームの記録なので、更新のたびに出しても頻度は
           自然に低い)
-        - 暗転(候補)を検知した瞬間(_blackout_switch_counterがNone→0になる
-          瞬間)に1行(「試合終了」からの経過秒数込み)。これがあれば、次に
+        - 暗転(候補)を検知した瞬間(_blackout_switch_started_atがNoneから
+          セットされる瞬間)に1行(「試合終了」からの経過秒数込み)。これがあれば、次に
           同様の遅延が起きた際「暗転自体は早期に検知できているのに切替までの
           5秒待ちの方に問題があるのか」「暗転そのものを長時間観測できて
           いないのか」をログだけで切り分けられる
         """
         if not self._pending_obs_switch:
             return
-        if self._blackout_switch_counter is None:
+        if self._blackout_switch_started_at is None:
             # Issue #383: 判定そのものは既存どおりis_full_blackout()(テストで
             # monkeypatch対象になっているモジュール直下の名前)に委ね、
             # frame_brightness_stats()はログ表示用の値取得にのみ使う
@@ -1019,7 +1103,7 @@ class MatchStateMachine:
                     "暗転待ち中の最小輝度を更新しました: mean=%.1f std=%.1f (試合終了から%.1f秒)",
                     mean,
                     std,
-                    time.monotonic() - self._pending_obs_switch_started_at,
+                    now - self._pending_obs_switch_started_at,
                 )
             if not is_full_blackout(frame):
                 return
@@ -1027,34 +1111,32 @@ class MatchStateMachine:
                 "暗転(候補)を検知しました: mean=%.1f std=%.1f (試合終了から%.1f秒)",
                 mean,
                 std,
-                time.monotonic() - self._pending_obs_switch_started_at,
+                now - self._pending_obs_switch_started_at,
             )
-            self._blackout_switch_counter = 0
-        self._blackout_switch_counter += 1
-        if self._blackout_switch_counter >= self._obs_switch_delay_after_blackout_frames:
+            self._blackout_switch_started_at = now
+        if (now - self._blackout_switch_started_at) >= self._obs_switch_delay_after_blackout_seconds:
             self._in_match = False
             self._pending_obs_switch = False
-            self._blackout_switch_counter = None
+            self._blackout_switch_started_at = None
             self._pending_obs_switch_started_at = None
             self._pending_obs_switch_min_mean = None
 
-    def _check_for_vs_screen(self, frame: np.ndarray) -> None:
+    def _check_for_vs_screen(self, frame: np.ndarray, now: float) -> None:
         # Issue #234: VS画面確定直後はロック中(この秒数は新規のVS画面検知自体を
         # 行わない)。演出中の一瞬の判定揺れでis_vs_screenが1フレームだけFalseに
-        # なると_vs_streak/_vs_recorded_this_matchが即座にリセットされてしまい
-        # (下記参照)、その後streakが再度積み上がると同じVS画面のまま試合開始が
-        # 二重に発火する不具合の対症療法。ロック中はstreakの更新も含め本メソッドの
-        # 判定を丸ごとスキップする
-        if self._vs_lockout_counter > 0:
-            self._vs_lockout_counter -= 1
+        # なると_vs_recorded_this_matchが即座にリセットされてしまい(下記参照)、
+        # その後streakが再度積み上がると同じVS画面のまま試合開始が二重に発火する
+        # 不具合の対症療法。ロック中は判定を丸ごとスキップする(Issue #388: カウント
+        # ダウン式からnow基準の締切時刻式に変更)
+        if self._vs_lockout_until is not None and now < self._vs_lockout_until:
             return
+        self._vs_lockout_until = None
         if not is_vs_screen(frame):
-            self._vs_streak = 0
+            self._vs_screen_debounce.reset()
             self._vs_recorded_this_match = False
             return
 
-        self._vs_streak += 1
-        if self._vs_streak >= self._vs_screen_confirm_frames and not self._vs_recorded_this_match:
+        if self._vs_screen_debounce.observe(True, now) and not self._vs_recorded_this_match:
             # Issue #243: 前の試合が結果画面確定(_finalize())前にVS画面が
             # 再確定した場合、前の試合の_pending_goals等は_finalize()での
             # クリアを経ないままこの新しい試合に持ち越されてしまう(検証で
@@ -1072,8 +1154,8 @@ class MatchStateMachine:
             self._vs_recorded_this_match = True
             self._vs_confirmed_this_match = True
             self._in_match = True
-            # Issue #234: 確定した瞬間からロックを開始する
-            self._vs_lockout_counter = self._vs_screen_lockout_frames
+            # Issue #234/#388: 確定した瞬間からロックを開始する(締切時刻式)
+            self._vs_lockout_until = now + self._vs_screen_lockout_seconds
             # Issue #224: 前の試合の暗転待ち(_pending_obs_switch)が何らかの理由で
             # 完了しないまま次の試合のVS画面が先に確定した場合(実際にはほぼ
             # 起きないはずのレアケース)、in_match=Trueが優先されるべきなので
@@ -1084,11 +1166,11 @@ class MatchStateMachine:
                 logger.warning(
                     "前の試合の暗転待ちが完了しないまま次の試合が始まったため破棄します"
                     "(待機時間: 約%.1f秒、観測できた最小輝度平均: %s)",
-                    time.monotonic() - self._pending_obs_switch_started_at,
+                    now - self._pending_obs_switch_started_at,
                     f"{self._pending_obs_switch_min_mean:.1f}" if self._pending_obs_switch_min_mean is not None else "観測なし",
                 )
             self._pending_obs_switch = False
-            self._blackout_switch_counter = None
+            self._blackout_switch_started_at = None
             self._pending_obs_switch_started_at = None
             self._pending_obs_switch_min_mean = None
             self._session_match_no += 1
@@ -1143,14 +1225,13 @@ class MatchStateMachine:
             opponent_team_color,
         )
 
-    def _check_for_match_end(self, frame: np.ndarray) -> None:
+    def _check_for_match_end(self, frame: np.ndarray, now: float) -> None:
         if not is_match_end_screen(frame):
-            self._match_end_streak = 0
+            self._match_end_debounce.reset()
             self._match_end_recorded_this_event = False
             return
 
-        self._match_end_streak += 1
-        if self._match_end_streak >= self._match_end_confirm_frames and not self._match_end_recorded_this_event:
+        if self._match_end_debounce.observe(True, now) and not self._match_end_recorded_this_event:
             self._match_end_recorded_this_event = True
             # is_match_end_screenは色ベースの候補判定のため、「延長戦」「キックオフ」等の
             # 誤検知をここでOCRにより除外する(detection.match_end参照)
@@ -1162,19 +1243,18 @@ class MatchStateMachine:
                 # 引きずられて暗転1より後になることがあり、その場合に切替が
                 # 暗転2以降まで持ち越されてしまうため(モジュールdocstring参照)
                 self._pending_obs_switch = True
-                self._pending_obs_switch_started_at = time.monotonic()
+                self._pending_obs_switch_started_at = now
                 self._pending_obs_switch_min_mean = None
                 logger.info("%d試合目 試合終了", self._session_match_no)
 
-    def _check_for_goal(self, frame: np.ndarray) -> None:
+    def _check_for_goal(self, frame: np.ndarray, now: float) -> None:
         if not is_goal_event(frame):
-            self._goal_streak = 0
+            self._goal_debounce.reset()
             self._goal_recorded_this_event = False
             return
 
-        self._goal_streak += 1
         if (
-            self._goal_streak >= self._goal_confirm_frames
+            self._goal_debounce.observe(True, now)
             and not self._goal_recorded_this_event
             and self._goal_ocr_future is None
         ):
@@ -1327,23 +1407,22 @@ class MatchStateMachine:
         fill = ocr_result[1] - ocr_result[0]
         return vs_tier, vs_tier + fill
 
-    def _watch_for_banner(self, frame: np.ndarray) -> Optional[MatchResult]:
+    def _watch_for_banner(self, frame: np.ndarray, now: float) -> Optional[MatchResult]:
         result = classify_banner(frame)
-        if result is not None and result == self._banner_candidate:
-            self._banner_streak += 1
-        elif result is not None:
+        if result != self._banner_candidate:
+            self._banner_debounce.reset()
+            self._banner_debounce_after_match_end.reset()
             self._banner_candidate = result
-            self._banner_streak = 1
-        else:
-            self._banner_candidate = None
-            self._banner_streak = 0
+        # Issue #388: 両方のデバウンスに同じ観測を流し、確定判定にどちらの
+        # 閾値を使うかだけを_match_end_seenで切り替える(同じストリークの
+        # 途中でmatch_end_seenがFalse→Trueに変わった場合でも、既に積んだ
+        # 経過秒数を引き継いだまま短いデバウンス側で即座に確定できる、
+        # Issue #76が意図した挙動を保つため)
+        confirmed_after_match_end = self._banner_debounce_after_match_end.observe(result is not None, now)
+        confirmed_default = self._banner_debounce.observe(result is not None, now)
+        confirmed = confirmed_after_match_end if self._match_end_seen else confirmed_default
 
-        # Issue #76: 「試合終了」を確認できていれば短いデバウンス、できていなければ
-        # 従来どおりの安全側の長いデバウンスを使う(モジュールdocstring参照)
-        required_streak = (
-            self._banner_confirm_frames_after_match_end if self._match_end_seen else self._banner_confirm_frames
-        )
-        if self._banner_streak >= required_streak:
+        if confirmed:
             # Issue #229: 試合の区切りをVS画面確定に一本化する。この試合でVS画面を
             # 一度も確認できていない状態で結果バナーが確定した場合、直前の試合の
             # 残像(暗転〜マッチング画面手前のどこかの画面)を誤って結果バナーとして
@@ -1357,12 +1436,13 @@ class MatchStateMachine:
                     _BANNER_RESULT_LABELS[self._banner_candidate],
                 )
                 self._banner_candidate = None
-                self._banner_streak = 0
+                self._banner_debounce.reset()
+                self._banner_debounce_after_match_end.reset()
                 self._match_end_seen = False
                 # このバナーに紐づいてバッファされている可能性のあるゴール検知も、
                 # 次の本物の試合に誤って持ち越さないよう破棄する
                 self._pending_goals = []
-                self._goal_streak = 0
+                self._goal_debounce.reset()
                 self._goal_recorded_this_event = False
                 return None
             self._pending_result = self._banner_candidate
@@ -1387,7 +1467,8 @@ class MatchStateMachine:
                 self._pending_rank_before if self._pending_rank_before is not None else "なし",
             )
             self._banner_candidate = None
-            self._banner_streak = 0
+            self._banner_debounce.reset()
+            self._banner_debounce_after_match_end.reset()
             # 「試合終了」の確認は今回の結果バナー確定にのみ使うため、ここでリセットする
             self._match_end_seen = False
 
@@ -1409,30 +1490,31 @@ class MatchStateMachine:
                 return self._finalize(None, None)
 
             self._rank_phase = _RankPhase.WAITING_STABLE
-            self._grace_counter = 0
+            self._grace_started_at = None
             self._grace_candidate_rank_tier = None
             self._latest_gauge_fill = None
             self._pending_gauge_fill = None
-            self._pending_gauge_streak = 0
+            self._pending_gauge_debounce.reset()
             self._last_logged_gauge_fill = None
             self._tier_recheck_future = None
+            self._next_tier_recheck_at = None
             self._promotion_confirmed_this_match = False
             self._demotion_confirmed_this_match = False
-            self._demotion_label_streak = 0
+            self._demotion_label_debounce.reset()
             self._demotion_label_recorded_this_event = False
             self._rank_monitor.reset()
             self._rank_monitor.update(frame)
             self._state = _State.TRACKING_RANK
         return None
 
-    def _track_rank(self, frame: np.ndarray) -> Optional[MatchResult]:
-        self._check_for_demotion_label(frame)
+    def _track_rank(self, frame: np.ndarray, now: float) -> Optional[MatchResult]:
+        self._check_for_demotion_label(frame, now)
 
         if is_league_change_screen(frame):
             if self._rank_phase is not _RankPhase.IN_LEAGUE_CHANGE:
                 logger.info("%d試合目 リーグ昇格演出を検知しました", self._session_match_no)
             self._rank_phase = _RankPhase.IN_LEAGUE_CHANGE
-            self._grace_counter = 0
+            self._grace_started_at = None
             self._promotion_confirmed_this_match = True
             return None
 
@@ -1443,8 +1525,8 @@ class MatchStateMachine:
             self._rank_phase = _RankPhase.WAITING_STABLE
             return None
 
-        # Issue #209: 暗転(画面全体が真っ黒)を検知したら、grace_counterの
-        # 状態に関わらず直ちに確定する。
+        # Issue #209: 暗転(画面全体が真っ黒)を検知したら、GRACE期間の
+        # 経過状況に関わらず直ちに確定する。
         # この暗転は試合結果〜ランク確定演出(昇格演出を含む)が完全に終わった
         # 直後にのみ現れるため、候補値を一度でも読み取れていればそれを採用して
         # よい(モジュールdocstring参照)。is_stable系のロジックより前で
@@ -1452,10 +1534,10 @@ class MatchStateMachine:
         # StabilityMonitorを不安定化させてしまい、素通りするとWAITING_STABLEへ
         # 戻ってこの確定に到達できなくなるため
         if self._grace_candidate_rank_tier is not None and is_full_blackout(frame):
-            return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank())
+            return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank(), now)
 
         if self._rank_phase is _RankPhase.RESCAN_WAIT:
-            return self._continue_rescan_wait(frame)
+            return self._continue_rescan_wait(frame, now)
 
         was_stable = self._rank_monitor.is_stable
         is_stable = self._rank_monitor.update(frame)
@@ -1463,7 +1545,8 @@ class MatchStateMachine:
         if self._rank_phase is _RankPhase.WAITING_STABLE:
             if is_stable and not was_stable:
                 self._rank_phase = _RankPhase.GRACE
-                self._grace_counter = 0
+                self._grace_started_at = now
+                self._next_tier_recheck_at = now + self._rank_recheck_interval_seconds
                 # 安定した瞬間(まだ画面が遷移し始めていない良いフレーム)でOCRしておく。
                 # 猶予期間の最後まで待つとバナー自体が消えかけの不安定なフレームに
                 # なりOCRが失敗しうるため、帯番号はここで確定させて使い回す。
@@ -1478,15 +1561,16 @@ class MatchStateMachine:
                     # Issue #235: 以降の毎フレームデバウンス(_pending_gauge_fill)の
                     # 起点をこの初回スナップショットに揃えておく
                     self._pending_gauge_fill = self._latest_gauge_fill
-                    self._pending_gauge_streak = 1
+                    self._pending_gauge_debounce.reset()
+                    self._pending_gauge_debounce.observe(True, now)
             return None
 
         # _RankPhase.GRACE: 安定はしたが、直後に昇格/降格演出が始まらないか
-        # league_change_grace_frames分だけ様子を見る。バナー自体が消えたら
+        # league_change_grace_seconds秒だけ様子を見る。バナー自体が消えたら
         # 演出は来ないと判断し、猶予期間を待たずに確定してよい
         if not is_stable:
             self._rank_phase = _RankPhase.WAITING_STABLE
-            self._grace_counter = 0
+            self._grace_started_at = None
             return None
 
         # Issue #178: ゲージの塗りつぶし(HSVベースの軽量な色判定)は毎フレーム
@@ -1502,8 +1586,8 @@ class MatchStateMachine:
         # 暗転へフェードしていく過程での急落など、遷移演出由来のノイズも
         # そのまま確定値に混入してしまうことが実データ(2026-08-05実機テスト
         # セッション、3試合目: 負けているのにrank_afterが上昇して記録された)で
-        # 判明した。そのため生値を直接は反映せず、banner_confirm_frames等の
-        # 他の検知と同じデバウンスの考え方で、直近rank_recheck_interval_frames分
+        # 判明した。そのため生値を直接は反映せず、banner_confirm_seconds等の
+        # 他の検知と同じデバウンスの考え方で、直近rank_recheck_interval_seconds秒分
         # 連続して同じ値(RANK_RECHECK_CHANGE_TOLERANCE許容)が続いて初めて
         # _latest_gauge_fillを更新する。遷移演出中の値は連続一致しないため
         # _latest_gauge_fillへは反映されず、直前の確定値が保持され続ける
@@ -1520,22 +1604,22 @@ class MatchStateMachine:
                     fill,
                 )
                 self._last_logged_gauge_fill = fill
-            if self._pending_gauge_fill is not None and abs(fill - self._pending_gauge_fill) <= RANK_RECHECK_CHANGE_TOLERANCE:
-                self._pending_gauge_streak += 1
-            else:
+            gauge_matched = (
+                self._pending_gauge_fill is not None and abs(fill - self._pending_gauge_fill) <= RANK_RECHECK_CHANGE_TOLERANCE
+            )
+            if not gauge_matched:
                 self._pending_gauge_fill = fill
-                self._pending_gauge_streak = 1
-            if self._pending_gauge_streak >= self._rank_recheck_interval_frames and (
+                self._pending_gauge_debounce.reset()
+            gauge_confirmed = self._pending_gauge_debounce.observe(True, now)
+            if gauge_confirmed and (
                 self._latest_gauge_fill is None
                 or abs(self._pending_gauge_fill - self._latest_gauge_fill) > RANK_RECHECK_CHANGE_TOLERANCE
             ):
                 # 確定値が実際に変わった(=まだゲージが動いている途中だった)
                 # とみなし、猶予期間をやり直す
-                self._grace_counter = 0
-            if self._pending_gauge_streak >= self._rank_recheck_interval_frames:
+                self._grace_started_at = now
+            if gauge_confirmed:
                 self._latest_gauge_fill = self._pending_gauge_fill
-
-        self._grace_counter += 1
 
         # ピクセル差分では検知できない緩やかな帯番号の変化を見逃さないよう、
         # 一定間隔で読み直して候補の帯番号が古くなっていないか確認する
@@ -1547,14 +1631,17 @@ class MatchStateMachine:
         # 解決しないため_tier_recheck_executor(本番はProcessPoolExecutor)経由で
         # 別プロセスに逃がし、結果は次フレーム以降_poll_tier_recheck()で
         # 非ブロッキングに取り込む(モジュールdocstring参照)
-        self._poll_tier_recheck()
-        if self._grace_counter % self._rank_recheck_interval_frames == 0:
+        self._poll_tier_recheck(now)
+        # Issue #388: 固定間隔での再投入試行(投入自体の成否に関わらず)。
+        # 大きなストール明けにまとめて追いつけるよう、必要ならwhileで複数回進める
+        while self._next_tier_recheck_at is not None and now >= self._next_tier_recheck_at:
             self._submit_tier_recheck(frame)
+            self._next_tier_recheck_at += self._rank_recheck_interval_seconds
 
-        if self._grace_counter < self._league_change_grace_frames:
+        if self._grace_started_at is None or (now - self._grace_started_at) < self._league_change_grace_seconds:
             return None
         self._fill_grace_candidate_if_missing(frame)
-        return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank())
+        return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank(), now)
 
     def _submit_tier_recheck(self, frame: np.ndarray) -> None:
         """帯番号OCR(read_rank())を_tier_recheck_executorで非同期実行する(Issue #303)。
@@ -1569,7 +1656,7 @@ class MatchStateMachine:
         logger.debug("帯番号再チェックを投入しました(別プロセス、tier-recheck)")
         self._tier_recheck_future = self._tier_recheck_executor.submit(read_rank, frame, RANK_NUMBER_ROI_ENLARGED)
 
-    def _poll_tier_recheck(self) -> None:
+    def _poll_tier_recheck(self, now: float) -> None:
         """_submit_tier_recheck()の結果が届いていれば、ブロックせずに取り込む(Issue #303)。
 
         帯番号が実際に変わっていた場合のみ_grace_candidate_rank_tierを更新し、
@@ -1583,27 +1670,23 @@ class MatchStateMachine:
         self._tier_recheck_future = None
         if tier is not None and tier != self._grace_candidate_rank_tier:
             self._grace_candidate_rank_tier = tier
-            self._grace_counter = 0
+            self._grace_started_at = now
 
-    def _check_for_demotion_label(self, frame: np.ndarray) -> None:
+    def _check_for_demotion_label(self, frame: np.ndarray, now: float) -> None:
         """降格ラベル(「降格」の吹き出し)を検知する(Issue #176)。
 
-        is_demotion_label_candidate()(軽量な輝度判定)がdemotion_label_confirm_frames回
+        is_demotion_label_candidate()(軽量な輝度判定)がdemotion_label_confirm_seconds秒
         連続したタイミングで1回だけconfirm_demotion_label_text()を呼んでOCRで
         確認する(is_goal_event/confirm_goal_textと同じ2段構成、モジュールdocstring
         参照)。確認できれば_demotion_confirmed_this_matchに保持し、_finalize()まで
         持ち越す。
         """
         if not is_demotion_label_candidate(frame):
-            self._demotion_label_streak = 0
+            self._demotion_label_debounce.reset()
             self._demotion_label_recorded_this_event = False
             return
 
-        self._demotion_label_streak += 1
-        if (
-            self._demotion_label_streak >= self._demotion_label_confirm_frames
-            and not self._demotion_label_recorded_this_event
-        ):
+        if self._demotion_label_debounce.observe(True, now) and not self._demotion_label_recorded_this_event:
             self._demotion_label_recorded_this_event = True
             if confirm_demotion_label_text(frame):
                 self._demotion_confirmed_this_match = True
@@ -1639,27 +1722,28 @@ class MatchStateMachine:
             self._grace_candidate_rank_tier, precise = precise_result
             self._latest_gauge_fill = precise - self._grace_candidate_rank_tier
 
-    def _begin_finalize(self, tier: Optional[int], rank: Optional[float]) -> Optional[MatchResult]:
+    def _begin_finalize(
+        self, tier: Optional[int], rank: Optional[float], now: float
+    ) -> Optional[MatchResult]:
         """帯番号確定前の最終チェック(Issue #136)。不自然な急変ならすぐには確定せず、
-        数フレーム後に再スキャンする。
+        少し時間を置いて再スキャンする。
         """
         if self._is_tier_change_plausible(tier):
             return self._finalize(tier, rank)
         logger.warning(
             "%d試合目: 帯番号が不自然に変化しています(before=%s after=%s)。"
-            "%dフレーム後に再スキャンします",
+            "%.2f秒後に再スキャンします",
             self._session_match_no,
             self._pending_rank_before_tier,
             tier,
-            self._rank_tier_rescan_wait_frames,
+            self._rank_tier_rescan_wait_seconds,
         )
-        self._rescan_counter = 0
+        self._rescan_started_at = now
         self._rank_phase = _RankPhase.RESCAN_WAIT
         return None
 
-    def _continue_rescan_wait(self, frame: np.ndarray) -> Optional[MatchResult]:
-        self._rescan_counter += 1
-        if self._rescan_counter < self._rank_tier_rescan_wait_frames:
+    def _continue_rescan_wait(self, frame: np.ndarray, now: float) -> Optional[MatchResult]:
+        if (now - self._rescan_started_at) < self._rank_tier_rescan_wait_seconds:
             return None
         precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
         if precise_result is not None:
@@ -1801,25 +1885,25 @@ class MatchStateMachine:
         self._pending_rank_before_tier = None
         self._promotion_confirmed_this_match = False
         self._demotion_confirmed_this_match = False
-        self._demotion_label_streak = 0
+        self._demotion_label_debounce.reset()
         self._demotion_label_recorded_this_event = False
         self._pending_goals = []
-        self._goal_streak = 0
+        self._goal_debounce.reset()
         self._goal_recorded_this_event = False
         self._pending_vs_mine_ranks = []
         self._pending_vs_opponent_ranks = []
         self._pending_mine_team_color = None
         self._pending_opponent_team_color = None
-        self._vs_streak = 0
+        self._vs_screen_debounce.reset()
         self._vs_recorded_this_match = False
         self._vs_confirmed_this_match = False
         # Issue #234: 通常は試合の長さ(数分)に対しロック時間(既定30秒)は
-        # 十分短く自然に0まで減っているはずだが、念のため試合終了時点で
+        # 十分短く自然に経過しているはずだが、念のため試合終了時点で
         # 明示的に解除し、次の試合の本物のVS画面検知を妨げないようにする
-        self._vs_lockout_counter = 0
+        self._vs_lockout_until = None
         # Issue #190: 「試合終了」バナーをOCRで確認できた試合に限りOBSシーン切替
         # (in_match=False)を行う。確認できなかった試合(実プレイ中の背景誤検知が
-        # banner_confirm_framesを突破した可能性を否定できない)はin_matchをTrueの
+        # banner_confirm_secondsを突破した可能性を否定できない)はin_matchをTrueの
         # ままにし、試合中シーンに留める。MatchResultの記録自体はこの確認結果に
         # 関わらず常に行う(モジュールdocstring参照)。
         # Issue #224: in_matchを即座にFalseにはせず、暗転検知から一定時間後に
@@ -1835,17 +1919,12 @@ class MatchStateMachine:
                 self._session_match_no,
             )
         self._match_end_confirmed_this_match = False
-        self._absence_streak = 0
+        self._banner_absence_debounce.reset()
         self._state = _State.COOLDOWN
         return match_result
 
-    def _watch_for_banner_absence(self, frame: np.ndarray) -> Optional[MatchResult]:
-        if classify_banner(frame) is None:
-            self._absence_streak += 1
-        else:
-            self._absence_streak = 0
-
-        if self._absence_streak >= self._banner_absence_confirm_frames:
-            self._absence_streak = 0
+    def _watch_for_banner_absence(self, frame: np.ndarray, now: float) -> Optional[MatchResult]:
+        if self._banner_absence_debounce.observe(classify_banner(frame) is None, now):
+            self._banner_absence_debounce.reset()
             self._state = _State.WATCHING
         return None
