@@ -16,6 +16,28 @@ TARGET_SIZE = (1920, 1080)
 METADATA_FILENAME = "metadata.json"
 
 
+class FakeClock:
+    """呼ばれるたびにstep秒ずつ進む偽の時計(Issue #388)。
+
+    MatchStateMachineのnow_fnに注入し、process_frame()をタイトループで
+    呼ぶだけのテストでも実時間の経過を模擬する。既定step=1.0(1回の
+    process_frame呼び出し=1秒)にすることで、既存テストが小さい整数値
+    (例: banner_confirm_seconds=2)を「2フレーム」のつもりで渡していた
+    箇所も、そのまま「2回のprocess_frame呼び出しで確定する」という
+    以前と同じ反復回数で成立する(1呼び出しごとにちょうど閾値の単位分
+    だけ進むため)。fixture動画をそのfpsのリアルタイム再生と同じ経過秒数で
+    処理したい場合(_run_state_machine参照)は、step=1.0/fpsを明示的に渡す。
+    """
+
+    def __init__(self, step: float = 1.0) -> None:
+        self._now = 0.0
+        self._step = step
+
+    def __call__(self) -> float:
+        self._now += self._step
+        return self._now
+
+
 def _load_metadata(videos_dir: Path) -> dict:
     return json.loads((videos_dir / METADATA_FILENAME).read_text(encoding="utf-8"))
 
@@ -41,22 +63,28 @@ def _run_state_machine(path: Path):
     (Issue #76: 「試合終了」バナーを検知できた動画は短いデバウンス(1.0秒)、
     できなかった動画は長いデバウンス(2.0秒)に自動的に切り替わる。個別の
     fixtureごとに閾値を指定する必要はない)。
+
+    Issue #388: デバウンス閾値は実時間(秒)ベースになったが、このテストは
+    OpenCVでの動画デコード速度のまま(real-timeペーシング無し)で処理するため、
+    now_fn を実時間(time.monotonic)任せにすると動画自体の収録fps・尺と無関係な
+    処理速度依存の値になってしまう。動画自身のfpsで1フレームあたりstep秒
+    (=1/fps)進むFakeClockを注入し、「その動画をそのfpsでリアルタイム再生
+    した場合の経過秒数」を処理速度に関係なく再現する(main.py側のfps換算が
+    無くなったのと対になる形で、こちらも秒数値をそのまま渡すだけになった)。
     """
     cap = cv2.VideoCapture(str(path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     cap.release()
 
-    confirm_frames = round(fps * 1.0)
-    banner_confirm_frames = round(fps * 2.0)
-    # Issue #190: main.pyの_make_match_state_machineと同じく1フレームに固定
-    match_end_confirm_frames = 1
     machine = MatchStateMachine(
-        banner_confirm_frames=banner_confirm_frames,
-        banner_confirm_frames_after_match_end=confirm_frames,
-        banner_absence_confirm_frames=confirm_frames,
-        vs_screen_confirm_frames=confirm_frames,
-        match_end_confirm_frames=match_end_confirm_frames,
-        league_change_grace_frames=round(fps * 5.0),
+        now_fn=FakeClock(step=1.0 / fps),
+        banner_confirm_seconds=2.0,
+        banner_confirm_seconds_after_match_end=1.0,
+        banner_absence_confirm_seconds=1.0,
+        vs_screen_confirm_seconds=1.0,
+        # Issue #190: main.pyの_make_match_state_machineと同じく即時(0.0秒)に固定
+        match_end_confirm_seconds=0.0,
+        league_change_grace_seconds=5.0,
         rank_stability_monitor=StabilityMonitor(roi=RANK_ROI, stable_frames_required=round(fps * 0.5)),
     )
 
@@ -144,8 +172,10 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     frame_idx = {"n": 0}
 
     def fake_is_goal_event(frame):
-        # 最初の2フレームだけゴールバナーが出ているとみなす
-        return frame_idx["n"] < 2
+        # Issue #388: goal_confirm_seconds=2(FakeClock step=1.0)を確定させるには
+        # 経過2.0秒(=3フレーム分のスパン)必要なため、3フレーム分ゴールバナーが
+        # 出ているとみなす
+        return frame_idx["n"] < 3
 
     def fake_classify_banner(frame):
         return None if frame_idx["n"] < 5 else "win"
@@ -166,9 +196,10 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        goal_confirm_frames=2,
-        league_change_grace_frames=1,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        goal_confirm_seconds=2,
+        league_change_grace_seconds=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -180,7 +211,7 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     machine._pending_vs_mine_ranks = [SlotRank("∞", 10)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
-    for _ in range(15):
+    for _ in range(30):
         result = machine.process_frame(frame)
         frame_idx["n"] += 1
         if result is not None:
@@ -199,7 +230,7 @@ def test_goal_detection_logs_scorer_and_assist_at_info_level(monkeypatch, caplog
     """
     frame_idx = {"n": 0}
 
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 3)
     monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "is_own_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
@@ -213,11 +244,11 @@ def test_goal_detection_logs_scorer_and_assist_at_info_level(monkeypatch, caplog
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
-    machine = MatchStateMachine(goal_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
-        for _ in range(3):
+        for _ in range(4):
             machine.process_frame(frame)
             frame_idx["n"] += 1
 
@@ -232,7 +263,7 @@ def test_own_goal_sets_is_own_goal_flag_and_logs_all_mode_status(monkeypatch, ca
     """
     frame_idx = {"n": 0}
 
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 3)
     monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "is_own_goal_event", lambda frame: True)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: None)
@@ -245,11 +276,11 @@ def test_own_goal_sets_is_own_goal_flag_and_logs_all_mode_status(monkeypatch, ca
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
 
-    machine = MatchStateMachine(goal_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
-        for _ in range(3):
+        for _ in range(4):
             machine.process_frame(frame)
             frame_idx["n"] += 1
 
@@ -265,7 +296,7 @@ def test_own_goal_logs_not_recorded_when_mode_is_not_all(monkeypatch, caplog):
     """
     frame_idx = {"n": 0}
 
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 3)
     monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "is_own_goal_event", lambda frame: True)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: None)
@@ -278,11 +309,11 @@ def test_own_goal_logs_not_recorded_when_mode_is_not_all(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
-    machine = MatchStateMachine(goal_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
-        for _ in range(3):
+        for _ in range(4):
             machine.process_frame(frame)
             frame_idx["n"] += 1
 
@@ -296,7 +327,7 @@ def test_goal_detection_logs_not_recorded_when_outside_allowlist(monkeypatch, ca
     """
     frame_idx = {"n": 0}
 
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 3)
     monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "is_own_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Charlie", 0.95))
@@ -310,11 +341,11 @@ def test_goal_detection_logs_not_recorded_when_outside_allowlist(monkeypatch, ca
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
-    machine = MatchStateMachine(goal_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
-        for _ in range(3):
+        for _ in range(4):
             machine.process_frame(frame)
             frame_idx["n"] += 1
 
@@ -327,7 +358,7 @@ def test_goal_detection_logs_always_recorded_in_all_mode(monkeypatch, caplog):
     """
     frame_idx = {"n": 0}
 
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 3)
     monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "is_own_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Charlie", 0.95))
@@ -341,11 +372,11 @@ def test_goal_detection_logs_always_recorded_in_all_mode(monkeypatch, caplog):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
 
-    machine = MatchStateMachine(goal_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
-        for _ in range(3):
+        for _ in range(4):
             machine.process_frame(frame)
             frame_idx["n"] += 1
 
@@ -358,7 +389,7 @@ def test_goal_detection_logs_partial_redact_in_redact_mode(monkeypatch, caplog):
     """
     frame_idx = {"n": 0}
 
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 3)
     monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "is_own_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("たなか", 0.95))
@@ -372,11 +403,11 @@ def test_goal_detection_logs_partial_redact_in_redact_mode(monkeypatch, caplog):
     monkeypatch.setenv("ALLOWED_PLAYERS", "ブルドッグ")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
 
-    machine = MatchStateMachine(goal_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
-        for _ in range(3):
+        for _ in range(4):
             machine.process_frame(frame)
             frame_idx["n"] += 1
 
@@ -387,7 +418,7 @@ def test_goal_detection_logs_full_record_in_redact_mode_when_both_allowed(monkey
     """allowlist_redactでも、両者とも許可リストにいればredactせず「記録対象」と表示する。"""
     frame_idx = {"n": 0}
 
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 3)
     monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "is_own_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
@@ -401,11 +432,11 @@ def test_goal_detection_logs_full_record_in_redact_mode_when_both_allowed(monkey
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
 
-    machine = MatchStateMachine(goal_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
-        for _ in range(3):
+        for _ in range(4):
             machine.process_frame(frame)
             frame_idx["n"] += 1
 
@@ -418,7 +449,7 @@ def test_goal_detection_logs_no_redact_when_assist_missing_in_redact_mode(monkey
     """
     frame_idx = {"n": 0}
 
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 2)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: frame_idx["n"] < 3)
     monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
     monkeypatch.setattr(match_state_module, "is_own_goal_event", lambda frame: False)
     monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
@@ -432,7 +463,7 @@ def test_goal_detection_logs_no_redact_when_assist_missing_in_redact_mode(monkey
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice")
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
 
-    machine = MatchStateMachine(goal_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
@@ -471,11 +502,12 @@ def test_rank_read_failure_is_logged(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        banner_absence_confirm_frames=2,
-        goal_confirm_frames=2,
-        league_change_grace_frames=1,
-        rank_recheck_interval_frames=1,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        banner_absence_confirm_seconds=2,
+        goal_confirm_seconds=2,
+        league_change_grace_seconds=1,
+        rank_recheck_interval_seconds=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -532,12 +564,13 @@ def test_rank_read_failure_still_reports_confirmed_demotion_label(monkeypatch):
     monkeypatch.setattr(match_state_module, "confirm_demotion_label_text", lambda frame: True)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        banner_absence_confirm_frames=2,
-        goal_confirm_frames=2,
-        league_change_grace_frames=1,
-        rank_recheck_interval_frames=1,
-        demotion_label_confirm_frames=1,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        banner_absence_confirm_seconds=2,
+        goal_confirm_seconds=2,
+        league_change_grace_seconds=1,
+        rank_recheck_interval_seconds=1,
+        demotion_label_confirm_seconds=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -574,7 +607,8 @@ def test_read_rank_before_prefers_vs_screen_tier_over_conflicting_ocr(monkeypatc
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
     machine._vs_confirmed_this_match = True
@@ -610,7 +644,8 @@ def test_read_rank_before_falls_back_to_ocr_when_vs_screen_tier_unavailable(monk
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
     machine._vs_confirmed_this_match = True
@@ -653,10 +688,11 @@ def test_read_rank_before_returns_none_when_ocr_completely_fails_even_with_vs_sc
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        banner_absence_confirm_frames=2,
-        league_change_grace_frames=1,
-        rank_recheck_interval_frames=1,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        banner_absence_confirm_seconds=2,
+        league_change_grace_seconds=1,
+        rank_recheck_interval_seconds=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
     machine._vs_confirmed_this_match = True
@@ -708,9 +744,10 @@ def test_track_rank_grace_tracks_slow_drift_every_frame(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=10,
-        rank_recheck_interval_frames=3,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=10,
+        rank_recheck_interval_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -771,9 +808,10 @@ def test_track_rank_grace_debounces_transition_spike_and_fade_noise(monkeypatch)
     monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=1000,
-        rank_recheck_interval_frames=10,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=1000,
+        rank_recheck_interval_seconds=10,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
     machine._vs_confirmed_this_match = True
@@ -809,9 +847,10 @@ def test_track_rank_grace_logs_gauge_value_every_frame_at_debug_level(monkeypatc
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=1000,
-        rank_recheck_interval_frames=10,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=1000,
+        rank_recheck_interval_seconds=10,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
     machine._vs_confirmed_this_match = True
@@ -834,7 +873,7 @@ def test_check_for_vs_screen_no_longer_logs_hsv_debug(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
 
-    machine = MatchStateMachine()
+    machine = MatchStateMachine(now_fn=FakeClock())
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     with caplog.at_level("DEBUG", logger="nss_tracker.state"):
         for _ in range(5):
@@ -873,9 +912,10 @@ def test_track_rank_periodic_recheck_catches_tier_change(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=10,
-        rank_recheck_interval_frames=3,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=10,
+        rank_recheck_interval_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -943,10 +983,11 @@ def test_tier_jump_recovers_via_rescan(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=3,
-        rank_recheck_interval_frames=1000,
-        rank_tier_rescan_wait_frames=3,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=3,
+        rank_recheck_interval_seconds=1000,
+        rank_tier_rescan_wait_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -999,10 +1040,11 @@ def test_tier_jump_falls_back_to_gauge_continuity_when_rescan_still_implausible_
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=3,
-        rank_recheck_interval_frames=1000,
-        rank_tier_rescan_wait_frames=3,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=3,
+        rank_recheck_interval_seconds=1000,
+        rank_tier_rescan_wait_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1056,10 +1098,11 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=3,
-        rank_recheck_interval_frames=1000,
-        rank_tier_rescan_wait_frames=3,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=3,
+        rank_recheck_interval_seconds=1000,
+        rank_tier_rescan_wait_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1112,10 +1155,11 @@ def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=3,
-        rank_recheck_interval_frames=1000,
-        rank_tier_rescan_wait_frames=3,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=3,
+        rank_recheck_interval_seconds=1000,
+        rank_tier_rescan_wait_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1170,11 +1214,12 @@ def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magni
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=3,
-        rank_recheck_interval_frames=1000,
-        rank_tier_rescan_wait_frames=3,
-        demotion_label_confirm_frames=2,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=3,
+        rank_recheck_interval_seconds=1000,
+        rank_tier_rescan_wait_seconds=3,
+        demotion_label_confirm_seconds=2,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1231,11 +1276,12 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=3,
-        rank_recheck_interval_frames=1000,
-        rank_tier_rescan_wait_frames=3,
-        demotion_label_confirm_frames=2,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=3,
+        rank_recheck_interval_seconds=1000,
+        rank_tier_rescan_wait_seconds=3,
+        demotion_label_confirm_seconds=2,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1287,10 +1333,11 @@ def test_unchanged_tier_stays_plausible_without_demotion_confirmation(monkeypatc
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=3,
-        rank_recheck_interval_frames=1000,
-        rank_tier_rescan_wait_frames=3,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=3,
+        rank_recheck_interval_seconds=1000,
+        rank_tier_rescan_wait_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1345,11 +1392,12 @@ def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(mo
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=3,
-        rank_recheck_interval_frames=1000,
-        rank_tier_rescan_wait_frames=3,
-        demotion_label_confirm_frames=2,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=3,
+        rank_recheck_interval_seconds=1000,
+        rank_tier_rescan_wait_seconds=3,
+        demotion_label_confirm_seconds=2,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1383,9 +1431,11 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
 
     def fake_classify_banner(frame):
         banner_call_count["n"] += 1
-        # 最初の2回(banner_confirm_frames分)は"lose"を返してTRACKING_RANKへ遷移させ、
-        # GRACE突入後の最初の呼び出しでNoneを返してバナー消失(即確定)を発生させる
-        return "lose" if banner_call_count["n"] <= 2 else None
+        # Issue #388: banner_confirm_seconds=2(FakeClock step=1.0)を確定させるには
+        # 経過2.0秒(=3回分のスパン)必要なため、最初の3回は"lose"を返して
+        # TRACKING_RANKへ遷移させ、GRACE突入後の最初の呼び出しでNoneを返して
+        # バナー消失(即確定)を発生させる
+        return "lose" if banner_call_count["n"] <= 3 else None
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         rois_used.append(gauge_roi)
@@ -1409,9 +1459,10 @@ def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=10,
-        rank_recheck_interval_frames=3,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=10,
+        rank_recheck_interval_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1475,9 +1526,10 @@ def test_promotion_during_grace_period_is_caught(monkeypatch):
 
     def fake_classify_banner(frame):
         banner_call_count["n"] += 1
-        # banner_confirm_frames分は"win"を返して確定させ、以降はTRACKING_RANK中に
-        # バナーのテキストが一時的に(または最後まで)消えている状態を再現する
-        return "win" if banner_call_count["n"] <= 2 else None
+        # Issue #388: banner_confirm_seconds=2(FakeClock step=1.0)を確定させるには
+        # 経過2.0秒(=3回分のスパン)必要。以降はTRACKING_RANK中にバナーのテキストが
+        # 一時的に(または最後まで)消えている状態を再現する
+        return "win" if banner_call_count["n"] <= 3 else None
 
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
@@ -1491,9 +1543,10 @@ def test_promotion_during_grace_period_is_caught(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=200,
-        rank_recheck_interval_frames=3,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=200,
+        rank_recheck_interval_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1505,7 +1558,7 @@ def test_promotion_during_grace_period_is_caught(monkeypatch):
     machine._pending_vs_mine_ranks = [SlotRank("∞", 37)]
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
-    for _ in range(300):
+    for _ in range(320):
         result = machine.process_frame(frame)
         if result is not None:
             break
@@ -1527,7 +1580,9 @@ def test_no_promotion_during_grace_period_still_finalizes_after_full_timeout(mon
 
     def fake_classify_banner(frame):
         banner_call_count["n"] += 1
-        return "win" if banner_call_count["n"] <= 2 else None
+        # Issue #388: banner_confirm_seconds=2(FakeClock step=1.0)を確定させるには
+        # 経過2.0秒(=3回分のスパン)必要
+        return "win" if banner_call_count["n"] <= 3 else None
 
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (37, 37.98))
@@ -1541,9 +1596,10 @@ def test_no_promotion_during_grace_period_still_finalizes_after_full_timeout(mon
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=10,
-        rank_recheck_interval_frames=3,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=10,
+        rank_recheck_interval_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1592,9 +1648,10 @@ def test_full_blackout_triggers_immediate_finalize_bypassing_grace_timeout(monke
     monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=10_000,
-        rank_recheck_interval_frames=3,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=10_000,
+        rank_recheck_interval_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1629,7 +1686,7 @@ def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
-    machine = MatchStateMachine(goal_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     for _ in range(10):
         machine.process_frame(frame)
@@ -1651,7 +1708,7 @@ def test_goal_candidate_rejected_by_ocr_is_not_recorded(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
-    machine = MatchStateMachine(goal_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     for _ in range(10):
         machine.process_frame(frame)
@@ -1674,10 +1731,11 @@ def test_match_end_confirmed_enables_fast_banner_confirm(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=100,
-        banner_confirm_frames_after_match_end=3,
-        match_end_confirm_frames=1,
-        league_change_grace_frames=1,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=100,
+        banner_confirm_seconds_after_match_end=3,
+        match_end_confirm_seconds=1,
+        league_change_grace_seconds=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -1715,10 +1773,11 @@ def test_match_end_candidate_rejected_by_ocr_keeps_slow_banner_confirm(monkeypat
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=5,
-        banner_confirm_frames_after_match_end=1,
-        match_end_confirm_frames=1,
-        league_change_grace_frames=1,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=5,
+        banner_confirm_seconds_after_match_end=1,
+        match_end_confirm_seconds=1,
+        league_change_grace_seconds=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -1747,13 +1806,13 @@ def test_lifecycle_logs_reuse_session_match_number(monkeypatch, caplog):
     frame_idx = {"n": 0}
 
     def fake_is_vs_screen(frame):
-        return frame_idx["n"] < 2
+        return frame_idx["n"] < 3
 
     def fake_is_match_end_screen(frame):
-        return 5 <= frame_idx["n"] < 7
+        return 6 <= frame_idx["n"] < 9
 
     def fake_classify_banner(frame):
-        return "win" if frame_idx["n"] >= 8 else None
+        return "win" if frame_idx["n"] >= 12 else None
 
     monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
     monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
@@ -1767,18 +1826,19 @@ def test_lifecycle_logs_reuse_session_match_number(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
-        vs_screen_confirm_frames=2,
-        match_end_confirm_frames=2,
-        banner_confirm_frames_after_match_end=2,
-        banner_confirm_frames=100,
-        league_change_grace_frames=1,
+        now_fn=FakeClock(),
+        vs_screen_confirm_seconds=2,
+        match_end_confirm_seconds=2,
+        banner_confirm_seconds_after_match_end=2,
+        banner_confirm_seconds=100,
+        league_change_grace_seconds=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
     with caplog.at_level("INFO", logger="nss_tracker.state"):
-        for _ in range(20):
+        for _ in range(30):
             result = machine.process_frame(frame)
             frame_idx["n"] += 1
             if result is not None:
@@ -1821,8 +1881,9 @@ def test_unranked_match_finalizes_immediately_at_banner_confirm(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        vs_screen_confirm_frames=2,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        vs_screen_confirm_seconds=2,
     )
 
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
@@ -1867,16 +1928,18 @@ def test_ranked_match_still_waits_for_rank_tracking_after_banner_confirm(monkeyp
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        vs_screen_confirm_frames=2,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        vs_screen_confirm_seconds=2,
     )
 
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     result = None
-    # vs_screen_confirm_frames=2でVS画面確定(2フレーム目)、banner_confirm_frames=2で
-    # バナー確定(7フレーム目)する組み合わせ。バナー確定した瞬間で止め、その先の
-    # TRACKING_RANK内部の挙動(_track_rank)までは踏み込まない
-    for _ in range(7):
+    # vs_screen_confirm_seconds=2でVS画面確定、banner_confirm_seconds=2でバナー確定する
+    # 組み合わせ(Issue #388: FakeClock step=1.0では閾値2.0秒に達するまで3フレーム分の
+    # スパンが必要)。バナー確定した瞬間で止め、その先のTRACKING_RANK内部の挙動
+    # (_track_rank)までは踏み込まない
+    for _ in range(8):
         result = machine.process_frame(frame)
 
     assert result is None, "ランクを賭けた試合はバナー確定と同じフレームでは確定しないはず"
@@ -1921,9 +1984,10 @@ def test_vs_screen_ranks_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        vs_screen_confirm_frames=2,
-        league_change_grace_frames=1,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        vs_screen_confirm_seconds=2,
+        league_change_grace_seconds=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -1974,9 +2038,10 @@ def test_team_colors_attached_to_match_result(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        vs_screen_confirm_frames=2,
-        league_change_grace_frames=1,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        vs_screen_confirm_seconds=2,
+        league_change_grace_seconds=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -2017,8 +2082,9 @@ def test_vs_screen_not_confirmed_causes_result_banner_to_be_rejected(monkeypatch
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
     machine = MatchStateMachine(
-        banner_confirm_frames=2,
-        league_change_grace_frames=1,
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -2045,7 +2111,9 @@ def test_vs_screen_not_confirmed_discards_buffered_goals(monkeypatch):
     """
 
     def fake_is_goal_event(frame):
-        return frame_idx["n"] < 1
+        # Issue #388: goal_confirm_seconds=1(FakeClock step=1.0)を確定させるには
+        # 経過1.0秒(=2フレーム分のスパン)必要
+        return frame_idx["n"] < 2
 
     def fake_classify_banner(frame):
         return "win" if frame_idx["n"] >= 10 else None
@@ -2062,7 +2130,7 @@ def test_vs_screen_not_confirmed_discards_buffered_goals(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
-    machine = MatchStateMachine(banner_confirm_frames=2, goal_confirm_frames=1)
+    machine = MatchStateMachine(now_fn=FakeClock(), banner_confirm_seconds=2, goal_confirm_seconds=1)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     # frame_idx 0〜9: ゴールが1件バッファされるが、バナーはまだ確定しない
@@ -2071,10 +2139,11 @@ def test_vs_screen_not_confirmed_discards_buffered_goals(monkeypatch):
         frame_idx["n"] += 1
     assert len(machine._pending_goals) == 1, "テスト前提: 棄却前にゴールが1件バッファされているはず"
 
-    # frame_idx 10〜11: バナー("win")のストリークが2に達し、VS未確認のため棄却される
-    machine.process_frame(frame)
-    frame_idx["n"] += 1
-    machine.process_frame(frame)
+    # frame_idx 10〜12: バナー("win")が閾値2.0秒(Issue #388、FakeClock step=1.0では
+    # 3フレーム分のスパン)に達し、VS未確認のため棄却される
+    for _ in range(3):
+        machine.process_frame(frame)
+        frame_idx["n"] += 1
 
     assert machine._pending_goals == [], "棄却された結果バナーに紐づくゴールは破棄されるはず"
 
@@ -2098,7 +2167,7 @@ def test_vs_screen_confirmation_logs_ranks_at_info_level(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
-    machine = MatchStateMachine(vs_screen_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), vs_screen_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
@@ -2128,15 +2197,20 @@ def test_pop_vs_screen_event_fires_once_at_confirmation(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
-    machine = MatchStateMachine(vs_screen_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), vs_screen_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     assert machine.pop_vs_screen_event() is None, "確定前はNoneのはず"
 
-    machine.process_frame(frame)  # 1フレーム目: streak=1、まだconfirm_frames(=2)未満
+    # Issue #388: vs_screen_confirm_seconds=2(FakeClock step=1.0)を確定させるには
+    # 経過2.0秒(=3フレーム分のスパン)必要
+    machine.process_frame(frame)  # 1フレーム目: streak=1、まだ未確定
     assert machine.pop_vs_screen_event() is None
 
-    machine.process_frame(frame)  # 2フレーム目でconfirm_frames(=2)に到達し確定
+    machine.process_frame(frame)  # 2フレーム目: streak=2、経過1.0秒でまだ未確定
+    assert machine.pop_vs_screen_event() is None
+
+    machine.process_frame(frame)  # 3フレーム目で経過2.0秒に到達し確定
     # Issue #189: VS画面ランクOCRはバックグラウンドスレッドで実行されるため、
     # VsScreenEventが書き込まれるのを待ってからpopする
     machine._vs_ocr_thread.join()
@@ -2150,7 +2224,7 @@ def test_pop_vs_screen_event_fires_once_at_confirmation(monkeypatch):
     # popすると消費されるため、同じ確定を指すイベントを2度は取得できない
     assert machine.pop_vs_screen_event() is None
 
-    machine.process_frame(frame)  # 同じVS画面がまだ表示され続けている3フレーム目
+    machine.process_frame(frame)  # 同じVS画面がまだ表示され続けている4フレーム目
     assert machine.pop_vs_screen_event() is None, "同じVS画面が続いている間は再度発火しない"
 
 
@@ -2172,13 +2246,15 @@ def test_in_match_true_after_vs_screen_confirmed_and_false_after_match_end(monke
     frame_idx = {"n": 0}
 
     def fake_is_vs_screen(frame):
-        return frame_idx["n"] < 2
+        # Issue #388: vs_screen_confirm_seconds=2(FakeClock step=1.0)を確定させるには
+        # 経過2.0秒(=3フレーム分のスパン)必要
+        return frame_idx["n"] < 3
 
     def fake_is_match_end_screen(frame):
-        return 2 <= frame_idx["n"] < 4
+        return 3 <= frame_idx["n"] < 5
 
     def fake_classify_banner(frame):
-        return "win" if frame_idx["n"] >= 5 else None
+        return "win" if frame_idx["n"] >= 6 else None
 
     monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
     monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
@@ -2192,12 +2268,13 @@ def test_in_match_true_after_vs_screen_confirmed_and_false_after_match_end(monke
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
-        vs_screen_confirm_frames=2,
-        banner_confirm_frames=2,
-        banner_confirm_frames_after_match_end=2,
-        match_end_confirm_frames=1,
-        league_change_grace_frames=1,
-        obs_switch_delay_after_blackout_frames=2,
+        now_fn=FakeClock(),
+        vs_screen_confirm_seconds=2,
+        banner_confirm_seconds=2,
+        banner_confirm_seconds_after_match_end=2,
+        match_end_confirm_seconds=1,
+        league_change_grace_seconds=1,
+        obs_switch_delay_after_blackout_seconds=2,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -2241,13 +2318,15 @@ def test_obs_switch_waits_for_blackout_after_finalize(monkeypatch):
     blackout = {"active": False}
 
     def fake_is_vs_screen(frame):
-        return frame_idx["n"] < 2
+        # Issue #388: vs_screen_confirm_seconds=2(FakeClock step=1.0)を確定させるには
+        # 経過2.0秒(=3フレーム分のスパン)必要
+        return frame_idx["n"] < 3
 
     def fake_is_match_end_screen(frame):
-        return 2 <= frame_idx["n"] < 4
+        return 3 <= frame_idx["n"] < 5
 
     def fake_classify_banner(frame):
-        return "win" if frame_idx["n"] >= 5 else None
+        return "win" if frame_idx["n"] >= 6 else None
 
     def fake_is_full_blackout(frame):
         return blackout["active"]
@@ -2265,12 +2344,13 @@ def test_obs_switch_waits_for_blackout_after_finalize(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
 
     machine = MatchStateMachine(
-        vs_screen_confirm_frames=2,
-        banner_confirm_frames=2,
-        banner_confirm_frames_after_match_end=2,
-        match_end_confirm_frames=1,
-        league_change_grace_frames=1,
-        obs_switch_delay_after_blackout_frames=3,
+        now_fn=FakeClock(),
+        vs_screen_confirm_seconds=2,
+        banner_confirm_seconds=2,
+        banner_confirm_seconds_after_match_end=2,
+        match_end_confirm_seconds=1,
+        league_change_grace_seconds=1,
+        obs_switch_delay_after_blackout_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -2293,12 +2373,16 @@ def test_obs_switch_waits_for_blackout_after_finalize(monkeypatch):
         machine.process_frame(frame)
     assert machine.in_match is True, "暗転を検知するまではin_matchがTrueのまま維持されるはず"
 
+    # Issue #388: 経過秒数(now-started_at)ベースになったため、delay=3秒に到達する
+    # には暗転検知フレーム自身を含め4回分のスパンが必要(1回目はelapsed=0)
     blackout["active"] = True
-    machine.process_frame(frame)  # 暗転検知1フレーム目
+    machine.process_frame(frame)  # 暗転検知1フレーム目(elapsed=0)
     assert machine.in_match is True, "暗転検知直後、delay未経過ではまだTrueのはず"
-    machine.process_frame(frame)  # 2フレーム目
+    machine.process_frame(frame)  # 2フレーム目(elapsed=1)
     assert machine.in_match is True, "delay(=3)未経過ではまだTrueのはず"
-    machine.process_frame(frame)  # 3フレーム目でdelay到達
+    machine.process_frame(frame)  # 3フレーム目(elapsed=2)
+    assert machine.in_match is True, "delay(=3)未経過ではまだTrueのはず"
+    machine.process_frame(frame)  # 4フレーム目(elapsed=3)でdelay到達
     assert machine.in_match is False, "暗転検知からdelay分経過後にFalseへ戻るはず"
 
 
@@ -2313,16 +2397,18 @@ def test_obs_switch_uses_first_blackout_when_finalize_itself_triggered_by_blacko
     frame_idx = {"n": 0}
 
     def fake_is_vs_screen(frame):
-        return frame_idx["n"] < 2
+        # Issue #388: vs_screen_confirm_seconds=2(FakeClock step=1.0)を確定させるには
+        # 経過2.0秒(=3フレーム分のスパン)必要
+        return frame_idx["n"] < 3
 
     def fake_is_match_end_screen(frame):
-        return 2 <= frame_idx["n"] < 4
+        return 3 <= frame_idx["n"] < 6
 
     def fake_classify_banner(frame):
-        return "win" if 5 <= frame_idx["n"] < 8 else None
+        return "win" if 6 <= frame_idx["n"] < 10 else None
 
-    BLACKOUT1_FRAME = 10
-    BLACKOUT2_FRAME = 40  # 別画面を挟んだ十分後ろ(暗転1を正しく捕まえていれば無関係のはず)
+    BLACKOUT1_FRAME = 15
+    BLACKOUT2_FRAME = 50  # 別画面を挟んだ十分後ろ(暗転1を正しく捕まえていれば無関係のはず)
 
     def fake_is_full_blackout(frame):
         n = frame_idx["n"]
@@ -2345,15 +2431,16 @@ def test_obs_switch_uses_first_blackout_when_finalize_itself_triggered_by_blacko
     monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
 
     machine = MatchStateMachine(
-        vs_screen_confirm_frames=2,
-        banner_confirm_frames=2,
-        banner_confirm_frames_after_match_end=2,
-        match_end_confirm_frames=1,
+        now_fn=FakeClock(),
+        vs_screen_confirm_seconds=2,
+        banner_confirm_seconds=2,
+        banner_confirm_seconds_after_match_end=2,
+        match_end_confirm_seconds=1,
         # grace期間満了・periodic recheckいずれの経路でも確定させず、暗転即時確定
         # パスのみで確定させるため、これらのフレーム数閾値を到底届かない大きさにする
-        league_change_grace_frames=10_000,
-        rank_recheck_interval_frames=10_000,
-        obs_switch_delay_after_blackout_frames=5,
+        league_change_grace_seconds=10_000,
+        rank_recheck_interval_seconds=10_000,
+        obs_switch_delay_after_blackout_seconds=5,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -2385,9 +2472,10 @@ def test_obs_switch_uses_first_blackout_when_finalize_itself_triggered_by_blacko
     assert in_match_became_false_frame < BLACKOUT2_FRAME, (
         "暗転2(別画面を挟んだ2回目)を待たず、暗転1を起点にFalseへ戻っているはず"
     )
-    # 暗転1のフレーム自体が1カウント目のため、delay(=5)到達は暗転1からdelay-1フレーム後
-    assert in_match_became_false_frame == BLACKOUT1_FRAME + 5 - 1, (
-        "暗転1からobs_switch_delay_after_blackout_frames(=5)分経過後にFalseへ戻るはず"
+    # Issue #388: 経過秒数(now-started_at)ベースになったため、delay(=5)到達は
+    # 暗転1検知フレーム自身から数えてdelay分後(暗転1フレームのelapsedは0のため)
+    assert in_match_became_false_frame == BLACKOUT1_FRAME + 5, (
+        "暗転1からobs_switch_delay_after_blackout_seconds(=5)秒経過後にFalseへ戻るはず"
     )
 
 
@@ -2408,16 +2496,18 @@ def test_obs_switch_uses_first_blackout_even_when_finalize_is_delayed(monkeypatc
     frame_idx = {"n": 0}
 
     def fake_is_vs_screen(frame):
-        return frame_idx["n"] < 2
+        # Issue #388: vs_screen_confirm_seconds=2(FakeClock step=1.0)を確定させるには
+        # 経過2.0秒(=3フレーム分のスパン)必要
+        return frame_idx["n"] < 3
 
     def fake_is_match_end_screen(frame):
-        return 2 <= frame_idx["n"] < 4
+        return 3 <= frame_idx["n"] < 6
 
     def fake_classify_banner(frame):
-        return "lose" if 5 <= frame_idx["n"] < 8 else None
+        return "lose" if 6 <= frame_idx["n"] < 10 else None
 
-    BLACKOUT1_FRAME = 10
-    BLACKOUT2_FRAME = 20
+    BLACKOUT1_FRAME = 15
+    BLACKOUT2_FRAME = 25
     GRACE_FRAMES = 40  # 暗転1・暗転2のどちらよりも後にfinalizeが来るようにする
     OBS_SWITCH_DELAY = 5
 
@@ -2441,13 +2531,14 @@ def test_obs_switch_uses_first_blackout_even_when_finalize_is_delayed(monkeypatc
     monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
 
     machine = MatchStateMachine(
-        vs_screen_confirm_frames=2,
-        banner_confirm_frames=2,
-        banner_confirm_frames_after_match_end=2,
-        match_end_confirm_frames=1,
-        league_change_grace_frames=GRACE_FRAMES,
-        rank_recheck_interval_frames=10_000,
-        obs_switch_delay_after_blackout_frames=OBS_SWITCH_DELAY,
+        now_fn=FakeClock(),
+        vs_screen_confirm_seconds=2,
+        banner_confirm_seconds=2,
+        banner_confirm_seconds_after_match_end=2,
+        match_end_confirm_seconds=1,
+        league_change_grace_seconds=GRACE_FRAMES,
+        rank_recheck_interval_seconds=10_000,
+        obs_switch_delay_after_blackout_seconds=OBS_SWITCH_DELAY,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -2467,8 +2558,9 @@ def test_obs_switch_uses_first_blackout_even_when_finalize_is_delayed(monkeypatc
 
     assert finalize_frame is not None, "MatchResultが確定しなかった"
     assert in_match_became_false_frame is not None, "in_matchがFalseに戻らなかった"
-    # 暗転1のフレーム自体が1カウント目のため、delay到達は暗転1からdelay-1フレーム後
-    assert in_match_became_false_frame == BLACKOUT1_FRAME + OBS_SWITCH_DELAY - 1, (
+    # Issue #388: 経過秒数(now-started_at)ベースになったため、delay到達は
+    # 暗転1検知フレーム自身から数えてdelay分後(暗転1フレームのelapsedは0のため)
+    assert in_match_became_false_frame == BLACKOUT1_FRAME + OBS_SWITCH_DELAY, (
         "「試合終了」確認を起点に、暗転1からdelay分経過した時点でFalseへ戻るはず"
     )
     assert in_match_became_false_frame < finalize_frame, (
@@ -2487,7 +2579,9 @@ def test_in_match_stays_true_after_finalize_without_match_end_confirmation(monke
     frame_idx = {"n": 0}
 
     def fake_is_vs_screen(frame):
-        return frame_idx["n"] < 2
+        # Issue #388: vs_screen_confirm_seconds=2(FakeClock step=1.0)を確定させるには
+        # 経過2.0秒(=3フレーム分のスパン)必要
+        return frame_idx["n"] < 3
 
     def fake_classify_banner(frame):
         return "win" if frame_idx["n"] >= 5 else None
@@ -2504,9 +2598,10 @@ def test_in_match_stays_true_after_finalize_without_match_end_confirmation(monke
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
     machine = MatchStateMachine(
-        vs_screen_confirm_frames=2,
-        banner_confirm_frames=2,
-        league_change_grace_frames=1,
+        now_fn=FakeClock(),
+        vs_screen_confirm_seconds=2,
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=1,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -2540,7 +2635,7 @@ def test_vs_screen_shown_continuously_reads_ranks_only_once(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
-    machine = MatchStateMachine(vs_screen_confirm_frames=2)
+    machine = MatchStateMachine(now_fn=FakeClock(), vs_screen_confirm_seconds=2)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     for _ in range(10):
         machine.process_frame(frame)
@@ -2574,7 +2669,7 @@ def test_vs_screen_flicker_after_confirm_does_not_double_count_match(monkeypatch
 
     # vs_screen_lockout_framesはテスト全体のフレーム数より大きくしておき、
     # ロックが途中で切れて2回目の確定に成功してしまわないようにする
-    machine = MatchStateMachine(vs_screen_confirm_frames=2, vs_screen_lockout_frames=100)
+    machine = MatchStateMachine(now_fn=FakeClock(), vs_screen_confirm_seconds=2, vs_screen_lockout_seconds=100)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     for _ in range(20):
         machine.process_frame(frame)
@@ -2604,7 +2699,7 @@ def test_vs_screen_lockout_expires_before_next_real_match(monkeypatch):
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
-    machine = MatchStateMachine(vs_screen_confirm_frames=2, vs_screen_lockout_frames=5)
+    machine = MatchStateMachine(now_fn=FakeClock(), vs_screen_confirm_seconds=2, vs_screen_lockout_seconds=5)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     for _ in range(20):
         machine.process_frame(frame)
@@ -2621,12 +2716,16 @@ def test_vs_screen_confirmed_again_before_previous_match_finalized_logs_info(mon
 
     def fake_is_vs_screen(frame):
         n = frame_idx["n"]
-        # 0-1: 1試合目のVS画面確定, 2-8: 結果画面が来ないまま試合中(ロック期間),
-        # 9-: 1試合目を確定させないまま2試合目の本物のVS画面が現れる
-        return n < 2 or n >= 9
+        # Issue #388: vs_screen_confirm_seconds=2(FakeClock step=1.0)を確定させるには
+        # 経過2.0秒(=3フレーム分のスパン)必要。0-2: 1試合目のVS画面確定,
+        # 3-8: 結果画面が来ないまま試合中(ロック期間), 9-: 1試合目を確定させないまま
+        # 2試合目の本物のVS画面が現れる
+        return n < 3 or n >= 9
 
     def fake_is_goal_event(frame):
-        return frame_idx["n"] == 3
+        # Issue #388: goal_confirm_seconds=1(FakeClock step=1.0)を確定させるには
+        # 経過1.0秒(=2フレーム分のスパン)必要
+        return frame_idx["n"] in (3, 4)
 
     frame_idx = {"n": 0}
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
@@ -2642,10 +2741,10 @@ def test_vs_screen_confirmed_again_before_previous_match_finalized_logs_info(mon
     monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
 
-    machine = MatchStateMachine(vs_screen_confirm_frames=2, goal_confirm_frames=1, vs_screen_lockout_frames=5)
+    machine = MatchStateMachine(now_fn=FakeClock(), vs_screen_confirm_seconds=2, goal_confirm_seconds=1, vs_screen_lockout_seconds=5)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     with caplog.at_level("INFO", logger="nss_tracker.state"):
-        for _ in range(20):
+        for _ in range(30):
             machine.process_frame(frame)
             frame_idx["n"] += 1
 
@@ -2654,4 +2753,52 @@ def test_vs_screen_confirmed_again_before_previous_match_finalized_logs_info(mon
     assert (
         "1試合目: 前の試合が結果画面確定前に次のVS画面を検知しました。"
         "前の試合のゴール(1件)は今回の試合の記録に持ち越されます" in caplog.text
+    )
+
+
+def test_banner_confirm_survives_severely_degraded_effective_fps(monkeypatch):
+    """Issue #388の回帰テスト。
+
+    #383/#387で実際に観測されたとおり、検知ループの実効fpsは処理内容次第で
+    大きく変動しうる(暗転待ち区間だけ60fps→約28fpsに半減する等)。以前の
+    フレーム数ベースの実装であれば、banner_confirm_seconds(既定2.0秒、
+    main.pyが渡すproduction値)は60fps想定でbanner_confirm_frames=120フレームに
+    換算されており、実効fpsがこのテストのように5fps相当(FakeClock step=0.2秒)まで
+    落ち込んだ場合、120フレーム分の観測に実時間24秒かかっていたはずで、
+    実際には2秒しか表示されない結果バナーの確定を取りこぼしていた
+    (#387で解析した「勝ち」バナー未記録の実害と同じ構造)。
+
+    新実装(実時間ベース)では、実効fpsがどれだけ低くても「実際に画面上で
+    2秒間持続したか」だけを見るため、正しく約2.0秒(FakeClock step=0.25秒で
+    9サンプル)で確定することを確認する。step=0.25は2進数で誤差なく表現できる値
+    (0.2だと浮動小数点の累積誤差でelapsedが2.0にわずかに届かず1サンプル余分に
+    必要になることがあったため)。
+    """
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: None)
+
+    # banner_confirm_secondsは明示的に渡さず、production(main.py)と同じ既定値
+    # (config/detection.tomlのBANNER_CONFIRM_SECONDS=2.0)をそのまま使う
+    machine = MatchStateMachine(now_fn=FakeClock(step=0.25))
+    # このテストの関心事(banner確定の実時間耐性)にVS画面確定の全過程は無関係なため、
+    # 他のテストと同じショートカットでVS画面確認済みとして扱う。
+    # _pending_vs_mine_ranksが空のままなので「ランクを賭けない試合」経路に乗り、
+    # バナー確定と同じフレームでMatchResultが即座に確定する(_watch_for_banner参照)
+    machine._vs_confirmed_this_match = True
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    confirmed_at = None
+    for i in range(20):
+        result = machine.process_frame(frame)
+        if result is not None:
+            confirmed_at = i + 1
+            break
+
+    assert confirmed_at is not None, "実効fpsが低くても、実経過2.0秒でbanner確定するはず"
+    assert confirmed_at == 9, (
+        f"確定までに{confirmed_at}サンプルかかった(期待は実経過2.0秒分=9サンプル)。"
+        "フレーム数ベースの挙動に逆行していないか確認すること"
     )
