@@ -1,13 +1,38 @@
+import logging
+
 import numpy as np
 import pytest
 
+from nss_tracker import config
+from nss_tracker.database import db
 from nss_tracker.rank_entry_clips import (
     GAUGE_LABEL_PADDING_HEIGHT,
     GAUGE_TICK_LABEL_EXTENSION,
     GAUGE_TICK_SEGMENTS,
+    PENDING_CLIP_WARNING_THRESHOLD,
     RankEntryClipRecorder,
     _draw_gauge_ticks,
 )
+from nss_tracker.state.match_state import MatchResult
+from nss_tracker.timeutil import now_jst
+
+
+def _insert_match(conn, *, rank_before: float | None, confirmed: bool) -> int:
+    """テスト用に試合を1件保存し、match_idを返す(Issue #389)。
+
+    rank_before=Noneならランクを賭けない試合(rank_before_ocrがNULL、常に
+    保持数管理の対象=削除してよい)。confirmed=Falseならrank_afterをNULLの
+    ままにする(未確定、rank_before_ocrが非NULLの場合のみ意味を持つ)。
+    save_match_result()はランクを賭けない試合でconfig.get_room_type()
+    (/adminで選択するまでNoneのまま、Issue #379)を参照するため、
+    matches.room_typeのNOT NULL制約に落ちないよう先に'random'を設定しておく。
+    """
+    config.set_room_type("random")
+    match = MatchResult(result="win", rank_before=rank_before, rank_after=None, league_changed=None, detected_at=now_jst())
+    match_id = db.save_match_result(conn, match)
+    if confirmed and rank_before is not None:
+        db.save_manual_rank_after(conn, match_id, rank_before)
+    return match_id
 
 
 def _make_frame(width: int = 64, height: int = 48, value: int = 128) -> np.ndarray:
@@ -256,7 +281,9 @@ def test_finish_encodes_clip_and_stops_recording(tmp_path):
 
 
 def test_finish_applies_retention_keeping_only_max_clips(tmp_path):
-    recorder = RankEntryClipRecorder(output_dir=tmp_path, target_sample_fps=10.0, max_clips=3)
+    recorder = RankEntryClipRecorder(
+        output_dir=tmp_path, target_sample_fps=10.0, max_clips=3, db_path=tmp_path / "test.db"
+    )
 
     for match_id in [10, 11, 12, 13]:
         recorder.start(source_fps=10.0)
@@ -274,7 +301,9 @@ def test_apply_retention_uses_creation_order_not_match_id_after_db_reset(tmp_pat
     誤って削除されないことを確認する(以前はmatch_id昇順=生成順という前提が
     崩れ、リセット直後の最新クリップが即座に削除される不具合があった)。
     """
-    recorder = RankEntryClipRecorder(output_dir=tmp_path, target_sample_fps=10.0, max_clips=3)
+    recorder = RankEntryClipRecorder(
+        output_dir=tmp_path, target_sample_fps=10.0, max_clips=3, db_path=tmp_path / "test.db"
+    )
 
     # DBリセット前: match_id 9, 10, 11の順で生成(リセット後もフォルダに残り続ける想定)
     for match_id in [9, 10, 11]:
@@ -292,6 +321,63 @@ def test_apply_retention_uses_creation_order_not_match_id_after_db_reset(tmp_pat
 
     remaining = sorted(int(p.stem) for p in tmp_path.glob("*.mp4"))
     assert remaining == [1, 2, 11], "リセット後に生成した1・2は残り、生成順が最も古い9・10が削除されるはず"
+
+
+def test_apply_retention_keeps_clips_for_unconfirmed_matches(tmp_path):
+    """Issue #389: max_clips件を超えていても、対応する試合が未確定
+    (rank_before_ocrが非NULLかつrank_afterがNULL)のクリップは削除しない。
+    確定済み・ランクを賭けていない試合のクリップは従来どおり削除される。
+    """
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    try:
+        confirmed_id = _insert_match(conn, rank_before=40.0, confirmed=True)
+        pending_id = _insert_match(conn, rank_before=41.0, confirmed=False)
+        unranked_id = _insert_match(conn, rank_before=None, confirmed=False)
+    finally:
+        conn.close()
+
+    recorder = RankEntryClipRecorder(output_dir=tmp_path, target_sample_fps=10.0, max_clips=1, db_path=db_path)
+    for match_id in [confirmed_id, pending_id, unranked_id]:
+        recorder.start(source_fps=10.0)
+        recorder.add_frame(_make_frame())
+        recorder.finish(match_id=match_id)
+        recorder._last_encode_thread.join(timeout=10)
+
+    remaining = sorted(int(p.stem) for p in tmp_path.glob("*.mp4"))
+    assert remaining == [pending_id, unranked_id], (
+        "確定済み(confirmed_id)は削除、未確定(pending_id)は残り、"
+        "最新1件(max_clips=1、unranked_id)は通常どおり残るはず"
+    )
+
+
+def test_apply_retention_warns_when_pending_clips_exceed_threshold(tmp_path, caplog):
+    """Issue #389: 未確定のため削除せず残っているクリップがPENDING_CLIP_WARNING_
+    THRESHOLDを超えたらWARNINGログを出すことを確認する(上限として削除は
+    しない、モジュールdocstring参照)。
+    """
+    # max_clips=1のため、「未確定として残る」件数はmatch_ids総数-1になる。
+    # PENDING_CLIP_WARNING_THRESHOLDを超えさせるには+2件生成する必要がある
+    db_path = tmp_path / "test.db"
+    match_ids = []
+    conn = db.connect(db_path)
+    try:
+        for i in range(PENDING_CLIP_WARNING_THRESHOLD + 2):
+            match_ids.append(_insert_match(conn, rank_before=40.0 + i, confirmed=False))
+    finally:
+        conn.close()
+
+    recorder = RankEntryClipRecorder(output_dir=tmp_path, target_sample_fps=10.0, max_clips=1, db_path=db_path)
+    with caplog.at_level(logging.WARNING, logger="nss_tracker.rank_entry_clips"):
+        for match_id in match_ids:
+            recorder.start(source_fps=10.0)
+            recorder.add_frame(_make_frame())
+            recorder.finish(match_id=match_id)
+            recorder._last_encode_thread.join(timeout=10)
+
+    remaining = sorted(int(p.stem) for p in tmp_path.glob("*.mp4"))
+    assert remaining == sorted(match_ids), "全件未確定のため1件も削除されないはず"
+    assert f"{PENDING_CLIP_WARNING_THRESHOLD}件超" in caplog.text
 
 
 def test_finish_when_ffmpeg_fails_does_not_raise(tmp_path):
