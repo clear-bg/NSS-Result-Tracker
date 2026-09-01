@@ -25,6 +25,28 @@ fixtures/videos全24本(結果バナーを含まない試合中クリップ4本�
 暗転など、ランク確定と無関係なタイミングでも同じ現象が起きることを確認済みだが、
 このモジュールでは検知のみを提供し、いつ確定に使うか(ランクゲージ変更終了時のみ)は
 呼び出し側の責務とする。
+
+Issue #387: frame_brightness_stats()は1920x1080全画面をcv2.cvtColor(BGR2GRAY)+
+mean()/std()で処理しており、実測8ms前後かかる重い処理だった。state/match_state.pyの
+暗転待ち区間では判定用に加えログ表示用にも呼ばれ、1フレームにつき実質2回計算する
+形になっており、これが支配的なコストになって検知ループの実効レートが60fps→
+約28fpsまで半減、結果として0.55秒しかない暗転や1.9秒程度しか表示されない
+「勝ち」結果バナーを取りこぼす実害が出た(#383/#387参照)。
+
+「画面全体が一様に暗いか」という大域的な性質の判定であるため、間引きサンプリングで
+劣化しないはずと考え、実フレーム1200枚(暗転区間を含む)で検証した:
+
+    実装                    ms/frame   最大mean差  最大std差  暗転判定の不一致
+    current(全画面)           10.11        -           -          -
+    1/4間引き(stride=4)        1.07       0.34        0.46       0/1200
+    1/8間引き(stride=8)        0.19       0.50        0.62       0/1200
+
+いずれも暗転判定(mean<=15 and std<=15)の結果は1200フレーム全てで一致した。
+安全マージン(暗転時mean 0.40〜0.43 vs 非暗転時最低30前後、閾値15.0)に対して
+差分0.5前後は無視できる大きさだが、多少余裕を持たせてBRIGHTNESS_STATS_STRIDE=4
+(縦横1/4に間引き=画素数1/16)をデフォルトにした。間引き後は1フレームにつき2回
+呼んでも合計2ms程度で済むため、呼び出し構造(1回はログ用・1回は判定用)自体は
+変えていない。
 """
 
 from typing import Iterable, Optional, TypeVar
@@ -46,6 +68,10 @@ DEFAULT_STABLE_FRAMES_REQUIRED = get_detection_value("motion", "DEFAULT_STABLE_F
 FULL_BLACKOUT_MAX_MEAN_BRIGHTNESS = get_detection_value("motion", "FULL_BLACKOUT_MAX_MEAN_BRIGHTNESS", 15.0)
 FULL_BLACKOUT_MAX_BRIGHTNESS_STD = get_detection_value("motion", "FULL_BLACKOUT_MAX_BRIGHTNESS_STD", 15.0)
 
+# Issue #387: 縦横をこの値で間引いてから輝度統計を計算する(モジュールdocstring参照)。
+# 1だと間引きなし(従来どおり全画素)。
+BRIGHTNESS_STATS_STRIDE = get_detection_value("motion", "BRIGHTNESS_STATS_STRIDE", 4)
+
 
 def frame_brightness_stats(frame: np.ndarray) -> tuple[float, float]:
     """フレーム全体のグレースケール輝度平均・標準偏差を返す。
@@ -54,8 +80,19 @@ def frame_brightness_stats(frame: np.ndarray) -> tuple[float, float]:
     取りこぼした際の原因究明(「閾値にどれだけ近づけていたか」を暗転待ち中の
     DEBUGログに残す用途、state/match_state.py参照)のため単体で呼べるように
     切り出した。
+
+    Issue #387: BRIGHTNESS_STATS_STRIDEで間引いてから計算する(モジュール
+    docstring参照、実測で判定結果への影響が無いことを確認済み)。呼び出し側
+    (state/match_state.py)はログ用にこの関数を呼んだ後、判定用に改めて
+    is_full_blackout(frame)を呼んでおり同じ計算を2回行う形になっているが、
+    間引き後は2回呼んでも合計2ms程度で60fps予算に対して十分小さいため、
+    呼び出し構造は変えていない(is_full_blackout()はテストからモジュール
+    直下の名前でmonkeypatchされ暗転タイミングを厳密制御する使われ方をして
+    いるため、判定をこの関数の戻り値経由に置き換えるとテストの制御が効かなく
+    なる)。
     """
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    sampled = frame[::BRIGHTNESS_STATS_STRIDE, ::BRIGHTNESS_STATS_STRIDE]
+    gray = cv2.cvtColor(sampled, cv2.COLOR_BGR2GRAY)
     return float(gray.mean()), float(gray.std())
 
 

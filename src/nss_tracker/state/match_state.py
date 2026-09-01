@@ -980,6 +980,19 @@ class MatchStateMachine:
         平均・標準偏差を自前で見て閾値判定する。呼んでいる関数・使っている
         閾値定数自体はis_full_blackout()と同一で、判定結果は変えていない):
 
+        Issue #387: 上記の原因究明ログ追加(frame_brightness_stats()呼び出し)が、
+        直後のis_full_blackout(frame)内部でも同じ計算をもう一度行わせてしまい、
+        1920x1080全画面のcv2.cvtColor+mean/std(実測8ms前後)を1フレームにつき
+        実質2回実行する形になっていた。この暗転待ち区間だけ検知ループの実効
+        レートが60fps→約28fpsまで半減し、0.55秒しかない暗転自体を取りこぼす
+        (本Issue)のに加え、表示時間の短い「勝ち」結果バナーの確定も落としていた
+        (#387)。対応はframe_brightness_stats()自体を間引きサンプリングに変更する
+        形にした(detection/motion.pyのモジュールdocstring参照、間引き後は2回
+        呼んでも合計2ms程度)。is_full_blackout()はテストからモジュール直下の
+        名前でmonkeypatchされ暗転タイミングを厳密制御する使われ方をしているため、
+        判定経路をこの関数の戻り値以外に置き換えることはしていない(呼び出し
+        構造・閾値定数・判定結果は変えていない)。
+
         - 暗転待ち区間で観測した最小輝度平均を更新するたびに1行(「一番暗い
           フレームでもどこまでしか暗くならなかったか」を残す。区間全体で
           最も暗かったフレームの記録なので、更新のたびに出しても頻度は
@@ -996,7 +1009,9 @@ class MatchStateMachine:
             # Issue #383: 判定そのものは既存どおりis_full_blackout()(テストで
             # monkeypatch対象になっているモジュール直下の名前)に委ね、
             # frame_brightness_stats()はログ表示用の値取得にのみ使う
-            # (判定結果は変えない)
+            # (判定結果は変えない)。Issue #387: 両方とも間引き済みの
+            # frame_brightness_stats()を経由するため、2回呼んでも合計2ms程度
+            # (メソッドdocstring参照)
             mean, std = frame_brightness_stats(frame)
             if self._pending_obs_switch_min_mean is None or mean < self._pending_obs_switch_min_mean:
                 self._pending_obs_switch_min_mean = mean

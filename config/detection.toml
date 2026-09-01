@@ -74,6 +74,9 @@ DEFAULT_STABLE_FRAMES_REQUIRED = 10
 # Issue #209: 根拠はdetection/motion.pyのモジュールdocstring参照
 FULL_BLACKOUT_MAX_MEAN_BRIGHTNESS = 15.0
 FULL_BLACKOUT_MAX_BRIGHTNESS_STD = 15.0
+# Issue #387: frame_brightness_stats()の間引き係数。根拠はdetection/motion.pyの
+# モジュールdocstring参照
+BRIGHTNESS_STATS_STRIDE = 4
 
 [matchmaking]
 VS_ROI = [880, 495, 1050, 600]
