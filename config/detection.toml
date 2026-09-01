@@ -115,6 +115,21 @@ RANK_TIER_WRAP_MIN_MAGNITUDE = 0.5
 # Issue #234: VS画面確定後、この秒数は新規のVS画面検知自体を行わない
 # (同一VS画面表示中の演出による一瞬の判定揺れで二重に試合開始が発火するのを防ぐ)
 VS_SCREEN_LOCKOUT_SECONDS = 30.0
+# Issue #388: 以下、デバウンス閾値(秒)。以前はフレーム数(30fps想定)で持ち
+# main.pyがfpsに応じて動的に再計算していたが、検知ループの実効fpsが変動しても
+# 閾値の意味(秒数)が変わらないよう実時間ベースに変更した(根拠は
+# state/match_state.pyのモジュールdocstring参照)
+BANNER_CONFIRM_SECONDS = 2.0
+BANNER_CONFIRM_SECONDS_AFTER_MATCH_END = 1.0
+BANNER_ABSENCE_CONFIRM_SECONDS = 1.0
+GOAL_CONFIRM_SECONDS = 1.0
+VS_SCREEN_CONFIRM_SECONDS = 1.0
+MATCH_END_CONFIRM_SECONDS = 0.0
+DEMOTION_LABEL_CONFIRM_SECONDS = 1.0
+OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS = 5.0
+LEAGUE_CHANGE_GRACE_SECONDS = 5.0
+RANK_RECHECK_INTERVAL_SECONDS = 0.5
+RANK_TIER_RESCAN_WAIT_SECONDS = 0.1667
 
 [match_end]
 MATCH_END_LEFT_ROI = [638, 422, 719, 509]

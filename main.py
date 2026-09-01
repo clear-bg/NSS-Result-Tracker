@@ -182,11 +182,13 @@ def _detect_fps(video_path: Path) -> float:
 
 
 def _make_match_state_machine(fps: float) -> MatchStateMachine:
-    """fpsに応じてスケーリングした閾値でMatchStateMachineを構築する。
+    """MatchStateMachineを構築する。
 
-    state/match_state.pyのdocstring・クラスのデフォルト値は30fps想定のため、
-    60fps等の入力ではここで呼び出し側からスケーリングする必要がある
-    (CLAUDE.md・tests/test_match_state.pyの_run_state_machineと同じ考え方)。
+    Issue #388: デバウンス閾値はすべて実時間(秒)ベースになったため、以前
+    ここで行っていたfpsに応じたフレーム数換算(round(fps * 秒数))は不要になった。
+    fps引数は`StabilityMonitor`(ピクセル差分ベースで別の仕組み、Issue #388の
+    対象外、state/match_state.pyのモジュールdocstring参照)の閾値換算にのみ
+    引き続き使う。
 
     Issue #303: 帯番号の定期再チェック(PaddleOCR)用に、ここでProcessPoolExecutorを
     明示的に渡す。MatchStateMachine側のデフォルト(ThreadPoolExecutor)はGILの制約で
@@ -202,17 +204,6 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     同時期に発生した場合に一方が他方を待たされ、結局メインループの遅延要因を
     プロセスの外に移しただけになるため)。
     """
-    confirm_frames = round(fps * 1.0)
-    # Issue #67: 通常プレイ中の背景誤検知(実測1.3秒程度持続)がデバウンス(1秒)を
-    # すり抜けて結果バナーの誤検知が発生したため、banner_confirm_framesのみ2秒に延長。
-    # Issue #76: 「試合終了」バナーを確認できていれば、Issue #67修正前と同じ1秒
-    # (confirm_framesと同じ)に短縮する(state/match_state.pyのモジュールdocstring参照)
-    banner_confirm_frames = round(fps * 2.0)
-    # Issue #190: このデバウンスは安全マージンとして機能しておらず(真偽の判定は
-    # OCR文字一致confirm_match_end_textが担う)、「試合終了」バナーは実測最短
-    # 7フレーム(60fps)程度しか綺麗に表示されないことがあるため、色候補判定を
-    # 満たした最初のフレームで即OCR確認する(state/match_state.py参照)
-    match_end_confirm_frames = 1
     tier_recheck_executor = ProcessPoolExecutor(max_workers=1)
     # Issue #303: ワーカープロセス側のPaddleOCRモデル読み込み(コールドスタート、
     # 実測3.8〜7秒程度)を、実際に必要になる前(=最初のランクを賭けた試合の
@@ -224,26 +215,32 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     # Issue #327: tier_recheck_executorと同じ理由でウォームアップを前倒しする
     goal_ocr_executor.submit(_run_goal_ocr, np.zeros((1080, 1920, 3), dtype=np.uint8))
     return MatchStateMachine(
-        banner_confirm_frames=banner_confirm_frames,
-        banner_confirm_frames_after_match_end=confirm_frames,
-        banner_absence_confirm_frames=confirm_frames,
-        goal_confirm_frames=confirm_frames,
-        vs_screen_confirm_frames=confirm_frames,
-        # Issue #234: VS_SCREEN_LOCKOUT_SECONDS(config/detection.tomlの
-        # [match_state]で上書き可能)をfpsに応じてフレーム数換算する
-        vs_screen_lockout_frames=round(fps * VS_SCREEN_LOCKOUT_SECONDS),
-        match_end_confirm_frames=match_end_confirm_frames,
-        demotion_label_confirm_frames=confirm_frames,
+        # Issue #67: 通常プレイ中の背景誤検知(実測1.3秒程度持続)がデバウンス(1秒)を
+        # すり抜けて結果バナーの誤検知が発生したため、banner_confirm_secondsのみ2秒に延長。
+        # Issue #76: 「試合終了」バナーを確認できていれば、Issue #67修正前と同じ1秒に
+        # 短縮する(state/match_state.pyのモジュールdocstring参照)
+        banner_confirm_seconds=2.0,
+        banner_confirm_seconds_after_match_end=1.0,
+        banner_absence_confirm_seconds=1.0,
+        goal_confirm_seconds=1.0,
+        vs_screen_confirm_seconds=1.0,
+        vs_screen_lockout_seconds=VS_SCREEN_LOCKOUT_SECONDS,
+        # Issue #190: このデバウンスは安全マージンとして機能しておらず(真偽の判定は
+        # OCR文字一致confirm_match_end_textが担う)、「試合終了」バナーは実測最短
+        # 7フレーム(60fps)程度しか綺麗に表示されないことがあるため、色候補判定を
+        # 満たした最初のフレームで即OCR確認する(0.0秒=即時、state/match_state.py参照)
+        match_end_confirm_seconds=0.0,
+        demotion_label_confirm_seconds=1.0,
         tier_recheck_executor=tier_recheck_executor,
         goal_ocr_executor=goal_ocr_executor,
-        league_change_grace_frames=round(fps * 5.0),
-        rank_recheck_interval_frames=round(fps * 0.25),
-        rank_tier_rescan_wait_frames=round(fps / 6),
+        league_change_grace_seconds=5.0,
+        rank_recheck_interval_seconds=0.25,
+        rank_tier_rescan_wait_seconds=1.0 / 6,
         # Issue #224: 試合終了時のOBSシーン切替は、暗転を最初に検知してから一定時間後。
         # Issue #371: 起点が「試合終了」OCR確認へ前倒しになり、拾う暗転が暗転2から
         # 暗転1(実測で試合終了の7〜9秒後)へ変わったため、1秒→5秒に延長して
         # 体感の切替タイミングを従来どおり(試合終了の12〜14秒後)に保つ
-        obs_switch_delay_after_blackout_frames=round(fps * 5.0),
+        obs_switch_delay_after_blackout_seconds=5.0,
         rank_stability_monitor=StabilityMonitor(roi=RANK_ROI, stable_frames_required=round(fps * 0.5)),
     )
 
