@@ -234,8 +234,7 @@ Issue #145: 対戦相手ランク比較ウィジェット(web/server.py)は、�
 Issue #190: 実プレイ中(ゴール演出とは無関係な通常プレイ中)の背景誤検知が
 banner_confirm_seconds(2秒デバウンス)を突破し、OBSシーンが誤って試合中→
 試合間(ワイプ)へ切り替わってしまう事象が実配信で確認された。特にランクを
-賭けない試合(rank_before=Noneのため_is_tier_change_plausible等の数値ベースの
-安全装置が一切効かない)は、StabilityMonitorの「安定」判定さえ誤検知フレームで
+賭けない試合(rank_before=Noneのため帯番号ベースの安全装置が一切効かない)は、StabilityMonitorの「安定」判定さえ誤検知フレームで
 たまたま満たされれば、あとはbanner_confirm_secondsの2秒デバウンスだけが最後の
 砦になる。配信者体験として「マッチング待機中に誤って試合中シーンのままになる」
 より「実プレイ中に誤ってワイプへ切り替わる」方がはるかに困るという優先順位が
@@ -267,7 +266,8 @@ frame 958、表示が消える直前の縮小アニメーションでOCRが失�
 デバウンスを縮めて可能な限り早いフレームで1回きりのOCRを実行する方が安全。
 
 Issue #176: 降格(帯番号-1)は、昇格(is_league_change_screen()の全画面
-オーバーレイ)と違って独立した確認手段が無く、_infer_tier_from_gauge_continuity()の
+オーバーレイ)と違って独立した確認手段が無く、_infer_tier_after()(当時の
+_infer_tier_from_gauge_continuity())の
 「負けているのにゲージ小数部が閾値を超えて増えて見える」という間接的な
 推測に頼っていた。調査の結果、降格時にランクバッジ上へ乗る「降格」ラベル
 (白背景の吹き出し)が、Issue #73で断念したS/A帯バッジのOCRとは異なり
@@ -277,24 +277,19 @@ is_demotion_label_candidate()/confirm_demotion_label_text()を追加した。
 match_end/goalと同じ2段構成(色/形状の軽量な候補判定→デバウンス確定時に
 1回だけOCRで確認)を、TRACKING_RANK中(_track_rank())で常時チェックする形で
 組み込み、確認できれば_demotion_confirmed_this_matchに保持する。
-_infer_tier_from_gauge_continuity()では、この独立信号が得られていれば
+_infer_tier_after()では、この独立信号が得られていれば
 ゲージ小数部の閾値判定より優先して降格と確定させ、得られていない場合は
 従来どおりの間接的な推測にフォールバックする(見逃しても既存の正しさは
 損なわれない、という他の2段構成の信号と同じ設計)。
 
 Issue #202: 上記の実装直後、降格ラベルを確認できていても帯番号OCRが
 「変化なし」(delta=0)を返した場合には独立信号が一切参照されず、降格が
-記録から漏れる穴が見つかった。_is_tier_change_plausible()はdelta=0を
-無条件に許容していたため、_infer_tier_from_gauge_continuity()への
-フォールバック自体が発生しなかったことが原因。負け試合かつ
-_demotion_confirmed_this_matchがTrueの場合はdelta=0も不自然とみなす
-よう修正し、他の帯番号急変ケースと同じ再スキャン経路に合流させることで、
-最終的にtier_before-1として記録できるようにした。降格の受理条件自体
-(delta=-1は`_pending_result == "lose"`のみで足りる、既存の緩い条件)は
-変更していない。同様の穴は昇格側(is_league_change_screenを確認できて
-いるのに帯番号OCRが変化無しに化けるケース)にも対称的に存在するが、
-今回のスコープには含めない(ユーザーと合意の上、必要になれば別issueで
-対応する)。
+記録から漏れる穴が見つかった。当時の_is_tier_change_plausible()がdelta=0を
+無条件に許容していたため、推測経路へのフォールバック自体が発生しなかったことが
+原因。負け試合かつ_demotion_confirmed_this_matchがTrueの場合はdelta=0も
+不自然とみなすよう修正して対応した。Issue #396でGRACE中の帯番号OCR自体を
+廃止し、帯番号は常に独立信号のみで決めるようになったため、この穴は構造的に
+発生しなくなった(該当のチェック自体も削除済み)。
 
 Issue #189: VS画面確定〜OBSシーン切替(in_match=True)までが実配信で10〜17秒
 遅れる不具合を調査したところ、色閾値のズレ(Issue #68/#116で一度あった前例)
@@ -321,39 +316,42 @@ PaddleOCR推論)が原因と判明した。実測でCPU上9〜16秒かかり、�
 呼ばれる)と書き込み側(バックグラウンドスレッド)が並行アクセスするため、
 `_vs_screen_event_lock`で保護する。
 
-Issue #303: Issue #189と同じクラスの不具合が、TRACKING_RANK(GRACEフェーズ)側の
-帯番号定期再チェックでも見つかった。`_track_rank()`は`rank_recheck_interval_seconds`
-(ゲージ塗りつぶしのデバウンス用に設計された間隔、既定0.25秒)おきに`read_rank()`で
-帯番号を読み直していたが、Issue #288で`read_rank()`をEasyOCR→PaddleOCRに変更した
-ことで1回あたり約1.2〜1.6秒(実測)かかるようになった。`league_change_grace_seconds`
-(既定5秒)に達するまでに20回再チェックが走るため、実時間で最大約28秒
-`process_frame()`全体がブロックされ、OBSシーン切替も同じだけ遅延する事象が
-2026-08-09の実機動画・ログで確認された。
+Issue #303 → #396: TRACKING_RANK(GRACEフェーズ)中の帯番号定期再チェックは
+**廃止した**。経緯は以下のとおり。
 
-当初`_run_vs_ocr`(Issue #189)と同じくバックグラウンドスレッドに逃がす対策を
-試したが、実測でPythonのGIL(Global Interpreter Lock)がPaddleOCRの推論中
-(CPUバウンドなネイティブ計算)は長時間(実測で1秒以上連続することがある)
-解放されないことが判明し、別スレッドに切り出してもメインスレッドが定期的に
-道連れでブロックされてしまうことを確認した(Issue #189のVS画面OCRはおそらく
-I/Oバウンドな区間が多くGILを頻繁に手放すため、この問題が表面化しなかったと
-推測される)。スレッドではGILの制約を回避できないため、`concurrent.futures`の
-`Executor`(本番では`ProcessPoolExecutor`)を介して別プロセスで`read_rank()`を
-実行するよう変更した(`_submit_tier_recheck()`/`_poll_tier_recheck()`)。
-GRACEフェーズの軽量なゲージ判定・猶予期間の満了判定自体はワーカープロセスの
-完了を待たずに進行する。前回投げた再チェックが実行中の間は多重に投げない。
-Issue #189のVS画面OCRとは異なり、`_finalize()`側で完了を待つことはしない
-(帯番号は既にGRACE突入直後の同期読み取りで暫定値を持っているため、待ってまで
-最新化する必要はないという判断。ユーザー確認済み)。そのため、再チェックの結果が
-`_finalize()`より後に届いた場合はそのまま読み捨てられ、ランクへの反映が数フレーム
-(実時間で最大約2秒程度)遅れることがあるが、シーン切替自体を遅らせない方を優先した。
+`_track_rank()`はかつて`rank_recheck_interval_seconds`おきに`read_rank()`で帯番号を
+読み直していたが、Issue #288で`read_rank()`をEasyOCR→PaddleOCRに変更したことで
+1回あたり約1.2〜1.6秒(実測)かかるようになり、`process_frame()`全体が実時間で
+最大約28秒ブロックされる事象が2026-08-09の実機動画・ログで確認された。
+当初はバックグラウンドスレッドに逃がす対策を試したが、PythonのGILがPaddleOCRの
+推論中(CPUバウンドなネイティブ計算)は1秒以上連続で解放されないことが実測で
+判明したため、Issue #303では`ProcessPoolExecutor`経由で別プロセスへ逃がしていた。
 
-`tier_recheck_executor`はコンストラクタ引数として注入可能にした(未指定時は
-`ThreadPoolExecutor`を遅延生成する)。本番では`main.py`が`ProcessPoolExecutor`を
-明示的に渡す(_make_match_state_machine参照)。テスト側は既存どおり
-`read_rank`をモンキーパッチするだけで動作する(未指定時のデフォルトが
-同一プロセス内で動く`ThreadPoolExecutor`のため、モンキーパッチが素直に効く。
-`ProcessPoolExecutor`はワーカーが別プロセスでモジュールを新規importするため
-モンキーパッチが効かず、本番用途のみに限定する理由でもある)。
+Issue #396でこの定期再チェックごと、GRACE中の帯番号OCRをすべて廃止した。
+2026-09-04・09-06の実配信3セッションの解析で、この区間の同期OCRと別プロセスへの
+フレーム受け渡し・CPU競合が「試合終了+10〜19秒(=暗転が現れる区間)」の
+検知ループ停止61回・合計92.5秒の主因になっており、0.40秒しかない暗転を
+取りこぼす原因(#383)になっていることが分かったため。
+
+現在の帯番号(整数部)は、結果バナー確定時に読み取った試合前の帯番号
+(`_pending_rank_before_tier`)を起点に、昇格演出(`is_league_change_screen`)・
+降格ラベル(`confirm_demotion_label_text`)という**帯番号OCRとは独立した信号**でのみ
+±1する(`_infer_tier_after()`)。小数部はHSVベースで軽量な`read_rank_gauge_fill()`を
+デバウンスした`_latest_gauge_fill`。GRACE中に走る重い処理は無くなった。
+
+これに伴い、帯番号OCRの誤読を前提にしていた再スキャン経路(`_begin_finalize()` /
+`_continue_rescan_wait()` / `_is_tier_change_plausible()` / `_RankPhase.RESCAN_WAIT` /
+`_fill_grace_candidate_if_missing()`)も削除した。読まなくなった値の妥当性を
+検証する必要が無いため。Issue #136で作った推測規則自体は
+`_infer_tier_from_gauge_continuity()`→`_infer_tier_after()`として残っており、
+「帯番号OCRが壊れた時のフォールバック」から「帯番号を決める唯一の方法」へ
+格上げされた形になる。
+
+この変更で`rank_after_ocr`(手動入力ページに出る参考値)の帯番号は、OCRの実測値
+ではなく上記の推測値になる。DBに最終的に残る`rank_after`・`league_changed`は
+`/rank-entry`の手動入力(`db.save_manual_rank_after()`がrank_beforeとの帯比較で
+league_changedを再計算する)が上書きするため、記録の正しさは損なわれない
+(ユーザーと合意済み)。
 
 Issue #327: Issue #303と同じ種類の不具合が、ゴール検知(`_check_for_goal`)側でも
 実配信のテストで見つかった。得点者名パネルのラベル確認(`confirm_goal_text`)・
@@ -605,7 +603,6 @@ from nss_tracker.detection.rank_ocr import (
     RANK_NUMBER_ROI_ENLARGED,
     RANK_ROI,
     read_precise_rank,
-    read_rank,
     read_rank_gauge_fill,
 )
 from nss_tracker.detection.team_color import read_team_colors
@@ -662,7 +659,6 @@ RANK_RECHECK_CHANGE_TOLERANCE = get_detection_value("match_state", "RANK_RECHECK
 # Issue #136: 試合前後で帯番号(整数)が2以上急変した場合の再スキャンまでの
 # 待機秒数。同一フレームへの再OCRは同じ誤読を繰り返すだけのため、少し時間を
 # 置いた別フレームで読み直す
-DEFAULT_RANK_TIER_RESCAN_WAIT_SECONDS = get_detection_value("match_state", "RANK_TIER_RESCAN_WAIT_SECONDS", 5.0 / 30)
 
 # Issue #136: 再スキャンしても帯番号が不自然なまま(1帯を超える変化、または
 # 昇格演出未確認の+1、または勝敗と矛盾する向きの変化)だった場合、ゲージ小数部
@@ -767,7 +763,6 @@ class _RankPhase(Enum):
     WAITING_STABLE = auto()
     GRACE = auto()
     IN_LEAGUE_CHANGE = auto()
-    RESCAN_WAIT = auto()
 
 
 @dataclass
@@ -875,12 +870,10 @@ class MatchStateMachine:
         vs_screen_confirm_seconds: float = DEFAULT_VS_SCREEN_CONFIRM_SECONDS,
         vs_screen_lockout_seconds: float = VS_SCREEN_LOCKOUT_SECONDS,
         match_end_confirm_seconds: float = DEFAULT_MATCH_END_CONFIRM_SECONDS,
-        rank_tier_rescan_wait_seconds: float = DEFAULT_RANK_TIER_RESCAN_WAIT_SECONDS,
         demotion_label_confirm_seconds: float = DEFAULT_DEMOTION_LABEL_CONFIRM_SECONDS,
         obs_switch_delay_after_blackout_seconds: float = DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS,
         obs_switch_timeout_seconds: float = DEFAULT_OBS_SWITCH_TIMEOUT_SECONDS,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
-        tier_recheck_executor: Optional["concurrent.futures.Executor"] = None,
         goal_ocr_executor: Optional["concurrent.futures.Executor"] = None,
         now_fn: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -888,7 +881,6 @@ class MatchStateMachine:
         self._league_change_grace_seconds = league_change_grace_seconds
         self._rank_recheck_interval_seconds = rank_recheck_interval_seconds
         self._vs_screen_lockout_seconds = vs_screen_lockout_seconds
-        self._rank_tier_rescan_wait_seconds = rank_tier_rescan_wait_seconds
         self._obs_switch_delay_after_blackout_seconds = obs_switch_delay_after_blackout_seconds
         self._obs_switch_timeout_seconds = obs_switch_timeout_seconds
         # Issue #388: 「同じ値が持続しているか」を確認するデバウンスは共通の
@@ -902,15 +894,10 @@ class MatchStateMachine:
         self._demotion_label_debounce = _Debounce(demotion_label_confirm_seconds)
         self._pending_gauge_debounce = _Debounce(rank_recheck_interval_seconds)
         self._rank_monitor = rank_stability_monitor or StabilityMonitor(roi=rank_roi)
-        # Issue #303: 未指定時はThreadPoolExecutorを使う(同一プロセス内で動くため
-        # テストのread_rankモンキーパッチがそのまま効く)。本番はmain.pyが
-        # ProcessPoolExecutorを明示的に渡す(モジュールdocstring参照)
-        self._tier_recheck_executor: concurrent.futures.Executor = (
-            tier_recheck_executor
-            if tier_recheck_executor is not None
-            else concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="tier-recheck")
-        )
-        # Issue #327: ゴール検知のOCR一式(_run_goal_ocr)用。考え方はtier_recheck_executorと同じ
+        # Issue #327: ゴール検知のOCR一式(_run_goal_ocr)用。未指定時は
+        # ThreadPoolExecutorを使う(同一プロセス内で動くためテストの
+        # モンキーパッチがそのまま効く)。本番はmain.pyがProcessPoolExecutorを
+        # 明示的に渡す(モジュールdocstring参照)
         self._goal_ocr_executor: concurrent.futures.Executor = (
             goal_ocr_executor
             if goal_ocr_executor is not None
@@ -943,14 +930,6 @@ class MatchStateMachine:
         # Issue #384: ランクゲージDEBUGログを値変化時のみ出力するための、
         # 直近ログ出力時の生値(_pending_gauge_fillとは別に保持する)
         self._last_logged_gauge_fill: Optional[float] = None
-        # Issue #303: 帯番号の定期再チェック(read_rank())を_tier_recheck_executorで
-        # 非同期実行するための状態(モジュールdocstring参照)。_tier_recheck_futureが
-        # 非Noneの間は多重に投げない
-        self._tier_recheck_future: Optional["concurrent.futures.Future"] = None
-        # Issue #388: 次に帯番号の再チェックを試行する時刻(None=GRACE未開始)。
-        # GRACE開始時にgrace_started_at+intervalへ設定し、以後は投入の成否に
-        # 関わらずinterval秒おきに固定間隔で進める(_track_rank参照)
-        self._next_tier_recheck_at: Optional[float] = None
         # Issue #327: ゴール検知のOCR一式(_run_goal_ocr)を_goal_ocr_executorで
         # 非同期実行するための状態。_goal_ocr_futureが非Noneの間は多重に投げない
         self._goal_ocr_future: Optional["concurrent.futures.Future"] = None
@@ -959,12 +938,10 @@ class MatchStateMachine:
         # 確認できていない限り認めない
         self._promotion_confirmed_this_match = False
         # Issue #176: 降格ラベル(is_demotion_label_candidate/confirm_demotion_label_text)を
-        # この試合中に確認できたか。_infer_tier_from_gauge_continuity()で
-        # ゲージ小数部の間接推測より優先して使う独立信号
+        # この試合中に確認できたか。_infer_tier_after()でゲージ小数部の
+        # 間接推測より優先して使う独立信号
         self._demotion_confirmed_this_match = False
         self._demotion_label_recorded_this_event = False
-        # Issue #388: 帯番号再スキャン待ちの起点(None=待機していない)
-        self._rescan_started_at: Optional[float] = None
         self._goal_recorded_this_event = False
         self._pending_goals: list[GoalEvent] = []
         self._vs_recorded_this_match = False
@@ -1333,7 +1310,7 @@ class MatchStateMachine:
 
         wait=Trueの場合(_finalize()からの呼び出し、_vs_ocr_thread.join()と同じ理由)は
         完了を待ってから取り込む。ゴールの帯番号再チェック(Issue #303の
-        _tier_recheck_future)と異なり、ゴール自体は取りこぼすとその1件が
+        帯番号の定期再チェック(Issue #396で廃止)と異なり、ゴール自体は取りこぼすとその1件が
         MatchResult.goalsに載らないまま永久に失われてしまう(次の試合の
         _pending_goalsに紛れ込ませるのはさらに悪い、誤った試合に記録されてしまう)
         ため、読み捨てを許容せず待つ設計にしている。
@@ -1550,13 +1527,15 @@ class MatchStateMachine:
 
             self._rank_phase = _RankPhase.WAITING_STABLE
             self._grace_started_at = None
-            self._grace_candidate_rank_tier = None
+            # Issue #396: GRACE中は帯番号OCRを行わないため、帯番号の起点は
+            # 結果バナー確定時に読み取った試合前の帯番号にする(モジュール
+            # docstring参照)。昇格/降格による±1は_infer_tier_after()が確定時に
+            # 適用する
+            self._grace_candidate_rank_tier = self._pending_rank_before_tier
             self._latest_gauge_fill = None
             self._pending_gauge_fill = None
             self._pending_gauge_debounce.reset()
             self._last_logged_gauge_fill = None
-            self._tier_recheck_future = None
-            self._next_tier_recheck_at = None
             self._promotion_confirmed_this_match = False
             self._demotion_confirmed_this_match = False
             self._demotion_label_debounce.reset()
@@ -1593,10 +1572,7 @@ class MatchStateMachine:
         # StabilityMonitorを不安定化させてしまい、素通りするとWAITING_STABLEへ
         # 戻ってこの確定に到達できなくなるため
         if self._grace_candidate_rank_tier is not None and is_full_blackout(frame):
-            return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank(), now)
-
-        if self._rank_phase is _RankPhase.RESCAN_WAIT:
-            return self._continue_rescan_wait(frame, now)
+            return self._finalize_from_gauge()
 
         was_stable = self._rank_monitor.is_stable
         is_stable = self._rank_monitor.update(frame)
@@ -1605,21 +1581,18 @@ class MatchStateMachine:
             if is_stable and not was_stable:
                 self._rank_phase = _RankPhase.GRACE
                 self._grace_started_at = now
-                self._next_tier_recheck_at = now + self._rank_recheck_interval_seconds
-                # 安定した瞬間(まだ画面が遷移し始めていない良いフレーム)でOCRしておく。
-                # 猶予期間の最後まで待つとバナー自体が消えかけの不安定なフレームに
-                # なりOCRが失敗しうるため、帯番号はここで確定させて使い回す。
-                # 微小なノイズで安定が何度か途切れて再試行することがあるが、
-                # 直近の試行がたまたま失敗しても直前までの正常な読み取り結果を
-                # 上書きしないよう、Noneの場合は前回値を保持する。
+                # 安定した瞬間(まだ画面が遷移し始めていない良いフレーム)で
+                # ゲージの溜まり具合を一度読み、以降の毎フレームデバウンス
+                # (_pending_gauge_fill)の起点に揃えておく。
+                # Issue #396: 以前はここでread_precise_rank()(帯番号OCR込み、
+                # 実測1.5〜1.7秒のブロック)を呼んでいたが、帯番号はGRACE中に
+                # 読まない方針へ変更したため、HSVベースの軽量な
+                # read_rank_gauge_fill()だけを呼ぶ(モジュールdocstring参照)。
                 # TRACKING_RANK中(アニメーション開始後)は常に拡大表示
-                precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
-                if precise_result is not None:
-                    self._grace_candidate_rank_tier, precise = precise_result
-                    self._latest_gauge_fill = precise - self._grace_candidate_rank_tier
-                    # Issue #235: 以降の毎フレームデバウンス(_pending_gauge_fill)の
-                    # 起点をこの初回スナップショットに揃えておく
-                    self._pending_gauge_fill = self._latest_gauge_fill
+                initial_fill = read_rank_gauge_fill(frame, GAUGE_ROI_ENLARGED)
+                if initial_fill is not None:
+                    self._latest_gauge_fill = initial_fill
+                    self._pending_gauge_fill = initial_fill
                     self._pending_gauge_debounce.reset()
                     self._pending_gauge_debounce.observe(True, now)
             return None
@@ -1683,53 +1656,9 @@ class MatchStateMachine:
         # ピクセル差分では検知できない緩やかな帯番号の変化を見逃さないよう、
         # 一定間隔で読み直して候補の帯番号が古くなっていないか確認する
         # (ゲージ小数部は上記で毎フレーム追跡済み)。
-        # Issue #303: read_rank()はIssue #288でPaddleOCRに切り替わり1回1.2〜1.6秒
-        # (実測)かかるようになった。ここを同期的に呼ぶとその間process_frame()全体が
-        # ブロックされ、グレース期間の満了判定・OBSシーン切替が実時間で最大約28秒
-        # 遅延することが実配信で確認された。スレッド化だけではPythonのGILの制約で
-        # 解決しないため_tier_recheck_executor(本番はProcessPoolExecutor)経由で
-        # 別プロセスに逃がし、結果は次フレーム以降_poll_tier_recheck()で
-        # 非ブロッキングに取り込む(モジュールdocstring参照)
-        self._poll_tier_recheck(now)
-        # Issue #388: 固定間隔での再投入試行(投入自体の成否に関わらず)。
-        # 大きなストール明けにまとめて追いつけるよう、必要ならwhileで複数回進める
-        while self._next_tier_recheck_at is not None and now >= self._next_tier_recheck_at:
-            self._submit_tier_recheck(frame)
-            self._next_tier_recheck_at += self._rank_recheck_interval_seconds
-
         if self._grace_started_at is None or (now - self._grace_started_at) < self._league_change_grace_seconds:
             return None
-        self._fill_grace_candidate_if_missing(frame)
-        return self._begin_finalize(self._grace_candidate_rank_tier, self._current_grace_rank(), now)
-
-    def _submit_tier_recheck(self, frame: np.ndarray) -> None:
-        """帯番号OCR(read_rank())を_tier_recheck_executorで非同期実行する(Issue #303)。
-
-        前回投げた再チェックがまだ完了していない間は多重に投げない
-        (_poll_tier_recheck()が完了を確認して_tier_recheck_futureをNoneに
-        戻すまで、次の投入はスキップされる)。
-        """
-        if self._tier_recheck_future is not None:
-            return
-        # Issue #383: goal-ocr投入ログと同じ理由で、CPU負荷の時間帯を突き合わせられるよう出す
-        logger.debug("帯番号再チェックを投入しました(別プロセス、tier-recheck)")
-        self._tier_recheck_future = self._tier_recheck_executor.submit(read_rank, frame, RANK_NUMBER_ROI_ENLARGED)
-
-    def _poll_tier_recheck(self, now: float) -> None:
-        """_submit_tier_recheck()の結果が届いていれば、ブロックせずに取り込む(Issue #303)。
-
-        帯番号が実際に変わっていた場合のみ_grace_candidate_rank_tierを更新し、
-        猶予期間をやり直す(以前の同期呼び出し時と同じ挙動)。まだ実行中の間は
-        何もしない。結果が_finalize()より後に届いた場合は単に読み捨てられる
-        (ランクへの反映が数フレーム遅れる程度は許容する設計、モジュールdocstring参照)。
-        """
-        if self._tier_recheck_future is None or not self._tier_recheck_future.done():
-            return
-        tier = self._tier_recheck_future.result()
-        self._tier_recheck_future = None
-        if tier is not None and tier != self._grace_candidate_rank_tier:
-            self._grace_candidate_rank_tier = tier
-            self._grace_started_at = now
+        return self._finalize_from_gauge()
 
     def _check_for_demotion_label(self, frame: np.ndarray, now: float) -> None:
         """降格ラベル(「降格」の吹き出し)を検知する(Issue #176)。
@@ -1762,121 +1691,51 @@ class MatchStateMachine:
         fill = self._latest_gauge_fill if self._latest_gauge_fill is not None else 0.0
         return self._grace_candidate_rank_tier + fill
 
-    def _fill_grace_candidate_if_missing(self, frame: np.ndarray) -> None:
-        """確定直前の時点で候補値が一度も読めていない場合のみ、最後にもう一度読み取りを試みる。
+    def _finalize_from_gauge(self) -> MatchResult:
+        """GRACE中に追跡したゲージの溜まり具合と、昇格/降格の独立信号から
+        確定値を組み立てて_finalize()する(Issue #396)。
 
-        実キャプチャ(FfmpegFrameReader)は処理が追いつかない間のフレームを間引くため、
-        GRACE突入直後にたまたまサンプリングしたフレームがバッジの遷移中で
-        読み取れず、そのまま候補が更新されないままバナーが消える(または
-        猶予期間が満了する)ことがありうる。既に有効な候補があればここでは
-        何もしない(古い正常値を上書きしない)。
-
-        呼び出し元はいずれも_RankPhase.GRACE中(ランク変動アニメーション開始後)
-        のため、常に拡大表示のROIを使う。
+        帯番号(整数部)はGRACE中にOCRしない。試合前の帯番号
+        (`_pending_rank_before_tier`、結果バナー確定時に読み取ったもの)を起点に、
+        昇格演出(`is_league_change_screen`)・降格ラベル(`confirm_demotion_label_text`)
+        という帯番号OCRとは独立した信号でのみ±1する(_infer_tier_after参照)。
+        小数部はHSVベースの`read_rank_gauge_fill`をデバウンスした`_latest_gauge_fill`。
         """
-        if self._grace_candidate_rank_tier is not None:
-            return
-        precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
-        if precise_result is not None:
-            self._grace_candidate_rank_tier, precise = precise_result
-            self._latest_gauge_fill = precise - self._grace_candidate_rank_tier
+        tier_after, rank_after = self._infer_tier_after()
+        return self._finalize(tier_after, rank_after)
 
-    def _begin_finalize(
-        self, tier: Optional[int], rank: Optional[float], now: float
-    ) -> Optional[MatchResult]:
-        """帯番号確定前の最終チェック(Issue #136)。不自然な急変ならすぐには確定せず、
-        少し時間を置いて再スキャンする。
-        """
-        if self._is_tier_change_plausible(tier):
-            return self._finalize(tier, rank)
-        logger.warning(
-            "%d試合目: 帯番号が不自然に変化しています(before=%s after=%s)。"
-            "%.2f秒後に再スキャンします",
-            self._session_match_no,
-            self._pending_rank_before_tier,
-            tier,
-            self._rank_tier_rescan_wait_seconds,
-        )
-        self._rescan_started_at = now
-        self._rank_phase = _RankPhase.RESCAN_WAIT
-        return None
+    def _infer_tier_after(self) -> tuple[Optional[int], Optional[float]]:
+        """確定時の帯番号(整数)と、それに小数部を足したランク値を決める(Issue #396)。
 
-    def _continue_rescan_wait(self, frame: np.ndarray, now: float) -> Optional[MatchResult]:
-        if (now - self._rescan_started_at) < self._rank_tier_rescan_wait_seconds:
-            return None
-        precise_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
-        if precise_result is not None:
-            tier, rank = precise_result
-        else:
-            tier, rank = self._grace_candidate_rank_tier, self._current_grace_rank()
-        if self._is_tier_change_plausible(tier):
-            return self._finalize(tier, rank)
-        logger.warning(
-            "%d試合目: 再スキャンでも帯番号が不自然なままのため(after=%s)、"
-            "ゲージ小数部の連続性から補正します",
-            self._session_match_no,
-            tier,
-        )
-        corrected_tier, corrected_rank = self._infer_tier_from_gauge_continuity(tier, rank)
-        return self._finalize(corrected_tier, corrected_rank)
+        Issue #136で「帯番号OCRが不自然な値を返した場合の最終フォールバック」
+        として作った_infer_tier_from_gauge_continuity()を、GRACE中の帯番号OCRを
+        廃止したことにより**唯一の決定方法**へ格上げしたもの。判定規則自体は
+        当時のまま:
 
-    def _is_tier_change_plausible(self, tier_after: Optional[int]) -> bool:
-        """試合前後の帯番号の変化が、ゲームの仕様上ありうるものか検証する(Issue #136)。
+        - 昇格はis_league_change_screen()で独立確認できた場合のみ+1する
+        - 降格はconfirm_demotion_label_text()(Issue #176)で独立確認できていれば
+          -1する。確認できていない場合は「負けているのにゲージ小数部が
+          RANK_TIER_WRAP_MIN_MAGNITUDEを超えて増えて見える(0を割り込んで前の帯へ
+          巻き戻ったように見える)」という間接的な判定にフォールバックする
+        - それ以外(勝ち・引き分け、または負けでも矛盾がしきい値未満かつ降格ラベル
+          未確認)は帯番号を変えず、小数部だけを採用する(ゲージが全く動かない
+          引き分けも含め、変な値に書き換えないという方針)
 
-        1試合での帯変化は昇格/降格いずれも1帯までしか起こらない。さらに
-        「勝ったら降格しない/負けたら昇格しない」というゲーム仕様(ユーザー確認済み)
-        より、昇格(+1)は勝ちかつ昇格演出(is_league_change_screen)を確認できて
-        いる場合のみ、降格(-1)は負けの場合のみ許容する。引き分けはゲージ自体が
-        全く動かない仕様のため、変化無し(0)以外は常に不自然とみなす。
-
-        Issue #202: 変化無し(0)は上記に加えて、降格ラベル(is_demotion_label_candidate/
-        confirm_demotion_label_text、Issue #176)を確認できている負け試合では不自然と
-        みなす。降格ラベルという独立信号で降格の発生自体は確認できているにも
-        関わらず帯番号OCRが「変化なし」に化けてしまったケースを、他の帯番号急変
-        ケースと同じ再スキャン経路(_begin_finalize→_continue_rescan_wait→
-        _infer_tier_from_gauge_continuity)に合流させ、最終的にtier_before-1として
-        記録できるようにするため。
-        """
-        tier_before = self._pending_rank_before_tier
-        if tier_before is None or tier_after is None:
-            return True
-        delta = tier_after - tier_before
-        if delta == 0:
-            return not (self._pending_result == "lose" and self._demotion_confirmed_this_match)
-        if delta == 1:
-            return self._pending_result == "win" and self._promotion_confirmed_this_match
-        if delta == -1:
-            return self._pending_result == "lose"
-        return False
-
-    def _infer_tier_from_gauge_continuity(
-        self, tier_ocr: Optional[int], rank_value: Optional[float]
-    ) -> tuple[Optional[int], Optional[float]]:
-        """再スキャンしても帯番号が不自然なままの場合の最終フォールバック(Issue #136)。
-
-        数値OCR(帯番号)ではなく、ゲージの溜まり具合(HSVベースの独立信号、
-        read_precise_rankの戻り値からtier_ocrを差し引いて復元する)の連続性と
-        勝敗結果を使って帯番号を推測し直す。
-
-        昇格はis_league_change_screen()で独立確認済みの場合のみそれを正として
-        採用する。降格はIssue #176でis_demotion_label_candidate()/
-        confirm_demotion_label_text()による独立確認信号を追加したため、
-        この試合中に確認できていればそれを優先して1帯下げる。確認できて
-        いない場合は従来どおり「負けているのにゲージ小数部が
-        RANK_TIER_WRAP_MIN_MAGNITUDEを超えて増えて見える(0を割り込んで前の帯に
-        巻き戻ったように見える)」という間接的な判定にフォールバックする
-        (見逃しても既存の正しさは損なわれない設計、モジュールdocstring参照)。
-        それ以外(勝ち・引き分け、または負けでも矛盾がしきい値未満・降格ラベルも
-        未確認)は帯番号を変えず、小数部だけをそのまま採用する(ゲージが全く
-        動かない引き分けも含め、変な値に書き換えないという方針)。
+        試合前の帯番号・ランク値が読めていない試合(ランクを賭けない試合等)は
+        値を捏造せずNoneのまま返す。
         """
         tier_before = self._pending_rank_before_tier
         rank_before = self._pending_rank_before
-        if tier_before is None or rank_before is None or rank_value is None:
-            return tier_ocr, rank_value
+        if tier_before is None or rank_before is None:
+            return None, None
+        if self._latest_gauge_fill is None:
+            # ゲージを一度も読めていない。帯番号だけは分かっているが、小数部を
+            # 0.0と決めつけると実態とかけ離れた値になるため値は返さない
+            # (rank_afterは手動入力で確定させる運用、Issue #305系)
+            return tier_before, None
 
         frac_before = rank_before - tier_before
-        frac_after = rank_value - tier_ocr if tier_ocr is not None else rank_value - tier_before
+        frac_after = self._latest_gauge_fill
 
         if self._promotion_confirmed_this_match:
             return tier_before + 1, tier_before + 1 + frac_after

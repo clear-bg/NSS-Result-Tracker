@@ -9,7 +9,13 @@ import pytest
 import nss_tracker.state.match_state as match_state_module
 from conftest import requires_video_fixtures
 from nss_tracker.detection.motion import StabilityMonitor
-from nss_tracker.detection.rank_ocr import GAUGE_ROI_COMPACT, GAUGE_ROI_ENLARGED, RANK_ROI
+from nss_tracker.detection.rank_ocr import (
+    GAUGE_ROI_COMPACT,
+    GAUGE_ROI_ENLARGED,
+    RANK_NUMBER_ROI_COMPACT,
+    RANK_NUMBER_ROI_ENLARGED,
+    RANK_ROI,
+)
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchStateMachine
 
@@ -498,7 +504,6 @@ def test_rank_read_failure_is_logged(monkeypatch, caplog):
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: None)
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: None)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
@@ -559,7 +564,6 @@ def test_rank_read_failure_still_reports_confirmed_demotion_label(monkeypatch):
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: None)
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: None)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: True)
     monkeypatch.setattr(match_state_module, "confirm_demotion_label_text", lambda frame: True)
@@ -684,7 +688,6 @@ def test_read_rank_before_returns_none_when_ocr_completely_fails_even_with_vs_sc
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: None)
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: None)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
 
@@ -736,7 +739,6 @@ def test_track_rank_grace_tracks_slow_drift_every_frame(monkeypatch):
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", fake_read_rank_gauge_fill)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: 40)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
@@ -800,7 +802,6 @@ def test_track_rank_grace_debounces_transition_spike_and_fade_noise(monkeypatch)
         match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (39, 39.10)
     )
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", fake_read_rank_gauge_fill)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: 39)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
@@ -839,7 +840,6 @@ def test_track_rank_grace_logs_gauge_value_every_frame_at_debug_level(monkeypatc
         match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (39, 39.10)
     )
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.10)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: 39)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
@@ -883,136 +883,13 @@ def test_check_for_vs_screen_no_longer_logs_hsv_debug(monkeypatch, caplog):
     assert "VS_ROI HSV" not in caplog.text
 
 
-def test_track_rank_periodic_recheck_catches_tier_change(monkeypatch):
-    """GRACE突入直後の読み取りでは帯番号の変化(降格)がまだ反映されていない場合でも、
-    定期的な再読み取りで正しい帯番号・league_changedにたどり着けることを確認する
-    (fixtures/videos/03_lose_blue_2-3.mp4のような、降格演出が専用の全画面演出として
-    出ないケースの回帰防止)。
-    """
+def test_win_without_promotion_keeps_tier_and_takes_gauge_fraction_only(monkeypatch):
+    """勝ちだが昇格演出を確認できていない試合は、帯番号を変えずゲージ小数部だけを
+    採用することを確認する(Issue #136 / #396)。
 
-    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
-        return (40, 40.09)  # 結果バナー時点(before)・GRACE突入直後とも降格前の帯のまま
-
-    tier_sequence = [40, 40, 39]
-    tier_calls = {"n": 0}
-
-    def fake_read_rank(frame, roi):
-        idx = min(tier_calls["n"], len(tier_sequence) - 1)
-        tier_calls["n"] += 1
-        return tier_sequence[idx]
-
-    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
-    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
-    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 1.0)
-    monkeypatch.setattr(match_state_module, "read_rank", fake_read_rank)
-    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
-
-    machine = MatchStateMachine(
-        now_fn=FakeClock(),
-        banner_confirm_seconds=2,
-        league_change_grace_seconds=10,
-        rank_recheck_interval_seconds=3,
-        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
-    )
-
-    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
-    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
-    machine._vs_confirmed_this_match = True
-    # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
-    # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 40)]
-    frame = np.zeros((10, 10, 3), dtype=np.uint8)
-    result = None
-    for _ in range(60):
-        result = machine.process_frame(frame)
-        # Issue #303: 帯番号の定期再チェックが非同期(_tier_recheck_executor)に
-        # なったため、_vs_ocr_thread.join()と同じ考え方でテストの決定性のために
-        # 完了を待つ(結果の反映自体は次のprocess_frame()の_poll_tier_recheck()で行われる)
-        if machine._tier_recheck_future is not None:
-            machine._tier_recheck_future.result()
-        if result is not None:
-            break
-
-    assert result is not None, "MatchResultが確定しなかった"
-    assert result.rank_after == pytest.approx(40.0)
-    assert result.league_changed == "down", (
-        f"降格を見逃している(帯の変化が反映される前の値で確定した): {result.league_changed}"
-    )
-
-
-def test_tier_jump_recovers_via_rescan(monkeypatch):
-    """試合前後で帯番号が不自然に急変(38→15)しても、数フレーム後の再スキャンで
-    正しい値(38→39、昇格演出確認済み)にたどり着けることを確認する(Issue #136)。
-    値は目視ではなくこのテストのために意図的に用意した架空のシーケンスであり、
-    実装の出力を転記したものではない。
-    """
-    read_calls = {"n": 0}
-    raw_calls = {"n": 0}
-
-    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
-        raw_calls["n"] += 1
-        if raw_calls["n"] == 2:
-            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
-            # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
-            return None
-        read_calls["n"] += 1
-        if read_calls["n"] == 1:
-            return (38, 38.2)  # 結果バナー時点(before)
-        if read_calls["n"] == 2:
-            return (15, 15.5)  # GRACE突入直後の誤読み(不自然な急変)
-        return (39, 39.3)  # 再スキャン後の正しい値(昇格演出確認済み)
-
-    league_change_calls = {"n": 0}
-
-    def fake_is_league_change_screen(frame):
-        league_change_calls["n"] += 1
-        return league_change_calls["n"] == 1
-
-    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
-    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
-    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.5)
-    monkeypatch.setattr(match_state_module, "is_league_change_screen", fake_is_league_change_screen)
-    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
-
-    machine = MatchStateMachine(
-        now_fn=FakeClock(),
-        banner_confirm_seconds=2,
-        league_change_grace_seconds=3,
-        rank_recheck_interval_seconds=1000,
-        rank_tier_rescan_wait_seconds=3,
-        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
-    )
-
-    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
-    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
-    machine._vs_confirmed_this_match = True
-    # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
-    # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 38)]
-    frame = np.zeros((10, 10, 3), dtype=np.uint8)
-    result = None
-    for _ in range(60):
-        result = machine.process_frame(frame)
-        if result is not None:
-            break
-
-    assert result is not None, "MatchResultが確定しなかった"
-    assert result.rank_after == pytest.approx(39.3)
-    assert result.league_changed == "up"
-
-
-def test_tier_jump_falls_back_to_gauge_continuity_when_rescan_still_implausible_win(monkeypatch):
-    """再スキャンしても帯番号が不自然なまま(勝ちなのに降格演出未確認)の場合、
-    帯番号は変えずゲージ小数部の連続性だけを採用することを確認する(Issue #136)。
+    Issue #136時点は「帯番号OCRが不自然な値を返し、再スキャンしても直らない場合の
+    フォールバック」だったが、Issue #396でGRACE中の帯番号OCRを廃止したため、
+    この規則が帯番号を決める唯一の方法になった(_infer_tier_after参照)。
     """
     read_calls = {"n": 0}
     raw_calls = {"n": 0}
@@ -1045,7 +922,6 @@ def test_tier_jump_falls_back_to_gauge_continuity_when_rescan_still_implausible_
         banner_confirm_seconds=2,
         league_change_grace_seconds=3,
         rank_recheck_interval_seconds=1000,
-        rank_tier_rescan_wait_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1067,10 +943,11 @@ def test_tier_jump_falls_back_to_gauge_continuity_when_rescan_still_implausible_
     assert result.league_changed is None
 
 
-def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monkeypatch):
-    """負け試合で再スキャンしても帯番号が不自然なままの場合、ゲージ小数部が
-    0を割り込んで大きく増えて見える(0.2→0.9)ことから降格と推測し、
-    帯番号を1つ下げて記録することを確認する(Issue #136)。
+def test_lose_with_gauge_wraparound_infers_demotion(monkeypatch):
+    """負け試合でゲージ小数部が0を割り込んで大きく増えて見える(0.2→0.9)場合は
+    降格と推測し、帯番号を1つ下げて記録することを確認する(Issue #136 / #396)。
+
+    降格ラベル(独立信号)を確認できなかった場合のフォールバック経路。
     """
     read_calls = {"n": 0}
     raw_calls = {"n": 0}
@@ -1103,7 +980,6 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
         banner_confirm_seconds=2,
         league_change_grace_seconds=3,
         rank_recheck_interval_seconds=1000,
-        rank_tier_rescan_wait_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1125,9 +1001,9 @@ def test_tier_jump_falls_back_to_demotion_via_gauge_continuity_when_losing(monke
     assert result.league_changed == "down"
 
 
-def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
-    """引き分け試合はゲージが全く動かない仕様のため、再スキャンしても帯番号が
-    不自然なままの場合は常に試合前の帯番号を据え置くことを確認する(Issue #136)。
+def test_draw_always_keeps_tier_unchanged(monkeypatch):
+    """引き分け試合はゲージが全く動かない仕様のため、常に試合前の帯番号を
+    据え置くことを確認する(Issue #136 / #396)。
     """
     read_calls = {"n": 0}
     raw_calls = {"n": 0}
@@ -1160,7 +1036,6 @@ def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
         banner_confirm_seconds=2,
         league_change_grace_seconds=3,
         rank_recheck_interval_seconds=1000,
-        rank_tier_rescan_wait_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1182,9 +1057,9 @@ def test_tier_jump_falls_back_to_unchanged_tier_on_draw(monkeypatch):
     assert result.rank_after == pytest.approx(38.9)
 
 
-def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magnitude_is_small(monkeypatch):
+def test_demotion_label_wins_over_small_gauge_magnitude(monkeypatch):
     """Issue #176: 降格ラベルを独立信号として確認できた場合、ゲージ小数部の
-    増加幅がRANK_TIER_WRAP_MIN_MAGNITUDE未満(従来の間接推測だけでは降格と
+    増加幅がRANK_TIER_WRAP_MIN_MAGNITUDE未満(ゲージの連続性だけでは降格と
     判断できない)であっても、帯番号を1つ下げて記録することを確認する。
     """
     read_calls = {"n": 0}
@@ -1219,7 +1094,6 @@ def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magni
         banner_confirm_seconds=2,
         league_change_grace_seconds=3,
         rank_recheck_interval_seconds=1000,
-        rank_tier_rescan_wait_seconds=3,
         demotion_label_confirm_seconds=2,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
@@ -1242,12 +1116,74 @@ def test_tier_jump_falls_back_to_demotion_via_independent_label_when_gauge_magni
     assert result.league_changed == "down"
 
 
+def test_grace_never_calls_tier_ocr_and_seeds_tier_from_rank_before(monkeypatch):
+    """Issue #396: TRACKING_RANK(GRACE)中は帯番号OCRを一切呼ばず、帯番号は
+    結果バナー確定時に読み取った試合前の値を起点にすることを確認する。
+
+    read_precise_rank()が呼ばれるのは_read_rank_before()(結果バナー確定時、
+    コンパクト/拡大の2回)だけで、GRACE中は軽量なread_rank_gauge_fill()しか
+    呼ばれない。この2つが#383の「検知ループの盲区」の主因(1回1.5〜1.7秒の
+    ブロック)だったため、呼ばれないこと自体が本Issueの成果物になる。
+    """
+    precise_rois = []
+    gauge_calls = {"n": 0}
+
+    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
+        precise_rois.append(rank_number_roi)
+        # コンパクト側だけ成功させる(拡大側は_read_rank_before()のフォールバック)
+        return (38, 38.2) if rank_number_roi == RANK_NUMBER_ROI_COMPACT else None
+
+    def fake_read_rank_gauge_fill(frame, roi):
+        gauge_calls["n"] += 1
+        return 0.5
+
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
+    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", fake_read_rank_gauge_fill)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+
+    machine = MatchStateMachine(
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        league_change_grace_seconds=3,
+        rank_recheck_interval_seconds=1,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
+    )
+    machine._vs_confirmed_this_match = True
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 38)]
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    result = None
+    for _ in range(60):
+        result = machine.process_frame(frame)
+        if result is not None:
+            break
+
+    assert result is not None, "MatchResultが確定しなかった"
+    assert len(precise_rois) == 2, (
+        f"read_precise_rank()は結果バナー確定時の2回だけのはず(実際: {len(precise_rois)}回)"
+    )
+    assert precise_rois == [RANK_NUMBER_ROI_COMPACT, RANK_NUMBER_ROI_ENLARGED]
+    assert gauge_calls["n"] > 2, "GRACE中はread_rank_gauge_fill()で追跡し続けるはず"
+    # 昇格演出も降格ラベルも無いため帯番号は試合前(38)のまま、小数部はゲージの値
+    assert result.rank_after == pytest.approx(38.5)
+    assert result.league_changed is None
+
+
 def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(monkeypatch):
-    """Issue #202: 降格ラベルを確認できているのに帯番号OCRが「変化なし」を
-    返し続けた場合でも、再スキャン経路に合流して最終的に帯番号を1つ下げて
-    記録することを確認する(_is_tier_change_plausibleがdelta=0を無条件に
-    許容していたため、この独立信号が一切参照されずに降格が記録から漏れる
-    バグの回帰テスト)。
+    """Issue #202/#396: 降格ラベル(独立信号)を確認できていれば、帯番号を1つ下げて
+    記録することを確認する。
+
+    Issue #202時点は「帯番号OCRが変化なしを返し続けても再スキャン経路に合流して
+    降格を記録する」という形のテストだったが、Issue #396でGRACE中の帯番号OCR自体を
+    廃止したため、帯番号は常に試合前の帯を起点に独立信号だけで±1する
+    (_infer_tier_after参照)。確認したい挙動(降格ラベルを確認できた負け試合は
+    1帯下がって記録される)は変わっていない。
     """
     read_calls = {"n": 0}
     raw_calls = {"n": 0}
@@ -1263,7 +1199,7 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
             return (38, 38.2)  # before(小数部0.2)
         if read_calls["n"] == 2:
             return (38, 38.3)  # GRACE突入直後(帯番号は変化なしのまま)
-        return (38, 38.4)  # 再スキャンでも変化なしのまま
+        return (38, 38.4)  # (Issue #396以降、GRACE中はこの経路自体が呼ばれない)
 
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
@@ -1281,7 +1217,6 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
         banner_confirm_seconds=2,
         league_change_grace_seconds=3,
         rank_recheck_interval_seconds=1000,
-        rank_tier_rescan_wait_seconds=3,
         demotion_label_confirm_seconds=2,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
@@ -1300,7 +1235,8 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
             break
 
     assert result is not None, "MatchResultが確定しなかった"
-    assert result.rank_after == pytest.approx(37.4)
+    # 帯番号は38-1=37、小数部はGRACE中に追跡したゲージの値(0.3)
+    assert result.rank_after == pytest.approx(37.3)
     assert result.league_changed == "down"
 
 
@@ -1338,7 +1274,6 @@ def test_unchanged_tier_stays_plausible_without_demotion_confirmation(monkeypatc
         banner_confirm_seconds=2,
         league_change_grace_seconds=3,
         rank_recheck_interval_seconds=1000,
-        rank_tier_rescan_wait_seconds=3,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
 
@@ -1397,7 +1332,6 @@ def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(mo
         banner_confirm_seconds=2,
         league_change_grace_seconds=3,
         rank_recheck_interval_seconds=1000,
-        rank_tier_rescan_wait_seconds=3,
         demotion_label_confirm_seconds=2,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
     )
@@ -1418,74 +1352,6 @@ def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(mo
     assert result is not None, "MatchResultが確定しなかった"
     assert result.league_changed is None
     assert result.rank_after == pytest.approx(38.3)
-
-
-def test_fill_grace_candidate_if_missing_uses_enlarged_roi(monkeypatch):
-    """GRACE中に候補値が一度も読み取れないまま確定に至った場合の最後のリトライ
-    (_fill_grace_candidate_if_missing)は、常に拡大表示用のROI(GAUGE_ROI_ENLARGED)を
-    使うことを確認する。GRACE中はランク変動アニメーション開始後の文脈のため、
-    結果バナー確定直後専用のGAUGE_ROI_COMPACTを誤って使うとバー幅がずれて
-    誤ったゲージ値を返してしまう。
-    """
-    rois_used: list[tuple[int, int, int, int]] = []
-    banner_call_count = {"n": 0}
-
-    def fake_classify_banner(frame):
-        banner_call_count["n"] += 1
-        # Issue #388: banner_confirm_seconds=2(FakeClock step=1.0)を確定させるには
-        # 経過2.0秒(=3回分のスパン)必要なため、最初の3回は"lose"を返して
-        # TRACKING_RANKへ遷移させ、GRACE突入後の最初の呼び出しでNoneを返して
-        # バナー消失(即確定)を発生させる
-        return "lose" if banner_call_count["n"] <= 3 else None
-
-    def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
-        rois_used.append(gauge_roi)
-        # 結果バナー確定直後(コンパクト表示、Issue #222対応で拡大側への
-        # フォールバックも試みるが失敗させる)・GRACE突入直後(拡大表示)の
-        # 読み取りはいずれも失敗させ、候補が一度も埋まらない状況を再現する。
-        # _fill_grace_candidate_if_missingによる最後のリトライだけ成功させる
-        if len(rois_used) <= 3:
-            return None
-        return (40, 40.5)
-
-    monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
-    monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
-    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: None)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
-    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
-    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
-
-    machine = MatchStateMachine(
-        now_fn=FakeClock(),
-        banner_confirm_seconds=2,
-        league_change_grace_seconds=10,
-        rank_recheck_interval_seconds=3,
-        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=2),
-    )
-
-    # Issue #229: 試合の区切りをVS画面確定に一本化したため、このテストの
-    # 関心事(VS画面確定より後の挙動)を検証するには、VS画面を確認済みとして扱う
-    machine._vs_confirmed_this_match = True
-    # Issue #235: VS画面でランクを検知した(=ランクを賭けた)試合として扱うための
-    # ショートカット(_vs_confirmed_this_matchと同じ理由でVS画面確定の全過程は再現しない)
-    machine._pending_vs_mine_ranks = [SlotRank("∞", 1)]
-    frame = np.zeros((10, 10, 3), dtype=np.uint8)
-    result = None
-    for _ in range(60):
-        result = machine.process_frame(frame)
-        if result is not None:
-            break
-
-    assert result is not None, "MatchResultが確定しなかった"
-    assert result.rank_after == pytest.approx(40.5)
-    assert rois_used[0] == GAUGE_ROI_COMPACT, "結果バナー確定直後の読み取りはコンパクト表示ROIのはず"
-    assert rois_used[-1] == GAUGE_ROI_ENLARGED, (
-        f"_fill_grace_candidate_if_missingが拡大表示ROIを使っていない: {rois_used[-1]}"
-    )
 
 
 def test_promotion_during_grace_period_is_caught(monkeypatch):
@@ -1521,7 +1387,9 @@ def test_promotion_during_grace_period_is_caught(monkeypatch):
         return (38, 38.06)  # 昇格後
 
     def fake_read_rank_gauge_fill(frame, roi):
-        return 0.98 if precise_calls["n"] <= 3 else 0.06
+        # Issue #396: GRACE中は帯番号OCRを行わなくなったため、演出の前後は
+        # read_precise_rankの呼び出し回数ではなく昇格演出の到達で切り替える
+        return 0.98 if league_change_calls["n"] < PROMOTION_AT_CALL else 0.06
 
     banner_call_count = {"n": 0}
 
@@ -1535,7 +1403,6 @@ def test_promotion_during_grace_period_is_caught(monkeypatch):
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", fake_read_precise_rank)
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", fake_read_rank_gauge_fill)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", fake_is_league_change_screen)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
@@ -1588,7 +1455,6 @@ def test_no_promotion_during_grace_period_still_finalizes_after_full_timeout(mon
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (37, 37.98))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.98)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: 37)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
@@ -1640,7 +1506,6 @@ def test_full_blackout_triggers_immediate_finalize_bypassing_grace_timeout(monke
     monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: (37, 37.40))
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.40)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: 37)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
@@ -2627,7 +2492,6 @@ def test_obs_switch_uses_first_blackout_even_when_finalize_is_delayed(monkeypatc
     monkeypatch.setattr(match_state_module, "classify_banner", fake_classify_banner)
     monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: None)
     monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: None)
-    monkeypatch.setattr(match_state_module, "read_rank", lambda frame, roi: None)
     monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
     monkeypatch.setattr(match_state_module, "is_full_blackout", fake_is_full_blackout)
