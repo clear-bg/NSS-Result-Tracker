@@ -49,7 +49,8 @@ mean()/std()で処理しており、実測8ms前後かかる重い処理だっ�
 変えていない。
 """
 
-from typing import Iterable, Optional, TypeVar
+import threading
+from typing import Iterable, NamedTuple, Optional, TypeVar
 
 import cv2
 import numpy as np
@@ -105,6 +106,63 @@ def is_full_blackout(frame: np.ndarray) -> bool:
     """
     mean, std = frame_brightness_stats(frame)
     return bool(mean <= FULL_BLACKOUT_MAX_MEAN_BRIGHTNESS and std <= FULL_BLACKOUT_MAX_BRIGHTNESS_STD)
+
+
+class BlackoutObservation(NamedTuple):
+    """`BlackoutWatcher.consume()`の戻り値(Issue #398)。
+
+    blackout: 前回のconsume()以降に届いたフレームのうち1枚でも暗転だったか
+    min_mean/min_std: 同区間で最も暗かったフレームの輝度平均・標準偏差
+                      (1枚も観測していない場合はNone)
+    """
+
+    blackout: bool
+    min_mean: Optional[float]
+    min_std: Optional[float]
+
+
+class BlackoutWatcher:
+    """届いたフレームすべてに対して暗転判定を行い、区間ごとの結果をまとめて返す(Issue #398)。
+
+    暗転(実測0.40〜0.42秒、60fpsで24〜25フレーム)は、検知ループが重い処理で
+    1.3〜4.8秒止まっている間に丸ごと過ぎ去ってしまうことがある(Issue #383)。
+    `observe()`を`capture.FfmpegFrameReader`の読み取りスレッド側から毎フレーム
+    呼ぶことで、メインループが何秒止まっていても暗転を取りこぼさなくなる。
+
+    `frame_brightness_stats()`はIssue #387の間引きで0.19ms/frame(60fps予算の
+    約1%)まで軽くなっているため、読み取りスレッドで全フレームに対して実行しても
+    フレーム取得を妨げない。
+
+    `observe()`(読み取りスレッド)と`consume()`(メインループ)が並行して呼ばれる
+    ため、内部状態はロックで保護する。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._blackout = False
+        self._min_mean: Optional[float] = None
+        self._min_std: Optional[float] = None
+
+    def observe(self, frame: np.ndarray) -> None:
+        mean, std = frame_brightness_stats(frame)
+        is_blackout = mean <= FULL_BLACKOUT_MAX_MEAN_BRIGHTNESS and std <= FULL_BLACKOUT_MAX_BRIGHTNESS_STD
+        with self._lock:
+            if is_blackout:
+                self._blackout = True
+            if self._min_mean is None or mean < self._min_mean:
+                self._min_mean = mean
+                self._min_std = std
+
+    def consume(self) -> BlackoutObservation:
+        """前回のconsume()以降の観測結果を返し、内部状態をリセットする。"""
+        with self._lock:
+            observation = BlackoutObservation(
+                blackout=self._blackout, min_mean=self._min_mean, min_std=self._min_std
+            )
+            self._blackout = False
+            self._min_mean = None
+            self._min_std = None
+        return observation
 
 
 def region_diff(prev_frame: np.ndarray, curr_frame: np.ndarray, roi: tuple[int, int, int, int]) -> float:

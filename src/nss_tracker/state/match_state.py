@@ -518,6 +518,19 @@ Issue #395: 上記の前倒し(#371)を入れてもなお、暗転そのもの�
 隠したことがログから見えないと、根本対策を入れた後に「暗転の取りこぼしが実際に
 減ったのか」を測る手段が無くなるため。
 
+Issue #398: 上記の安全網(#395)とは別に、暗転そのものを取りこぼさないための
+根本対策として、暗転の判定を`capture.FfmpegFrameReader`の読み取りスレッド側へ
+移せるようにした。`read()`は「その時点の最新フレーム」しか返さないため、
+検知ループが重い処理で止まっている間に届いたフレームは読み捨てられる。
+0.40秒(60fpsで24〜25枚)しかない暗転はここで丸ごと失われうる。
+
+`detection.motion.BlackoutWatcher`が読み取りスレッドから全フレームを観測し、
+`process_frame(frame, blackout)`の第2引数として「前回の呼び出し以降に暗転を
+観測したか・その区間の最小輝度」を受け取る。渡された場合は暗転の判定に
+このフレーム単体ではなく観測結果を使う(`_check_pending_obs_switch()`・
+`_track_rank()`の暗転即時確定パスの両方)。省略時は従来どおりこのフレーム単体を
+`is_full_blackout()`で判定するため、既存のテスト・呼び出しはそのまま動く。
+
 Issue #222: 結果バナー確定直後の`rank_before`読み取り(`_watch_for_banner()`)が、
 負け試合を中心に`None`(読み取り失敗)になる不具合を調査した。バナー確定直後は
 「まだコンパクト表示のはず」という前提で`GAUGE_ROI_COMPACT`/`RANK_NUMBER_ROI_COMPACT`
@@ -609,7 +622,12 @@ from nss_tracker.detection.league_change import (
 )
 from nss_tracker.detection.match_end import confirm_match_end_text, is_match_end_screen
 from nss_tracker.detection.matchmaking import is_vs_screen
-from nss_tracker.detection.motion import StabilityMonitor, frame_brightness_stats, is_full_blackout
+from nss_tracker.detection.motion import (
+    BlackoutObservation,
+    StabilityMonitor,
+    frame_brightness_stats,
+    is_full_blackout,
+)
 from nss_tracker.detection.rank_ocr import (
     GAUGE_ROI_COMPACT,
     GAUGE_ROI_ENLARGED,
@@ -1104,7 +1122,18 @@ class MatchStateMachine:
         self._vs_screen_event = None
         return event
 
-    def process_frame(self, frame: np.ndarray) -> Optional[MatchResult]:
+    def process_frame(
+        self, frame: np.ndarray, blackout: Optional[BlackoutObservation] = None
+    ) -> Optional[MatchResult]:
+        """フレームを1枚処理する。
+
+        Issue #398: blackoutには、前回のprocess_frame()以降にキャプチャ側が
+        受け取った全フレームの暗転観測結果(detection.motion.BlackoutWatcher)を
+        渡せる。渡された場合、暗転の判定にはこのフレーム単体ではなくその観測結果を
+        使う(検知ループが重い処理で止まっている間に過ぎ去った0.40秒の暗転を
+        取りこぼさないため、モジュールdocstring参照)。省略した場合は従来どおり
+        このフレーム単体をis_full_blackout()で判定する。
+        """
         # Issue #388: このフレームの処理全体を通して同じ時刻を使う
         # (デバウンス判定の途中で時刻がずれないよう、1回だけ取得する)
         now = self._now_fn()
@@ -1114,7 +1143,7 @@ class MatchStateMachine:
             self._check_for_match_end(frame, now)
             result = self._watch_for_banner(frame, now)
         elif self._state is _State.TRACKING_RANK:
-            result = self._track_rank(frame, now)
+            result = self._track_rank(frame, now, blackout)
         else:
             result = self._watch_for_banner_absence(frame, now)
         # Issue #224: 状態振り分けの「後」で呼ぶこと。_finalize()がis_full_blackout()
@@ -1122,7 +1151,7 @@ class MatchStateMachine:
         # _pending_obs_switchがTrueになるのはこのprocess_frame()呼び出しの
         # 途中(_track_rank内)のため、先頭で呼ぶとまだFalseのまま素通りしてしまい、
         # 同じフレームが暗転そのものであることに気づけない(モジュールdocstring参照)
-        self._check_pending_obs_switch(frame, now)
+        self._check_pending_obs_switch(frame, now, blackout)
         # Issue #327: ゴールOCRの結果が届いた時点で状態がWATCHINGから進んでいても
         # (_pending_goalsへの追加は_finalize()まで有効なため)取りこぼさないよう、
         # 状態に関わらず毎フレーム呼ぶ(_check_pending_obs_switchと同じ考え方)
@@ -1132,7 +1161,9 @@ class MatchStateMachine:
         self._poll_vs_ocr()
         return result
 
-    def _check_pending_obs_switch(self, frame: np.ndarray, now: float) -> None:
+    def _check_pending_obs_switch(
+        self, frame: np.ndarray, now: float, blackout: Optional[BlackoutObservation] = None
+    ) -> None:
         """Issue #224: 「試合終了」確認済みで暗転待ちの間、毎フレーム暗転を監視する。
 
         暗転を最初に検知した瞬間からobs_switch_delay_after_blackout_seconds分の
@@ -1209,7 +1240,16 @@ class MatchStateMachine:
             # (判定結果は変えない)。Issue #387: 両方とも間引き済みの
             # frame_brightness_stats()を経由するため、2回呼んでも合計2ms程度
             # (メソッドdocstring参照)
-            mean, std = frame_brightness_stats(frame)
+            # Issue #398: キャプチャ側の観測結果があればそちらを使う
+            # (メインループが止まっていた間のフレームも含まれる)
+            if blackout is not None:
+                mean = blackout.min_mean
+                std = blackout.min_std
+                if mean is None:
+                    # この区間に1枚もフレームが届いていない
+                    return
+            else:
+                mean, std = frame_brightness_stats(frame)
             if self._pending_obs_switch_min_mean is None or mean < self._pending_obs_switch_min_mean:
                 self._pending_obs_switch_min_mean = mean
                 logger.debug(
@@ -1218,7 +1258,7 @@ class MatchStateMachine:
                     std,
                     now - self._pending_obs_switch_started_at,
                 )
-            if not is_full_blackout(frame):
+            if not (blackout.blackout if blackout is not None else is_full_blackout(frame)):
                 return
             logger.debug(
                 "暗転(候補)を検知しました: mean=%.1f std=%.1f (試合終了から%.1f秒)",
@@ -1647,7 +1687,9 @@ class MatchStateMachine:
             self._state = _State.TRACKING_RANK
         return None
 
-    def _track_rank(self, frame: np.ndarray, now: float) -> Optional[MatchResult]:
+    def _track_rank(
+        self, frame: np.ndarray, now: float, blackout: Optional[BlackoutObservation] = None
+    ) -> Optional[MatchResult]:
         self._check_for_demotion_label(frame, now)
 
         if is_league_change_screen(frame):
@@ -1673,7 +1715,9 @@ class MatchStateMachine:
         # チェックする必要がある: 暗転自体が直前フレームとの急激な変化になり
         # StabilityMonitorを不安定化させてしまい、素通りするとWAITING_STABLEへ
         # 戻ってこの確定に到達できなくなるため
-        if self._grace_candidate_rank_tier is not None and is_full_blackout(frame):
+        if self._grace_candidate_rank_tier is not None and (
+            blackout.blackout if blackout is not None else is_full_blackout(frame)
+        ):
             return self._finalize_from_gauge()
 
         was_stable = self._rank_monitor.is_stable

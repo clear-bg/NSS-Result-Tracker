@@ -17,13 +17,16 @@ OBS Virtual Camera実機(dshow経由)での疎通確認は完了済み(`docs/cap
 テストで検証している(tests/test_ffmpeg_capture.py参照)。
 """
 
+import logging
 import subprocess
 import threading
 from types import TracebackType
-from typing import Optional
+from typing import Callable, Optional
 
 import imageio_ffmpeg
 import numpy as np
+
+logger = logging.getLogger("nss_tracker.capture")
 
 DEFAULT_DEVICE_NAME = "OBS Virtual Camera"
 DEFAULT_WIDTH = 1920
@@ -49,6 +52,7 @@ class FfmpegFrameReader:
         height: int = DEFAULT_HEIGHT,
         device_name: str = DEFAULT_DEVICE_NAME,
         ffmpeg_path: Optional[str] = None,
+        frame_observer: Optional[Callable[[np.ndarray], None]] = None,
     ) -> None:
         self._width = width
         self._height = height
@@ -56,6 +60,14 @@ class FfmpegFrameReader:
         self._ffmpeg_path = ffmpeg_path or imageio_ffmpeg.get_ffmpeg_exe()
         self._input_args = input_args if input_args is not None else dshow_input_args(device_name, width, height)
 
+        # Issue #398: デコードしたフレームを1枚残らず渡す先(省略可)。read()は
+        # 「その時点の最新フレーム」しか返さないため、呼び出し側の処理が数秒
+        # 止まっている間に届いたフレームは読み捨てられる。0.40秒しかない暗転が
+        # ここで失われるのを避けるため、読み取りスレッド側で全フレームを見たい
+        # 処理(detection.motion.BlackoutWatcher)を注入できるようにした。
+        # 検知ロジック自体はこのモジュールには持たせず、何を観測するかは
+        # 呼び出し側(main.py)が決める(CLAUDE.mdの疎結合方針)
+        self._frame_observer = frame_observer
         self._process: Optional[subprocess.Popen] = None
         self._reader_thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -95,6 +107,13 @@ class FfmpegFrameReader:
                     # パイプが閉じた(入力の終端、またはffmpegの異常終了)
                     break
                 frame = np.frombuffer(raw, dtype=np.uint8).reshape((self._height, self._width, 3))
+                if self._frame_observer is not None:
+                    # Issue #398: オブザーバの失敗でフレーム取得自体を止めない
+                    # (この1枚を見送るだけにする)
+                    try:
+                        self._frame_observer(frame)
+                    except Exception:
+                        logger.exception("フレームオブザーバの実行に失敗したため、このフレームの観測を見送ります")
                 with self._lock:
                     self._latest_frame = frame
                     self._frames_produced += 1
