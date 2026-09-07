@@ -305,16 +305,30 @@ PaddleOCR推論)が原因と判明した。実測でCPU上9〜16秒かかり、�
 対策として、VS画面確定を検知した瞬間(`_vs_screen_confirm_seconds`のデバウンス
 成立時)に`self._in_match = True`・`self._session_match_no`のインクリメント・
 「試合開始」ログを即座に行い、`read_vs_screen_ranks()`/`read_team_colors()`は
-`_run_vs_ocr()`としてバックグラウンドスレッドに切り出した。OCR完了後に
-`_pending_vs_mine_ranks`等のpendingフィールドと`VsScreenEvent`
-(`pop_vs_screen_event()`、Issue #145)をスレッド側から書き込む。この試合が
-完全に終わる(`_finalize()`)までは`_vs_recorded_this_match`がTrueのままなので、
-同じ試合中に次のVS画面OCRが重ねて走ることはない。`_finalize()`はpendingフィールドを
-`MatchResult`に積む前にこのスレッドの完了を`join()`で待つ(通常はOCR自体が
-最大16秒・試合は数分続くため待たされることはないが、念のための安全策)。
-`_vs_screen_event`はpoll側(`pop_vs_screen_event()`、main.pyのループから毎フレーム
-呼ばれる)と書き込み側(バックグラウンドスレッド)が並行アクセスするため、
-`_vs_screen_event_lock`で保護する。
+`_run_vs_screen_ocr()`として切り出した。この試合が完全に終わる(`_finalize()`)までは
+`_vs_recorded_this_match`がTrueのままなので、同じ試合中に次のVS画面OCRが重ねて
+走ることはない。
+
+Issue #397: 当初はこの切り出し先をバックグラウンド**スレッド**にしていたが、
+PaddleOCRの推論中はGILが解放されない(Issue #303で判明済みの制約)ため、
+スレッドでもメインループが道連れで止まっていた。実配信ログの実測で、この処理中に
+検知ループが4.4〜4.8秒フレームを1枚も評価しない区間が生じており、
+「試合開始直後」の停止117回・合計401.5秒の主因になっていた(#383のコメント参照)。
+`_rank_ocr_executor`(本番は`ProcessPoolExecutor`)へ投げる形に変更し、結果は
+`_poll_vs_ocr()`がメインスレッド側で毎フレーム非ブロッキングに取り込む。
+`_finalize()`はpendingフィールドを`MatchResult`に積む前に`_poll_vs_ocr(wait=True)`で
+完了を待つ(通常はOCR自体が最大16秒・試合は数分続くため待たされることはないが、
+念のための安全策)。結果の取り込みがメインスレッドに集約されたため、
+`_vs_screen_event`の並行アクセス保護(旧`_vs_screen_event_lock`)は不要になった。
+
+結果バナー確定時のランクバッジ読み取り(`_read_rank_before()`、コンパクト/拡大の
+2回で実測約2.3秒)も同じ理由で`_run_rank_before_ocr()`にまとめ、同じExecutorへ
+投げるようにした。こちらは`rank_before`が決まらないとTRACKING_RANKへ進めないため
+投入直後に完了を待つが、待っている間はGILが解放されるので`FfmpegFrameReader`の
+読み取りスレッドはフレームを取り込み続けられる(#398で暗転判定を読み取り側へ
+移すと、この区間の暗転も取りこぼさなくなる)。VS画面OCRとrank_before OCRは
+同じ試合の中で「試合開始時」「試合終了時」に分かれて走り決して同時には走らない
+ため、ワーカープロセスを1つ共有している。
 
 Issue #303 → #396: TRACKING_RANK(GRACEフェーズ)中の帯番号定期再チェックは
 **廃止した**。経緯は以下のとおり。
@@ -376,7 +390,7 @@ PaddleOCRを直列に呼ぶため、実測で数秒メインループをブロ�
 
 帯番号の定期再チェック(Issue #303)とは異なり、ゴール自体は取りこぼすと
 そのゴール1件が二度と記録されない(次の試合の`_pending_goals`に紛れ込ませて
-しまうのはさらに悪い)。そのため`_finalize()`は`_vs_ocr_thread.join()`と同じ
+しまうのはさらに悪い)。そのため`_finalize()`は`_poll_vs_ocr(wait=True)`と同じ
 考え方で、`_goal_ocr_future`が残っていれば完了を待ってから`_pending_goals`を
 `MatchResult`へ積む(`_poll_goal_ocr(wait=True)`)。通常時(`wait=False`)は
 `process_frame()`から状態に関わらず毎フレーム呼び、ブロックせずに結果が
@@ -786,6 +800,62 @@ class GoalOcrResult(NamedTuple):
     is_own_goal: bool
 
 
+class VsScreenOcrResult(NamedTuple):
+    """`_run_vs_screen_ocr()`(Issue #397)の戻り値。"""
+
+    mine_ranks: list[SlotRank]
+    opponent_ranks: list[SlotRank]
+    mine_team_color: Optional[str]
+    opponent_team_color: Optional[str]
+
+
+def _run_vs_screen_ocr(frame: np.ndarray) -> VsScreenOcrResult:
+    """VS画面のランクOCRとチームカラー読み取りをまとめて実行する(Issue #397)。
+
+    Issue #189ではバックグラウンドスレッドに逃がしていたが、実測でこの処理中に
+    検知ループが4.4〜4.8秒止まる(=フレームを1枚も評価しない)ことが実配信ログで
+    分かった。PaddleOCRの推論中はGILが解放されないため、スレッドではメインスレッドも
+    道連れで止まる(Issue #303で判明済みの制約)。_run_goal_ocr()と同じく
+    ProcessPoolExecutorへ丸ごと投げられるよう、モジュール直下の関数にまとめた
+    (モジュール直下に置く理由も_run_goal_ocr()と同じ)。
+    """
+    mine_ranks, opponent_ranks = read_vs_screen_ranks(frame)
+    mine_team_color, opponent_team_color = read_team_colors(frame)
+    return VsScreenOcrResult(
+        mine_ranks=mine_ranks,
+        opponent_ranks=opponent_ranks,
+        mine_team_color=mine_team_color,
+        opponent_team_color=opponent_team_color,
+    )
+
+
+class RankBeforeOcrResult(NamedTuple):
+    """`_run_rank_before_ocr()`(Issue #397)の戻り値。どちらのROIで読めたかを
+    呼び出し側(_read_rank_before)が判断できるよう、両方をそのまま返す。
+    """
+
+    compact: Optional[tuple[int, float]]
+    enlarged: Optional[tuple[int, float]]
+
+
+def _run_rank_before_ocr(frame: np.ndarray) -> RankBeforeOcrResult:
+    """結果バナー確定時点のランクバッジ読み取り(コンパクト/拡大の2回)を
+    まとめて実行する(Issue #397)。
+
+    Issue #222の経緯どおり、バナー確定時点でバッジがどちらの表示サイズかを
+    事前に判定する手段が無いため2回試す必要がある。この2回で実測約2.3秒
+    メインループが止まっていたため、_run_goal_ocr()と同じくProcessPoolExecutorへ
+    丸ごと投げられるようモジュール直下の関数にまとめた。呼び出し側は結果を
+    同期的に必要とする(rank_beforeが決まらないとTRACKING_RANKへ進めない)ため
+    投入直後に完了を待つが、待っている間はGILが解放されるので
+    FfmpegFrameReaderの読み取りスレッドはフレームを取り込み続けられる。
+    """
+    return RankBeforeOcrResult(
+        compact=read_precise_rank(frame, GAUGE_ROI_COMPACT, RANK_NUMBER_ROI_COMPACT),
+        enlarged=read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED),
+    )
+
+
 def _run_goal_ocr(frame: np.ndarray) -> GoalOcrResult:
     """ゴール候補フレームに対するOCR一式(確認・得点者名・アシスト名・オウンゴール判定)を
     まとめて実行する(Issue #327)。
@@ -874,6 +944,7 @@ class MatchStateMachine:
         obs_switch_delay_after_blackout_seconds: float = DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS,
         obs_switch_timeout_seconds: float = DEFAULT_OBS_SWITCH_TIMEOUT_SECONDS,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
+        rank_ocr_executor: Optional["concurrent.futures.Executor"] = None,
         goal_ocr_executor: Optional["concurrent.futures.Executor"] = None,
         now_fn: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -894,6 +965,16 @@ class MatchStateMachine:
         self._demotion_label_debounce = _Debounce(demotion_label_confirm_seconds)
         self._pending_gauge_debounce = _Debounce(rank_recheck_interval_seconds)
         self._rank_monitor = rank_stability_monitor or StabilityMonitor(roi=rank_roi)
+        # Issue #397: VS画面ランクOCR(_run_vs_screen_ocr)と結果バナー確定時の
+        # ランクバッジ読み取り(_run_rank_before_ocr)用。この2つは同じ試合の中で
+        # 「試合開始時」「試合終了時」に分かれて走り決して同時には走らないため、
+        # ワーカープロセスを1つ共有する(#327のgoal_ocr_executorと分けるのは、
+        # ゴール検知は試合中ずっと走りうるため)
+        self._rank_ocr_executor: concurrent.futures.Executor = (
+            rank_ocr_executor
+            if rank_ocr_executor is not None
+            else concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="rank-ocr")
+        )
         # Issue #327: ゴール検知のOCR一式(_run_goal_ocr)用。未指定時は
         # ThreadPoolExecutorを使う(同一プロセス内で動くためテストの
         # モンキーパッチがそのまま効く)。本番はmain.pyがProcessPoolExecutorを
@@ -961,11 +1042,13 @@ class MatchStateMachine:
         # Issue #145: VS画面確定を検知した直後の1フレームだけpop_vs_screen_event()が
         # 返す値。取得されると(popされると)Noneに戻る「取得したら消費される」設計
         self._vs_screen_event: Optional[VsScreenEvent] = None
-        # Issue #189: 上記_vs_screen_eventおよび_pending_vs_*系フィールドは
-        # バックグラウンドスレッド(_run_vs_ocr)からも書き込まれるため、
-        # pop_vs_screen_event()側の読み取り+クリアと衝突しないよう保護する
-        self._vs_screen_event_lock = threading.Lock()
-        self._vs_ocr_thread: Optional[threading.Thread] = None
+        # Issue #397: VS画面OCR(_run_vs_screen_ocr)を_rank_ocr_executorで
+        # 非同期実行するための状態。_vs_ocr_futureが非Noneの間は結果待ち
+        # (_poll_vs_ocr参照)。Issue #189の頃はバックグラウンドスレッドが
+        # _pending_vs_*系フィールドを直接書き込んでいたためロックが必要だったが、
+        # 結果の取り込みをメインスレッド(_poll_vs_ocr)に集約したため不要になった
+        self._vs_ocr_future: Optional["concurrent.futures.Future"] = None
+        self._vs_ocr_match_no: int = 0
         self._match_end_recorded_this_event = False
         self._match_end_seen = False
         # Issue #190: _match_end_seenはbanner確定時のデバウンス短縮用にすぐ
@@ -1017,9 +1100,8 @@ class MatchStateMachine:
         保持値はNoneに戻るため、main.py側はprocess_frame()を呼ぶたびに毎回
         これも呼び、Noneでなければその場でDBへ即時反映すること。
         """
-        with self._vs_screen_event_lock:
-            event = self._vs_screen_event
-            self._vs_screen_event = None
+        event = self._vs_screen_event
+        self._vs_screen_event = None
         return event
 
     def process_frame(self, frame: np.ndarray) -> Optional[MatchResult]:
@@ -1045,6 +1127,9 @@ class MatchStateMachine:
         # (_pending_goalsへの追加は_finalize()まで有効なため)取りこぼさないよう、
         # 状態に関わらず毎フレーム呼ぶ(_check_pending_obs_switchと同じ考え方)
         self._poll_goal_ocr()
+        # Issue #397: VS画面OCRの結果も、状態がWATCHINGから進んでいても
+        # 取りこぼさないよう状態に関わらず毎フレーム取り込む
+        self._poll_vs_ocr()
         return result
 
     def _check_pending_obs_switch(self, frame: np.ndarray, now: float) -> None:
@@ -1220,45 +1305,56 @@ class MatchStateMachine:
             # 完了後にpending値・VsScreenEventを反映する。この試合が完全に終わる
             # (_finalize())まではvs_recorded_this_matchがTrueのままなので、次の
             # VS画面OCRが重ねて走ることはない(_finalize()側でスレッド完了を待つ)
-            match_no = self._session_match_no
-            self._vs_ocr_thread = threading.Thread(
-                target=self._run_vs_ocr, args=(frame, match_no), daemon=True
-            )
-            self._vs_ocr_thread.start()
+            # Issue #397: スレッドではPaddleOCR推論中にGILが解放されず
+            # メインループも道連れで止まる(実測4.4〜4.8秒)ため、
+            # _rank_ocr_executor(本番はProcessPoolExecutor)へ投げる
+            self._vs_ocr_match_no = self._session_match_no
+            self._vs_ocr_future = self._rank_ocr_executor.submit(_run_vs_screen_ocr, frame)
 
-    def _run_vs_ocr(self, frame: np.ndarray, match_no: int) -> None:
-        mine_ranks, opponent_ranks = read_vs_screen_ranks(frame)
-        mine_team_color, opponent_team_color = read_team_colors(frame)
-        self._pending_vs_mine_ranks = mine_ranks
-        self._pending_vs_opponent_ranks = opponent_ranks
-        self._pending_mine_team_color = mine_team_color
-        self._pending_opponent_team_color = opponent_team_color
+    def _poll_vs_ocr(self, wait: bool = False) -> None:
+        """_check_for_vs_screen()が投げたVS画面OCR(Issue #397)の結果を取り込む。
+
+        通常(wait=False)はブロックせず、まだ実行中の間は何もしない。
+        wait=Trueの場合(_finalize()からの呼び出し)は完了を待ってから取り込む
+        (未完了のままMatchResultを組むとVS画面のランクが空のまま記録される
+        ため、Issue #189/#397の_poll_vs_ocr(wait=True)と同じ理由)。
+        """
+        if self._vs_ocr_future is None:
+            return
+        if not wait and not self._vs_ocr_future.done():
+            return
+        result = self._vs_ocr_future.result()
+        self._vs_ocr_future = None
+        match_no = self._vs_ocr_match_no
+
+        self._pending_vs_mine_ranks = result.mine_ranks
+        self._pending_vs_opponent_ranks = result.opponent_ranks
+        self._pending_mine_team_color = result.mine_team_color
+        self._pending_opponent_team_color = result.opponent_team_color
         # Issue #145: 試合結果確定(MatchResult)を待たず、main.py側が
         # 次にprocess_frame()を呼んだタイミングですぐDBへ反映できるようにする
         # (pop_vs_screen_event参照)
-        event = VsScreenEvent(
-            mine_ranks=mine_ranks,
-            opponent_ranks=opponent_ranks,
-            mine_team_color=mine_team_color,
-            opponent_team_color=opponent_team_color,
+        self._vs_screen_event = VsScreenEvent(
+            mine_ranks=result.mine_ranks,
+            opponent_ranks=result.opponent_ranks,
+            mine_team_color=result.mine_team_color,
+            opponent_team_color=result.opponent_team_color,
             session_match_no=match_no,
         )
-        with self._vs_screen_event_lock:
-            self._vs_screen_event = event
         # Issue #121: ゴール検知(_check_for_goal)と同じく、DBへの記録タイミング
         # (main.py側のsave_vs_slot_ranks時)を待たず、OCRが完了した時点で
         # 読み取ったランクをそのまま報告する
         logger.info(
             "%d試合目 VS画面ランク: mine=%s opponent=%s",
             match_no,
-            mine_ranks,
-            opponent_ranks,
+            result.mine_ranks,
+            result.opponent_ranks,
         )
         logger.info(
             "%d試合目 チームカラー: mine=%s opponent=%s",
             match_no,
-            mine_team_color,
-            opponent_team_color,
+            result.mine_team_color,
+            result.opponent_team_color,
         )
 
     def _check_for_match_end(self, frame: np.ndarray, now: float) -> None:
@@ -1308,7 +1404,7 @@ class MatchStateMachine:
         タイミングは呼び出し元では制御しない(状態がWATCHINGから進んでいても、
         _pending_goalsへの追加はfinalize()まで有効なためそのまま適用する)。
 
-        wait=Trueの場合(_finalize()からの呼び出し、_vs_ocr_thread.join()と同じ理由)は
+        wait=Trueの場合(_finalize()からの呼び出し、_poll_vs_ocr(wait=True)と同じ理由)は
         完了を待ってから取り込む。ゴールの帯番号再チェック(Issue #303の
         帯番号の定期再チェック(Issue #396で廃止)と異なり、ゴール自体は取りこぼすとその1件が
         MatchResult.goalsに載らないまま永久に失われてしまう(次の試合の
@@ -1416,8 +1512,14 @@ class MatchStateMachine:
         ゲージ連続性フォールバックは、VS画面側も100%ではないため二段構えの
         保険としてそのまま残す。
         """
-        compact_result = read_precise_rank(frame, GAUGE_ROI_COMPACT, RANK_NUMBER_ROI_COMPACT)
-        enlarged_result = read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED)
+        # Issue #397: 2回のread_precise_rank()で実測約2.3秒メインループが
+        # 止まっていたため、_rank_ocr_executor(本番はProcessPoolExecutor)へ
+        # まとめて投げる。rank_beforeが決まらないとTRACKING_RANKへ進めないので
+        # 結果はここで待つが、待っている間はGILが解放されるため
+        # FfmpegFrameReaderの読み取りスレッドはフレームを取り込み続けられる
+        ocr = self._rank_ocr_executor.submit(_run_rank_before_ocr, frame).result()
+        compact_result = ocr.compact
+        enlarged_result = ocr.enlarged
         if compact_result is not None and enlarged_result is not None and compact_result != enlarged_result:
             logger.warning(
                 "結果バナー確定時点でコンパクト/拡大どちらのROIでもランクバッジが読み取れ、"
@@ -1748,13 +1850,11 @@ class MatchStateMachine:
         return tier_before, tier_before + frac_after
 
     def _finalize(self, rank_after_tier: Optional[int], rank_after: Optional[float]) -> MatchResult:
-        # Issue #189: VS画面OCR(_run_vs_ocr)はバックグラウンドスレッドで実行される。
+        # Issue #189/#397: VS画面OCR(_run_vs_screen_ocr)は別プロセスで実行される。
         # 通常は試合が終わる頃には完了しているはずだが(OCR自体は最大16秒、試合は
         # 数分続く)、念のためここで完了を待ってから_pending_vs_*系フィールドを
         # 読み取る(未完了のままMatchResultを組むと空リストのまま記録されてしまう)
-        if self._vs_ocr_thread is not None:
-            self._vs_ocr_thread.join()
-            self._vs_ocr_thread = None
+        self._poll_vs_ocr(wait=True)
         # Issue #327: ゴール検知OCR(_run_goal_ocr)も同じ理由で完了を待ってから
         # _pending_goalsを読み取る(_poll_goal_ocr()のdocstring参照)
         self._poll_goal_ocr(wait=True)
