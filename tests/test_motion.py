@@ -1,8 +1,14 @@
 import cv2
+import numpy as np
 import pytest
 
 from conftest import requires_video_fixtures
-from nss_tracker.detection.motion import StabilityMonitor, find_confirmed_value, is_full_blackout
+from nss_tracker.detection.motion import (
+    BlackoutWatcher,
+    StabilityMonitor,
+    find_confirmed_value,
+    is_full_blackout,
+)
 
 VIDEO_NAME = "28_win_red_1-0_hdr_off.mp4"
 TARGET_SIZE = (1920, 1080)
@@ -155,3 +161,55 @@ def test_is_full_blackout_false_for_synthetic_bright_frame():
 
     bright_frame = np.full((10, 10, 3), 200, dtype=np.uint8)
     assert not is_full_blackout(bright_frame)
+
+
+def _black_frame():
+    return np.zeros((60, 80, 3), dtype=np.uint8)
+
+
+def _bright_frame():
+    return np.full((60, 80, 3), 200, dtype=np.uint8)
+
+
+def test_blackout_watcher_reports_blackout_seen_between_consumes():
+    """Issue #398: consume()と次のconsume()の間に届いたフレームのうち1枚でも
+    暗転していれば、consume()がそれを報告することを確認する。
+
+    検知ループが重い処理で止まっている間に暗転(実測0.40秒)が丸ごと過ぎ去っても
+    取りこぼさない、という本Issueの目的そのもの。
+    """
+    watcher = BlackoutWatcher()
+
+    # メインループが止まっている間に読み取りスレッドが受け取ったフレーム列
+    watcher.observe(_bright_frame())
+    watcher.observe(_black_frame())
+    watcher.observe(_bright_frame())
+
+    observation = watcher.consume()
+
+    assert observation.blackout is True
+    assert observation.min_mean == pytest.approx(0.0)
+
+
+def test_blackout_watcher_resets_after_consume():
+    """Issue #398: consume()は内部状態をリセットし、次の区間へ持ち越さない。"""
+    watcher = BlackoutWatcher()
+    watcher.observe(_black_frame())
+    assert watcher.consume().blackout is True
+
+    watcher.observe(_bright_frame())
+    observation = watcher.consume()
+
+    assert observation.blackout is False
+    assert observation.min_mean == pytest.approx(200.0)
+
+
+def test_blackout_watcher_reports_nothing_observed():
+    """Issue #398: 区間内に1枚もフレームが届かなかった場合はmin_meanがNoneになる
+    (呼び出し側はこれを「観測なし」として扱い、暗転待ちの記録を更新しない)。
+    """
+    observation = BlackoutWatcher().consume()
+
+    assert observation.blackout is False
+    assert observation.min_mean is None
+    assert observation.min_std is None

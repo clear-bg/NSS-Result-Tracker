@@ -9,7 +9,7 @@ import pytest
 
 import nss_tracker.state.match_state as match_state_module
 from conftest import requires_video_fixtures
-from nss_tracker.detection.motion import StabilityMonitor
+from nss_tracker.detection.motion import BlackoutObservation, StabilityMonitor
 from nss_tracker.detection.rank_ocr import (
     GAUGE_ROI_COMPACT,
     GAUGE_ROI_ENLARGED,
@@ -1136,6 +1136,62 @@ class _RecordingExecutor:
         future: concurrent.futures.Future = concurrent.futures.Future()
         future.set_result(fn(*args, **kwargs))
         return future
+
+
+def test_obs_switch_uses_blackout_observation_when_frame_itself_is_not_black(monkeypatch):
+    """Issue #398: process_frame()に渡されたBlackoutObservationが暗転を報告して
+    いれば、そのフレーム自体が暗転していなくても暗転検知として扱うことを確認する。
+
+    検知ループが重い処理で止まっている間にキャプチャ側だけが観測した暗転
+    (0.40秒しかなく、read()が返す「最新フレーム」には既に写っていない)を
+    取りこぼさないための経路。
+    """
+    frame_idx = {"n": 0}
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: frame_idx["n"] < 3)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+    monkeypatch.setattr(
+        match_state_module, "is_match_end_screen", lambda frame: 3 <= frame_idx["n"] < 5
+    )
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    # フレーム単体では絶対に暗転と判定されない状態にしておく
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+
+    machine = MatchStateMachine(
+        now_fn=FakeClock(),
+        vs_screen_confirm_seconds=2,
+        match_end_confirm_seconds=1,
+        obs_switch_delay_after_blackout_seconds=3,
+        obs_switch_timeout_seconds=1000,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    not_black = BlackoutObservation(blackout=False, min_mean=120.0, min_std=40.0)
+    for _ in range(5):
+        machine.process_frame(frame, not_black)
+        frame_idx["n"] += 1
+    assert machine.in_match is True, "VS画面確定〜試合終了直後はTrueのはず"
+
+    for _ in range(5):
+        machine.process_frame(frame, not_black)
+        frame_idx["n"] += 1
+    assert machine.in_match is True, "暗転を観測していない間はTrueのまま維持されるはず"
+
+    # メインループが止まっている間にキャプチャ側だけが暗転を観測した
+    saw_blackout = BlackoutObservation(blackout=True, min_mean=0.0, min_std=0.5)
+    machine.process_frame(frame, saw_blackout)  # 暗転検知1フレーム目(elapsed=0)
+    for _ in range(3):
+        machine.process_frame(frame, not_black)
+
+    assert machine.in_match is False, (
+        "キャプチャ側の観測で暗転を検知し、delay経過後にFalseへ戻るはず"
+    )
 
 
 def test_vs_screen_and_rank_before_ocr_go_through_the_executor(monkeypatch):

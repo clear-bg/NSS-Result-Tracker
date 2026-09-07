@@ -109,3 +109,46 @@ def test_start_twice_raises():
             reader.start()
     finally:
         reader.stop()
+
+
+def test_frame_observer_receives_every_decoded_frame(videos_dir):
+    """Issue #398: frame_observerには、read()が返さなかったフレームも含めて
+    デコードした全フレームが渡ることを確認する。
+
+    read()は「その時点の最新フレーム」しか返さないため、呼び出し側の処理が
+    止まっている間に届いたフレームは読み捨てられる。0.40秒しかない暗転を
+    そこで失わないようにするためのフックなので、produced数と一致することが要件。
+    """
+    observed = {"n": 0}
+
+    def observer(frame):
+        observed["n"] += 1
+
+    video_path = videos_dir / VIDEO_NAME
+    with FfmpegFrameReader(
+        input_args=["-i", str(video_path)], frame_observer=observer
+    ) as reader:
+        for _ in range(5):
+            reader.read(timeout=10)
+        produced = reader.frames_produced
+
+    assert produced > 0
+    assert observed["n"] >= produced, (
+        f"デコードした全フレームがobserverへ渡っていない(produced={produced} observed={observed['n']})"
+    )
+
+
+def test_frame_observer_exception_does_not_stop_reading(videos_dir):
+    """Issue #398: オブザーバが例外を投げてもフレーム取得自体は継続する。"""
+
+    def broken_observer(frame):
+        raise RuntimeError("観測側の失敗")
+
+    video_path = videos_dir / VIDEO_NAME
+    with FfmpegFrameReader(
+        input_args=["-i", str(video_path)], frame_observer=broken_observer
+    ) as reader:
+        frame = reader.read(timeout=10)
+
+    assert frame is not None
+    assert reader.error is None
