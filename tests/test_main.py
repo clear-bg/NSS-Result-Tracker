@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from conftest import requires_video_fixtures
+from nss_tracker import config
 from nss_tracker.database import db
 from nss_tracker.detection.rank_ocr import GAUGE_ROI_ENLARGED
 from nss_tracker.detection.vs_rank import SlotRank
@@ -355,5 +356,110 @@ def test_run_notifies_match_transition_only_on_true_to_false(monkeypatch, tmp_pa
 
         assert set_in_match_calls == [True, False, True]
         assert len(notify_calls) == 1
+    finally:
+        conn.close()
+
+
+def test_run_writes_clip_even_when_match_id_arrives_after_max_duration(monkeypatch, tmp_path):
+    """Issue #395: 録画が上限時間に達した後で試合結果が確定した場合でも、
+    クリップが破棄されず書き出されることを確認する。
+
+    以前のmain.pyは「上限に達したのにmatch_idが未判明」を異常系とみなして
+    バッファを捨て録画をリセットしていた。_finalize()はクリップ開始から
+    3.1〜36.5秒とばらつき、実配信3セッション25試合のうち13試合が上限(18秒)より
+    遅かったため、この経路を残したまま上限を短くするとその13試合のクリップが
+    1本も残らなくなる。
+
+    test_run_notifies_match_transition_only_on_true_to_falseと同じく、実画像・
+    OCRに依存しないmain.pyのループ配線そのものだけを最小限のフェイクで検証する。
+    """
+    monkeypatch.setattr(main, "_warmup_ocr_engines", lambda: None)
+    config.set_room_type("random")
+
+    # 上限は3フレーム(0.3秒 * 10fps)。旧実装は上限に達するたびにバッファを捨てて
+    # 録画をリセットしていたため、リセット直後にMatchResultが払い出されてループが
+    # 終わるこの並びでは、クリップが1本も残らなかった
+    frame_count = 8
+    result_at_frame = 8
+
+    class _FakeMachine:
+        def __init__(self):
+            self.current_state = "watching"
+            self.in_match = True
+            self._n = 0
+
+        def process_frame(self, frame):
+            self._n += 1
+            self.current_state = "tracking_rank"
+            if self._n == result_at_frame:
+                return MatchResult(
+                    result="lose",
+                    rank_before=None,
+                    rank_after=None,
+                    league_changed=None,
+                    detected_at=now_jst(),
+                )
+            return None
+
+        def pop_vs_screen_event(self):
+            return None
+
+    class _FakeReader:
+        def __init__(self, remaining):
+            self._remaining = remaining
+            self.is_running = True
+            self.error = None
+            self.frames_produced = 0
+            self.frames_consumed = 0
+
+        def start(self):
+            pass
+
+        def read(self, timeout):
+            if self._remaining <= 0:
+                self.is_running = False
+                return None
+            self._remaining -= 1
+            self.frames_produced += 1
+            self.frames_consumed += 1
+            # is_full_blackout()がTrueにならないよう明るいフレームを返す
+            # (このテストが検証したいのは上限到達側の経路のため)
+            return np.full((4, 4, 3), 255, dtype=np.uint8)
+
+        def stop(self):
+            pass
+
+    class _NoOpObs:
+        def set_in_match(self, in_match):
+            pass
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db._SCHEMA)
+        conn.commit()
+        session_id = db.create_session(conn)
+        clip_dir = tmp_path / "rank_entry_clips"
+        clip_recorder = RankEntryClipRecorder(
+            output_dir=clip_dir, target_sample_fps=10.0, max_duration_seconds=0.3
+        )
+        gauge_clip_recorder = RankEntryClipRecorder(
+            output_dir=tmp_path / "rank_gauge_clips", target_sample_fps=10.0, max_duration_seconds=0.3
+        )
+
+        main.run(
+            _FakeReader(frame_count),
+            _FakeMachine(),
+            conn,
+            session_id,
+            _NoOpObs(),
+            10.0,
+            clip_recorder,
+            gauge_clip_recorder,
+        )
+
+        if clip_recorder._last_encode_thread is not None:
+            clip_recorder._last_encode_thread.join(timeout=10)
+        assert list(clip_dir.glob("*.mp4")), "上限到達後にmatch_idが判明した場合もクリップが残るはず"
     finally:
         conn.close()

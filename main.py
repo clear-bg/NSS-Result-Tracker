@@ -480,22 +480,23 @@ def run(
                     pending_clip_match_id = match_id
 
             if clip_recorder.is_recording:
-                # Issue #307: 暗転を検知した時点、または録画が異常に長引いた場合の
-                # 安全策(MAX_DURATION_SECONDS)のどちらかで区間を終える
+                # Issue #307: 暗転を検知した時点、または上限時間(MAX_DURATION_SECONDS)に
+                # 達した時点のどちらかで区間を終える
                 # 各recorderのadd_frame()には毎フレームバッファする副作用があるため、
                 # any()に生成式を渡して短絡評価させない(片方だけ呼ばれず
                 # フレームが抜けるバグを避けるため、リスト内包表記で全て評価する)
                 duration_exceeded = any([recorder.add_frame(frame) for recorder in clip_recorders])
+                # Issue #395: 上限に達しても、match_idが判明するまではバッファを
+                # 保持したまま待つ。pending_clip_match_idは_finalize()がMatchResultを
+                # 返して初めて入るが、finalizeはクリップ開始から3.1〜36.5秒とばらつき、
+                # 実配信25試合中13試合が上限(18秒)より遅かった。以前はこの場合に
+                # クリップを破棄してリセットしていたため、上限を短くするとその13試合が
+                # 1本も残らなくなる。add_frame()側が上限到達後のフレーム追加を止めて
+                # いるため、待っている間にバッファが増え続けることはない
                 if pending_clip_match_id is not None and (duration_exceeded or is_full_blackout(frame)):
                     for recorder in clip_recorders:
                         recorder.finish(pending_clip_match_id)
                     pending_clip_match_id = None
-                elif duration_exceeded:
-                    # match_id判明前に上限に達した(通常は起こらないはずの異常系)。
-                    # クリップを生成せず録画をリセットして無限に溜め込まないようにする
-                    logger.warning("動画クリップの録画がmatch_id判明前に上限時間へ達したため、リセットします")
-                    for recorder in clip_recorders:
-                        recorder.start(fps)
     except KeyboardInterrupt:
         total = sum(session_results.values())
         logger.info(

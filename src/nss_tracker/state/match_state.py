@@ -490,6 +490,22 @@ GRACEの長さに一切依存せず毎回安定して成功しているため、
 12〜14秒後に着地させることにした(昇格した試合は暗転が1回だけのため
 18.5秒後となり従来より約3秒遅くなるが、許容範囲として合意済み)。
 
+Issue #395: 上記の前倒し(#371)を入れてもなお、暗転そのものを取りこぼす事象が
+残っている(原因は検知ループが1.3〜4.8秒単位で止まり、その間フレームを1枚も
+評価していないこと。#383のコメント参照)。実配信3セッション25試合の実測では
+12試合で切替が遅延し、最大258.5秒だった。根本対策(#396〜#398)が入るまでの
+安全網として、`_check_pending_obs_switch()`に`obs_switch_timeout_seconds`
+(既定30秒)を設け、「試合終了」OCR確認からこの秒数が経過しても暗転を一度も
+検知できていなければ暗転を待たずに切り替える。
+
+30秒という値は、正常に暗転を検知できた13試合の「試合終了→切替」が14.7〜25.8秒
+だったことによる。これより短くすると正常経路を先回りして切ってしまい、tips画面が
+配信に映る時間(上記#371で意図して確保したもの)が変わってしまう。
+
+この経路を通った場合は必ずWARNINGログを残す。安全網は症状を隠す対策であり、
+隠したことがログから見えないと、根本対策を入れた後に「暗転の取りこぼしが実際に
+減ったのか」を測る手段が無くなるため。
+
 Issue #222: 結果バナー確定直後の`rank_before`読み取り(`_watch_for_banner()`)が、
 負け試合を中心に`None`(読み取り失敗)になる不具合を調査した。バナー確定直後は
 「まだコンパクト表示のはず」という前提で`GAUGE_ROI_COMPACT`/`RANK_NUMBER_ROI_COMPACT`
@@ -666,6 +682,18 @@ RANK_TIER_WRAP_MIN_MAGNITUDE = get_detection_value("match_state", "RANK_TIER_WRA
 # モジュールdocstring参照、ユーザーとの相談で決定)
 DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS = get_detection_value(
     "match_state", "OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS", 5.0
+)
+
+# Issue #395: 暗転自体を取りこぼした場合の安全網。「試合終了」OCR確認から
+# この秒数が経過しても暗転を一度も検知できていなければ、暗転を待たずに
+# in_matchをFalseへ戻す(モジュールdocstring参照)。
+# 2026-09-04・09-06の実配信3セッション25試合の実測では、正常に暗転を検知できた
+# 13試合の「試合終了→切替」は14.7〜25.8秒(暗転を検知したのは最も遅い試合で
+# 試合終了の20.8秒後、そこからOBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS=5秒)。
+# これより短い値にすると正常経路を先回りして切ってしまい、tips画面の見え方が
+# 変わってしまうため、26秒より余裕を持たせた30秒とした(ユーザーとの相談で決定)
+DEFAULT_OBS_SWITCH_TIMEOUT_SECONDS = get_detection_value(
+    "match_state", "OBS_SWITCH_TIMEOUT_SECONDS", 30.0
 )
 
 
@@ -850,6 +878,7 @@ class MatchStateMachine:
         rank_tier_rescan_wait_seconds: float = DEFAULT_RANK_TIER_RESCAN_WAIT_SECONDS,
         demotion_label_confirm_seconds: float = DEFAULT_DEMOTION_LABEL_CONFIRM_SECONDS,
         obs_switch_delay_after_blackout_seconds: float = DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS,
+        obs_switch_timeout_seconds: float = DEFAULT_OBS_SWITCH_TIMEOUT_SECONDS,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
         tier_recheck_executor: Optional["concurrent.futures.Executor"] = None,
         goal_ocr_executor: Optional["concurrent.futures.Executor"] = None,
@@ -861,6 +890,7 @@ class MatchStateMachine:
         self._vs_screen_lockout_seconds = vs_screen_lockout_seconds
         self._rank_tier_rescan_wait_seconds = rank_tier_rescan_wait_seconds
         self._obs_switch_delay_after_blackout_seconds = obs_switch_delay_after_blackout_seconds
+        self._obs_switch_timeout_seconds = obs_switch_timeout_seconds
         # Issue #388: 「同じ値が持続しているか」を確認するデバウンスは共通の
         # _Debounceヘルパーに委ねる(モジュールdocstring参照)
         self._banner_debounce = _Debounce(banner_confirm_seconds)
@@ -1090,6 +1120,27 @@ class MatchStateMachine:
         if not self._pending_obs_switch:
             return
         if self._blackout_switch_started_at is None:
+            # Issue #395: 暗転を取りこぼした場合の安全網。「試合終了」OCR確認から
+            # obs_switch_timeout_secondsを過ぎても暗転を一度も検知できていなければ、
+            # 暗転を待たずに切り替える(モジュールdocstring参照)。この経路を通った
+            # ことは必ずWARNINGで残す: 安全網は症状を隠す対策のため、隠したことが
+            # 見えないと根本対策(#397/#398)の効果を後から測れなくなる
+            elapsed = now - self._pending_obs_switch_started_at
+            if elapsed >= self._obs_switch_timeout_seconds:
+                observed_min = (
+                    "未観測"
+                    if self._pending_obs_switch_min_mean is None
+                    else f"{self._pending_obs_switch_min_mean:.1f}"
+                )
+                logger.warning(
+                    "%d試合目: 暗転を検知できないまま%.1f秒が経過したため、"
+                    "タイムアウトでOBSシーンを切り替えます(この間に観測した最小輝度mean=%s)",
+                    self._session_match_no,
+                    elapsed,
+                    observed_min,
+                )
+                self._complete_obs_switch()
+                return
             # Issue #383: 判定そのものは既存どおりis_full_blackout()(テストで
             # monkeypatch対象になっているモジュール直下の名前)に委ね、
             # frame_brightness_stats()はログ表示用の値取得にのみ使う
@@ -1115,11 +1166,19 @@ class MatchStateMachine:
             )
             self._blackout_switch_started_at = now
         if (now - self._blackout_switch_started_at) >= self._obs_switch_delay_after_blackout_seconds:
-            self._in_match = False
-            self._pending_obs_switch = False
-            self._blackout_switch_started_at = None
-            self._pending_obs_switch_started_at = None
-            self._pending_obs_switch_min_mean = None
+            self._complete_obs_switch()
+
+    def _complete_obs_switch(self) -> None:
+        """in_matchをFalseへ戻し、暗転待ちの状態を片付ける(Issue #395で共通化)。
+
+        通常の経路(暗転検知+obs_switch_delay_after_blackout_seconds経過)と、
+        暗転を取りこぼした場合のタイムアウト経路の両方から呼ばれる。
+        """
+        self._in_match = False
+        self._pending_obs_switch = False
+        self._blackout_switch_started_at = None
+        self._pending_obs_switch_started_at = None
+        self._pending_obs_switch_min_mean = None
 
     def _check_for_vs_screen(self, frame: np.ndarray, now: float) -> None:
         # Issue #234: VS画面確定直後はロック中(この秒数は新規のVS画面検知自体を

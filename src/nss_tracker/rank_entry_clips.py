@@ -29,9 +29,19 @@ TRACKING_RANKを経由しない)ため、自然に録画対象外になる(#307�
 元解像度の約半分)に縮小してから保持する。ランク数値を目視確認できれば
 十分な用途のため、この程度の間引き・縮小で実用上問題ない想定。
 
-録画区間が異常に長引いた場合(暗転検知を逃した、プレイヤーが長時間離席した等)
-に備え、`MAX_DURATION_SECONDS`(既定60秒)を超えたら暗転を待たずに強制的に
-その時点までのフレームでクリップを確定する安全策を持つ。
+録画区間が長引いた場合(暗転検知を逃した、プレイヤーが長時間離席した等)に備え、
+`MAX_DURATION_SECONDS`(既定18秒、Issue #395で60秒から短縮)に達したら
+それ以降のフレームは追加しない。
+
+Issue #395: このとき**録画状態とバッファは保持したまま**にし、`match_id`が
+判明した時点(`main.py`が`_finalize()`の`MatchResult`を受け取った時点)で
+書き出す。以前は`main.py`側が「上限に達したのに`match_id`が未判明」を異常系と
+みなしてクリップごと破棄・リセットしていたが、`_finalize()`はクリップ開始から
+3.1〜36.5秒とばらつき、実配信3セッション25試合のうち13試合が上限(18秒)より
+遅かった。そのまま上限だけ短くするとその13試合のクリップが1本も残らず、
+手動入力(`/rank-entry`)そのものが成立しなくなるため。上限到達後は
+`add_frame()`がフレームを追加しないので、待っている間にバッファが増え続けることも
+メモリを圧迫することもない。
 
 ## エンコード
 
@@ -172,7 +182,15 @@ GAUGE_CLIPS_DIR = Path("clips/rank_gauge_clips")
 
 TARGET_SAMPLE_FPS = 8.0
 TARGET_WIDTH = 960
-MAX_DURATION_SECONDS = 60.0
+# Issue #395: 録画区間の上限。以前は「暗転を見逃した/長時間離席した」場合の
+# 安全策としての60秒だったが、実配信3セッション25試合の実測で9試合がこの上限に
+# 張り付いており(暗転の取りこぼし、#383)、60秒のクリップは中身のほとんどが
+# 試合と無関係な画面で手動入力の役に立たないうえ、加工後フレームを保持する都合で
+# 画面クリップ約747MB+ゲージクリップ約287MBをRAMに抱える状態になっていた。
+# 「クリップ開始(tracking_rank突入)→暗転検知」は正常に検知できた13試合で
+# 2.9〜13.0秒だったため、正常ケースを1件も切らない18秒に短縮した
+# (#395のOBSシーン切替タイムアウト30秒の約3秒前に相当、ユーザーとの相談で決定)
+MAX_DURATION_SECONDS = 18.0
 DEFAULT_MAX_CLIPS = 3
 # Issue #389: 未確定のため削除せず残っているクリップがこの件数を超えたら
 # WARNINGログを出す(上限として削除するわけではない、モジュールdocstring参照)
@@ -311,6 +329,10 @@ class RankEntryClipRecorder:
         self._sample_interval = 1
         self._frame_counter = 0
         self._recording = False
+        # Issue #395: 上限時間に到達済みかどうか。到達後はフレームの追加だけを
+        # 止め、録画状態(_recording)とバッファはmatch_idが判明するまで保持する
+        # (モジュールdocstring参照)
+        self._duration_exceeded = False
         # テスト・シャットダウン時にバックグラウンドエンコードの完了を待てるようにする
         # フック(モジュールdocstring参照)。通常の検知ループ(main.py)はこれを待たない
         self._last_encode_thread: Optional[threading.Thread] = None
@@ -327,10 +349,16 @@ class RankEntryClipRecorder:
         self._frame_counter = 0
         self._sample_interval = max(1, round(source_fps / self._target_sample_fps))
         self._recording = True
+        self._duration_exceeded = False
 
     def add_frame(self, frame: np.ndarray) -> bool:
-        """録画中でなければ何もしない。MAX_DURATION_SECONDS相当のフレーム数を
-        超えた場合はTrueを返す(呼び出し側はこれを合図に強制的にfinish()すること)。
+        """録画中でなければ何もしない。max_duration_seconds相当のフレーム数に
+        到達済みならTrueを返す。
+
+        Issue #395: 到達後は**フレームの追加だけを止め**、録画状態とバッファは
+        そのまま保持する。呼び出し側(main.py)はmatch_idが判明した時点で
+        finish()を呼べばよく、上限に達したこと自体を理由にクリップを破棄しては
+        いけない(モジュールdocstring参照)。
 
         Issue #312: crop_roi/overlay_fnによるフレーム加工で例外が起きても
         検知ループを止めないよう、この1フレーム分だけ読み捨ててログに残す
@@ -338,6 +366,8 @@ class RankEntryClipRecorder:
         """
         if not self._recording:
             return False
+        if self._duration_exceeded:
+            return True
         if self._frame_counter % self._sample_interval == 0:
             try:
                 self._frames.append(self._process(frame))
@@ -345,7 +375,17 @@ class RankEntryClipRecorder:
                 logger.exception("動画クリップ用フレームの加工に失敗したため、このフレームを読み捨てます")
         self._frame_counter += 1
         elapsed_sampled_seconds = len(self._frames) / self._target_sample_fps
-        return elapsed_sampled_seconds >= self._max_duration_seconds
+        if elapsed_sampled_seconds >= self._max_duration_seconds:
+            self._duration_exceeded = True
+            # Issue #395: 通常は暗転検知で終わるはずの区間が上限まで伸びたことを
+            # 残す(暗転の取りこぼし#383が起きた回数を後から数えられるようにする)
+            logger.warning(
+                "動画クリップ(%s)の録画が上限時間(%.0f秒)に達したため、以降のフレームを追加しません"
+                "(バッファは保持し、試合結果が確定した時点で書き出します)",
+                self._output_dir,
+                self._max_duration_seconds,
+            )
+        return self._duration_exceeded
 
     def _process(self, frame: np.ndarray) -> np.ndarray:
         if self._crop_roi is not None:
