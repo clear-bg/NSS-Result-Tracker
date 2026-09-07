@@ -43,6 +43,16 @@ Issue #395: このとき**録画状態とバッファは保持したまま**に�
 `add_frame()`がフレームを追加しないので、待っている間にバッファが増え続けることも
 メモリを圧迫することもない。
 
+Issue #399: ゲージクローズアップ側は上記の間引きを8fps→`GAUGE_SAMPLE_FPS`(30fps)へ
+上げた。8fpsではランク変動が止まった瞬間の値を目盛りに合わせて読み取れず、
+手動入力の役に立たなかったため(実配信でのユーザー報告)。あわせて
+`resize_on_encode=True`を指定し、拡大(290x32→1160px)と目盛り描画は書き出し時に
+行い、バッファには切り出したままの生クロップだけを保持する。加工後を保持すると
+1枚約600KBだが、生クロップなら約28KBで済むため、枚数を3.75倍にしてもメモリは
+約1/6になる(実測: 8fps/加工後=144枚82.2MB → 30fps/生クロップ=540枚14.3MB)。
+画面全体のクリップは元が1920x1080で生のまま持つ方が重くなるため、従来どおり
+`add_frame()`の時点で960pxへ縮小して保持する。
+
 ## エンコード
 
 `imageio-ffmpeg`(既存依存、`capture/ffmpeg_capture.py`と同じ調達方法)で
@@ -181,6 +191,12 @@ DEFAULT_CLIPS_DIR = Path("clips/rank_entry_clips")
 GAUGE_CLIPS_DIR = Path("clips/rank_gauge_clips")
 
 TARGET_SAMPLE_FPS = 8.0
+# Issue #399: ゲージクローズアップ動画だけは、ランク変動が止まった瞬間の値を
+# 目盛りに合わせて読み取る用途のため8fpsでは足りない(実配信で「動画がある意味が
+# ほとんど無い」というフィードバックを受けた)。保持形式を「拡大・目盛り描画後」から
+# 「拡大前の生クロップ」へ変えたことで1枚あたり約28KB(拡大後は約600KB)に
+# なったため、この解像度でもfpsを上げられる(18秒×30fpsで約15MB)
+GAUGE_SAMPLE_FPS = 30.0
 TARGET_WIDTH = 960
 # Issue #395: 録画区間の上限。以前は「暗転を見逃した/長時間離席した」場合の
 # 安全策としての60秒だったが、実配信3セッション25試合の実測で9試合がこの上限に
@@ -312,6 +328,7 @@ class RankEntryClipRecorder:
         crop_roi: Optional[tuple[int, int, int, int]] = None,
         overlay_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
         db_path: Optional[Path] = None,
+        resize_on_encode: bool = False,
     ) -> None:
         self._output_dir = output_dir
         self._max_clips = max_clips
@@ -321,6 +338,12 @@ class RankEntryClipRecorder:
         self._ffmpeg_path = ffmpeg_path or imageio_ffmpeg.get_ffmpeg_exe()
         self._crop_roi = crop_roi
         self._overlay_fn = overlay_fn
+        # Issue #399: Trueにすると、拡大(_resize)とオーバーレイ(_overlay_fn)を
+        # バッファ時ではなく書き出し時に行い、バッファには切り出したままの
+        # 生クロップを保持する。小さいROIを大きく引き伸ばして見せるゲージ
+        # クローズアップ動画では、保持サイズが約1/20(600KB→28KB)になり、
+        # その分をfpsに回せる(モジュールdocstring参照)
+        self._resize_on_encode = resize_on_encode
         # Issue #389: 未確定の試合のクリップを削除しないための判定に使う
         # (省略時はdb.connect()と同じくconfig.get_db_path()を都度評価する)
         self._db_path = db_path
@@ -388,9 +411,28 @@ class RankEntryClipRecorder:
         return self._duration_exceeded
 
     def _process(self, frame: np.ndarray) -> np.ndarray:
+        """バッファへ積む形にフレームを加工する。
+
+        Issue #399: resize_on_encode=Trueの場合は拡大・オーバーレイを行わず、
+        切り出した生クロップだけを保持する(書き出し時に_encode_process()で
+        同じ加工を行う)。元フレームのスライスをそのまま持つと1920x1080の
+        バッファ全体が解放されなくなるため、必ずcopy()する。
+        """
         if self._crop_roi is not None:
             x1, y1, x2, y2 = self._crop_roi
             frame = frame[y1:y2, x1:x2]
+        if self._resize_on_encode:
+            return frame.copy()
+        frame = self._resize(frame)
+        if self._overlay_fn is not None:
+            frame = self._overlay_fn(frame)
+        return frame
+
+    def _encode_process(self, frame: np.ndarray) -> np.ndarray:
+        """書き出し直前の加工(Issue #399)。resize_on_encode=Falseなら何もしない
+        (バッファ時点で_process()が済ませている)。"""
+        if not self._resize_on_encode:
+            return frame
         frame = self._resize(frame)
         if self._overlay_fn is not None:
             frame = self._overlay_fn(frame)
@@ -432,7 +474,10 @@ class RankEntryClipRecorder:
             logger.exception("動画クリップの保持数管理に失敗しました")
 
     def _encode(self, frames: list[np.ndarray], match_id: int) -> None:
-        height, width = frames[0].shape[:2]
+        # Issue #399: resize_on_encode=Trueの場合はここで初めて拡大・オーバーレイを
+        # 行うため、出力サイズは加工後のフレームから取る
+        first_frame = self._encode_process(frames[0])
+        height, width = first_frame.shape[:2]
         self._output_dir.mkdir(parents=True, exist_ok=True)
         output_path = self._output_dir / f"{match_id}.mp4"
         cmd = [
@@ -454,8 +499,9 @@ class RankEntryClipRecorder:
         ]
         process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         assert process.stdin is not None
-        for frame in frames:
-            process.stdin.write(frame.tobytes())
+        for index, frame in enumerate(frames):
+            processed = first_frame if index == 0 else self._encode_process(frame)
+            process.stdin.write(processed.tobytes())
         # Issue #350: ここでprocess.stdin.close()を自前で呼んでしまうと、直後の
         # communicate()(POSIX実装)が未クローズ前提でstdinをflushしようとして
         # `ValueError: flush of closed file`になる(Windowsでは表面化せず、
