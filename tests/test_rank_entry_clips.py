@@ -392,3 +392,63 @@ def test_finish_when_ffmpeg_fails_does_not_raise(tmp_path):
     recorder._last_encode_thread.join(timeout=10)
 
     assert list(tmp_path.glob("*.mp4")) == []
+
+
+def test_add_frame_stops_buffering_after_max_duration_but_keeps_recording(caplog):
+    """Issue #395: 上限時間に達したら以降のフレームは追加しないが、録画状態と
+    バッファはmatch_idが判明するまで保持することを確認する。
+
+    以前は呼び出し側(main.py)が上限到達を異常系とみなしてクリップごと破棄して
+    いたため、_finalize()が上限より遅い試合(実配信25試合中13試合)のクリップが
+    1本も残らなくなる。上限は「収集の停止」であって「破棄」ではない。
+    """
+    recorder = RankEntryClipRecorder(
+        output_dir=None, target_sample_fps=10.0, max_duration_seconds=0.3
+    )
+    recorder.start(source_fps=10.0)  # sample_interval=1なので毎フレームサンプルされる
+
+    with caplog.at_level(logging.WARNING, logger="nss_tracker.rank_entry_clips"):
+        for _ in range(20):
+            recorder.add_frame(_make_frame())
+
+    # 0.3秒 * 10fps = 3フレームで上限に達し、以降は何度呼んでも増えない
+    assert len(recorder._frames) == 3
+    assert recorder.is_recording is True, "上限到達後も録画状態は保持されるはず"
+    assert caplog.text.count("上限時間") == 1, "上限到達のWARNINGは1回だけのはず"
+
+
+def test_finish_after_max_duration_still_writes_clip(tmp_path):
+    """Issue #395: 上限に達した後にmatch_idが判明した場合でも、それまでに
+    バッファしたフレームでクリップが生成されることを確認する。
+    """
+    recorder = RankEntryClipRecorder(
+        output_dir=tmp_path, target_sample_fps=10.0, max_duration_seconds=0.3
+    )
+    recorder.start(source_fps=10.0)
+    for _ in range(20):
+        recorder.add_frame(_make_frame(width=64, height=48))
+
+    recorder.finish(match_id=7)
+    recorder._last_encode_thread.join(timeout=10)
+
+    output_path = tmp_path / "7.mp4"
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
+
+
+def test_start_clears_duration_exceeded_from_previous_clip():
+    """Issue #395: 上限に達したまま次の試合が始まった場合、新しい録画では
+    再びフレームをバッファできることを確認する。
+    """
+    recorder = RankEntryClipRecorder(
+        output_dir=None, target_sample_fps=10.0, max_duration_seconds=0.3
+    )
+    recorder.start(source_fps=10.0)
+    for _ in range(10):
+        recorder.add_frame(_make_frame())
+    assert recorder.add_frame(_make_frame()) is True
+
+    recorder.start(source_fps=10.0)
+
+    assert recorder.add_frame(_make_frame()) is False
+    assert len(recorder._frames) == 1

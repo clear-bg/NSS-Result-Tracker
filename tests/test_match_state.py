@@ -1,4 +1,5 @@
 import json
+import logging
 from pathlib import Path
 
 import cv2
@@ -2351,6 +2352,9 @@ def test_obs_switch_waits_for_blackout_after_finalize(monkeypatch):
         match_end_confirm_seconds=1,
         league_change_grace_seconds=1,
         obs_switch_delay_after_blackout_seconds=3,
+        # Issue #395: このテストは「暗転が来るまで何フレーム進めてもTrueのまま」を
+        # 確認するのが目的のため、暗転取りこぼし時のタイムアウトは発火させない
+        obs_switch_timeout_seconds=1000,
         rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
     )
 
@@ -2384,6 +2388,104 @@ def test_obs_switch_waits_for_blackout_after_finalize(monkeypatch):
     assert machine.in_match is True, "delay(=3)未経過ではまだTrueのはず"
     machine.process_frame(frame)  # 4フレーム目(elapsed=3)でdelay到達
     assert machine.in_match is False, "暗転検知からdelay分経過後にFalseへ戻るはず"
+
+
+def _make_machine_for_obs_timeout(monkeypatch, blackout_flag, frame_idx, **kwargs):
+    """Issue #395: 暗転タイムアウトのテスト用に、VS画面確定〜「試合終了」確認まで
+    進む最小構成の状態機械を組み立てる。
+    """
+
+    def fake_is_vs_screen(frame):
+        return frame_idx["n"] < 3
+
+    def fake_is_match_end_screen(frame):
+        return 3 <= frame_idx["n"] < 5
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", fake_is_vs_screen)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", fake_is_match_end_screen)
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.0)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: blackout_flag["active"])
+
+    return MatchStateMachine(
+        now_fn=FakeClock(),
+        vs_screen_confirm_seconds=2,
+        match_end_confirm_seconds=1,
+        obs_switch_delay_after_blackout_seconds=3,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+        **kwargs,
+    )
+
+
+def test_obs_switch_times_out_when_blackout_is_never_detected(monkeypatch, caplog):
+    """Issue #395: 暗転を一度も検知できないまま obs_switch_timeout_seconds が
+    経過したら、暗転を待たずにin_matchをFalseへ戻すことを確認する(#383の
+    取りこぼしが残っている間の安全網)。あわせて、この経路を通ったことが
+    WARNINGログに残ることも確認する(安全網が症状を隠した回数を後から
+    数えられるようにするため、Issueの必須要件)。
+    """
+    frame_idx = {"n": 0}
+    blackout = {"active": False}  # 暗転は最後まで来ない
+    machine = _make_machine_for_obs_timeout(
+        monkeypatch, blackout, frame_idx, obs_switch_timeout_seconds=10
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    # 「試合終了」確認(frame_idx=3〜4)まで進める。FakeClockはprocess_frame
+    # 1回につき1秒進む
+    with caplog.at_level(logging.WARNING, logger="nss_tracker.state"):
+        for _ in range(5):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+        assert machine.in_match is True, "VS画面確定〜試合終了直後はTrueのはず"
+
+        # タイムアウト(10秒)未満の間はTrueのまま維持される
+        for _ in range(8):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+        assert machine.in_match is True, "タイムアウト未満ではTrueのまま維持されるはず"
+
+        for _ in range(5):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+
+    assert machine.in_match is False, "タイムアウト経過後はFalseへ戻るはず"
+    assert "タイムアウトでOBSシーンを切り替えます" in caplog.text
+
+
+def test_obs_switch_timeout_does_not_preempt_normal_blackout_path(monkeypatch, caplog):
+    """Issue #395: タイムアウトより前に暗転を検知できた場合は従来どおりの経路
+    (暗転検知 + obs_switch_delay_after_blackout_seconds)で切り替わり、
+    タイムアウトのWARNINGは出ないことを確認する。
+    """
+    frame_idx = {"n": 0}
+    blackout = {"active": False}
+    machine = _make_machine_for_obs_timeout(
+        monkeypatch, blackout, frame_idx, obs_switch_timeout_seconds=30
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    with caplog.at_level(logging.WARNING, logger="nss_tracker.state"):
+        for _ in range(5):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+        assert machine.in_match is True
+
+        blackout["active"] = True
+        # 暗転検知フレーム自身はelapsed=0のため、delay(=3)到達には4回分必要
+        for _ in range(4):
+            machine.process_frame(frame)
+            frame_idx["n"] += 1
+
+    assert machine.in_match is False, "暗転検知からdelay経過後にFalseへ戻るはず"
+    assert "タイムアウト" not in caplog.text, "通常経路ではタイムアウトのWARNINGは出ないはず"
 
 
 def test_obs_switch_uses_first_blackout_when_finalize_itself_triggered_by_blackout(monkeypatch):
