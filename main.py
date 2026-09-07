@@ -31,7 +31,7 @@ import webbrowser
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -60,7 +60,7 @@ from nss_tracker.config import (
     get_youtube_chat_dive_time_enabled,
 )
 from nss_tracker.database import db
-from nss_tracker.detection.motion import StabilityMonitor, is_full_blackout
+from nss_tracker.detection.motion import BlackoutWatcher, StabilityMonitor, is_full_blackout
 from nss_tracker.detection.rank_ocr import (
     GAUGE_ROI_ENLARGED,
     RANK_ROI,
@@ -160,15 +160,28 @@ def _setup_logging() -> Path:
     return log_file
 
 
-def _make_reader(video_path: Optional[Path]) -> FfmpegFrameReader:
+def _make_reader(
+    video_path: Optional[Path], frame_observer: Optional[Callable[[np.ndarray], None]] = None
+) -> FfmpegFrameReader:
+    """フレームリーダーを組み立てる。
+
+    Issue #398: frame_observerには、読み取りスレッド側で全フレームを見たい処理
+    (BlackoutWatcher.observe)を渡す。read()は最新フレームしか返さないため、
+    検知ループが重い処理で止まっている間に届いたフレームはここでしか観測できない。
+    """
     if video_path is None:
         width, height = get_capture_resolution()
-        return FfmpegFrameReader(device_name=get_capture_device_name(), width=width, height=height)
+        return FfmpegFrameReader(
+            device_name=get_capture_device_name(),
+            width=width,
+            height=height,
+            frame_observer=frame_observer,
+        )
     # -re: 動画をファイルの本来のfpsで(実時間と同じ速さで)読み込む。
     # 付けない場合ffmpegはデコードできる限り高速に全フレームを吐き出してしまい、
     # FfmpegFrameReaderの「追いつかない間の古いフレームは破棄する」設計と組み合わさると
     # 実際にはほとんどのフレームが読み飛ばされてしまい、実キャプチャの動作を再現できない
-    return FfmpegFrameReader(input_args=["-re", "-i", str(video_path)])
+    return FfmpegFrameReader(input_args=["-re", "-i", str(video_path)], frame_observer=frame_observer)
 
 
 def _detect_fps(video_path: Path) -> float:
@@ -360,6 +373,7 @@ def run(
     fps: float,
     clip_recorder: RankEntryClipRecorder,
     gauge_clip_recorder: RankEntryClipRecorder,
+    blackout_watcher: Optional[BlackoutWatcher] = None,
 ) -> None:
     prev_state = machine.current_state
     prev_in_match = machine.in_match
@@ -421,7 +435,11 @@ def run(
                 )
             last_frame_read_at = now
 
-            result = machine.process_frame(frame)
+            # Issue #398: read()が返した1枚だけでなく、前回の処理以降に
+            # キャプチャ側が受け取った全フレームの暗転観測結果を渡す
+            # (メインループが止まっていた間に過ぎ去った暗転を取りこぼさないため)
+            blackout = blackout_watcher.consume() if blackout_watcher is not None else None
+            result = machine.process_frame(frame, blackout)
 
             vs_screen_event = machine.pop_vs_screen_event()
             if vs_screen_event is not None:
@@ -492,7 +510,9 @@ def run(
                 # クリップを破棄してリセットしていたため、上限を短くするとその13試合が
                 # 1本も残らなくなる。add_frame()側が上限到達後のフレーム追加を止めて
                 # いるため、待っている間にバッファが増え続けることはない
-                if pending_clip_match_id is not None and (duration_exceeded or is_full_blackout(frame)):
+                # Issue #398: クリップの終了トリガーも同じ観測結果を使う
+                blackout_seen = blackout.blackout if blackout is not None else is_full_blackout(frame)
+                if pending_clip_match_id is not None and (duration_exceeded or blackout_seen):
                     for recorder in clip_recorders:
                         recorder.finish(pending_clip_match_id)
                     pending_clip_match_id = None
@@ -535,7 +555,9 @@ def main() -> None:
     logger.info("ログファイル: %s", log_file)
 
     try:
-        reader = _make_reader(args.video)
+        # Issue #398: 暗転判定を読み取りスレッド側で全フレームに対して行う
+        blackout_watcher = BlackoutWatcher()
+        reader = _make_reader(args.video, frame_observer=blackout_watcher.observe)
         fps = args.fps
         if fps is None:
             # Issue #255: 実キャプチャ時は.envのCAPTURE_FPSを使う(OBS Virtual Cameraの
@@ -623,7 +645,17 @@ def main() -> None:
         db_path=db_path,
     )
     try:
-        run(reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder)
+        run(
+            reader,
+            machine,
+            conn,
+            session_id,
+            obs_controller,
+            fps,
+            clip_recorder,
+            gauge_clip_recorder,
+            blackout_watcher,
+        )
     finally:
         if dive_time_watcher is not None:
             dive_time_watcher.stop()
