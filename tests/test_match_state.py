@@ -1,3 +1,4 @@
+import concurrent.futures
 import json
 import logging
 from pathlib import Path
@@ -17,7 +18,11 @@ from nss_tracker.detection.rank_ocr import (
     RANK_ROI,
 )
 from nss_tracker.detection.vs_rank import SlotRank
-from nss_tracker.state.match_state import MatchStateMachine
+from nss_tracker.state.match_state import (
+    MatchStateMachine,
+    _run_rank_before_ocr,
+    _run_vs_screen_ocr,
+)
 
 TARGET_SIZE = (1920, 1080)
 METADATA_FILENAME = "metadata.json"
@@ -1116,6 +1121,75 @@ def test_demotion_label_wins_over_small_gauge_magnitude(monkeypatch):
     assert result.league_changed == "down"
 
 
+class _RecordingExecutor:
+    """submitされた関数を記録し、その場で同期実行して完了済みFutureを返すフェイク。
+
+    Issue #397: 重いOCRが「メインループから直接呼ばれていない(=Executor経由で
+    別プロセスへ渡せる形になっている)」ことを検証するために使う。
+    """
+
+    def __init__(self) -> None:
+        self.submitted: list = []
+
+    def submit(self, fn, *args, **kwargs):
+        self.submitted.append(fn)
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        future.set_result(fn(*args, **kwargs))
+        return future
+
+
+def test_vs_screen_and_rank_before_ocr_go_through_the_executor(monkeypatch):
+    """Issue #397: VS画面ランクOCRと結果バナー確定時のランクバッジ読み取りが、
+    どちらもメインループから直接ではなくExecutor経由で実行されることを確認する。
+
+    本番ではこのExecutorがProcessPoolExecutorになり、PaddleOCR推論の間も
+    GILが解放されるため、FfmpegFrameReaderの読み取りスレッドが止まらなくなる
+    (#383の「検知ループの盲区」対策、モジュールdocstring参照)。
+    """
+    frame_idx = {"n": 0}
+
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: frame_idx["n"] < 3)
+    monkeypatch.setattr(
+        match_state_module, "read_vs_screen_ranks", lambda frame: ([SlotRank("∞", 38)], [])
+    )
+    monkeypatch.setattr(match_state_module, "read_team_colors", lambda frame: ("#111111", "#222222"))
+    monkeypatch.setattr(
+        match_state_module,
+        "read_precise_rank",
+        lambda frame, gauge_roi, rank_number_roi: (38, 38.2)
+        if rank_number_roi == RANK_NUMBER_ROI_COMPACT
+        else None,
+    )
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", lambda frame, roi: 0.2)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win" if frame_idx["n"] >= 4 else None)
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+
+    executor = _RecordingExecutor()
+    machine = MatchStateMachine(
+        now_fn=FakeClock(),
+        vs_screen_confirm_seconds=2,
+        banner_confirm_seconds=2,
+        rank_ocr_executor=executor,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    for _ in range(10):
+        machine.process_frame(frame)
+        frame_idx["n"] += 1
+
+    assert executor.submitted == [_run_vs_screen_ocr, _run_rank_before_ocr], (
+        f"Executor経由で実行されたOCRが想定と違う: {executor.submitted}"
+    )
+    # Executor経由でもVS画面の読み取り結果はきちんと反映される
+    assert machine._pending_vs_mine_ranks == [SlotRank("∞", 38)]
+    assert machine._pending_mine_team_color == "#111111"
+
+
 def test_grace_never_calls_tier_ocr_and_seeds_tier_from_rank_before(monkeypatch):
     """Issue #396: TRACKING_RANK(GRACE)中は帯番号OCRを一切呼ばず、帯番号は
     結果バナー確定時に読み取った試合前の値を起点にすることを確認する。
@@ -2039,9 +2113,9 @@ def test_vs_screen_confirmation_logs_ranks_at_info_level(monkeypatch, caplog):
     with caplog.at_level("INFO", logger="nss_tracker.state"):
         for _ in range(3):
             machine.process_frame(frame)
-        # Issue #189: VS画面ランクOCRはバックグラウンドスレッドで実行されるため、
-        # ログ出力を待ってから検証する
-        machine._vs_ocr_thread.join()
+        # Issue #189/#397: VS画面ランクOCRは別プロセス(テストではThreadPoolExecutor)で
+        # 実行されるため、結果の取り込み(ログ出力)を待ってから検証する
+        machine._poll_vs_ocr(wait=True)
 
     assert "1試合目 VS画面ランク: mine=[∞39, -] opponent=[S9, -]" in caplog.text
 
@@ -2077,9 +2151,9 @@ def test_pop_vs_screen_event_fires_once_at_confirmation(monkeypatch):
     assert machine.pop_vs_screen_event() is None
 
     machine.process_frame(frame)  # 3フレーム目で経過2.0秒に到達し確定
-    # Issue #189: VS画面ランクOCRはバックグラウンドスレッドで実行されるため、
-    # VsScreenEventが書き込まれるのを待ってからpopする
-    machine._vs_ocr_thread.join()
+    # Issue #189/#397: VS画面ランクOCRは別プロセス(テストではThreadPoolExecutor)で
+    # 実行されるため、VsScreenEventが書き込まれるのを待ってからpopする
+    machine._poll_vs_ocr(wait=True)
     event = machine.pop_vs_screen_event()
 
     assert event is not None
@@ -2605,9 +2679,9 @@ def test_vs_screen_shown_continuously_reads_ranks_only_once(monkeypatch):
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     for _ in range(10):
         machine.process_frame(frame)
-    # Issue #189: VS画面ランクOCRはバックグラウンドスレッドで実行されるため、
-    # 呼び出し回数を確認する前に完了を待つ
-    machine._vs_ocr_thread.join()
+    # Issue #189/#397: VS画面ランクOCRは別プロセス(テストではThreadPoolExecutor)で
+    # 実行されるため、呼び出し回数を確認する前に完了を待つ
+    machine._poll_vs_ocr(wait=True)
 
     assert read_calls["n"] == 1
 

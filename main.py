@@ -82,6 +82,7 @@ from nss_tracker.state.match_state import (
     MatchStateMachine,
     VsScreenEvent,
     _run_goal_ocr,
+    _run_vs_screen_ocr,
 )
 from nss_tracker.timeutil import JST, now_jst
 from nss_tracker.web.runner import start_web_server_thread
@@ -197,8 +198,16 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
     ため、モデル読み込みのコールドスタートは実質的に最初の1回だけで済む。
 
     Issue #396: 帯番号の定期再チェック(#303のtier_recheck_executor)はGRACE中の
-    帯番号OCRごと廃止したため、ここで渡すExecutorはゴールOCR用の1つだけになった。
+    帯番号OCRごと廃止した。
+
+    Issue #397: 代わりにVS画面ランクOCR(旧バックグラウンドスレッド)と結果バナー
+    確定時のランクバッジ読み取り(旧同期呼び出し)を同じ理由で別プロセスへ移したため、
+    ここで渡すExecutorはrank_ocr_executor(この2つを共有)とgoal_ocr_executorの2つ。
     """
+    rank_ocr_executor = ProcessPoolExecutor(max_workers=1)
+    # Issue #397: ワーカープロセス側のOCRモデル読み込み(コールドスタート)を
+    # 実際に必要になる前(=最初のVS画面確定)に前倒しで済ませておく
+    rank_ocr_executor.submit(_run_vs_screen_ocr, np.zeros((1080, 1920, 3), dtype=np.uint8))
     goal_ocr_executor = ProcessPoolExecutor(max_workers=1)
     # Issue #327: ワーカープロセス側のPaddleOCRモデル読み込み(コールドスタート、
     # 実測3.8〜7秒程度)を、実際に必要になる前に前倒しで済ませておく。結果は使わず
@@ -222,6 +231,7 @@ def _make_match_state_machine(fps: float) -> MatchStateMachine:
         # 満たした最初のフレームで即OCR確認する(0.0秒=即時、state/match_state.py参照)
         match_end_confirm_seconds=0.0,
         demotion_label_confirm_seconds=1.0,
+        rank_ocr_executor=rank_ocr_executor,
         goal_ocr_executor=goal_ocr_executor,
         league_change_grace_seconds=5.0,
         rank_recheck_interval_seconds=0.25,
