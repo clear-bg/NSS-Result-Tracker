@@ -1,5 +1,6 @@
 import logging
 
+import cv2
 import numpy as np
 import pytest
 
@@ -452,3 +453,73 @@ def test_start_clears_duration_exceeded_from_previous_clip():
 
     assert recorder.add_frame(_make_frame()) is False
     assert len(recorder._frames) == 1
+
+
+def test_resize_on_encode_keeps_raw_crop_in_buffer(tmp_path):
+    """Issue #399: resize_on_encode=Trueなら、バッファには拡大・オーバーレイ前の
+    生クロップだけを保持することを確認する(保持サイズを約1/20に減らし、
+    その分をfpsに回すための変更)。
+    """
+    recorder = RankEntryClipRecorder(
+        output_dir=tmp_path,
+        target_sample_fps=10.0,
+        target_width=400,
+        crop_roi=(0, 0, 40, 20),
+        overlay_fn=lambda frame: np.vstack([frame, np.zeros_like(frame)]),
+        resize_on_encode=True,
+    )
+    recorder.start(source_fps=10.0)
+
+    recorder.add_frame(_make_frame(width=200, height=100))
+
+    buffered = recorder._frames[0]
+    assert buffered.shape[:2] == (20, 40), (
+        f"バッファには切り出したままの生クロップが入るはず: {buffered.shape}"
+    )
+
+
+def test_resize_on_encode_still_writes_resized_and_overlaid_clip(tmp_path):
+    """Issue #399: 保持形式を変えても、書き出されるクリップは従来どおり
+    拡大・オーバーレイ済みであることを確認する。
+    """
+    recorder = RankEntryClipRecorder(
+        output_dir=tmp_path,
+        target_sample_fps=10.0,
+        target_width=400,
+        crop_roi=(0, 0, 40, 20),
+        # 高さが2倍になるオーバーレイ(目盛り用の余白追加を模した加工)
+        overlay_fn=lambda frame: np.vstack([frame, np.zeros_like(frame)]),
+        resize_on_encode=True,
+    )
+    recorder.start(source_fps=10.0)
+    for _ in range(3):
+        recorder.add_frame(_make_frame(width=200, height=100))
+
+    recorder.finish(match_id=5)
+    recorder._last_encode_thread.join(timeout=10)
+
+    output_path = tmp_path / "5.mp4"
+    assert output_path.exists()
+    capture = cv2.VideoCapture(str(output_path))
+    try:
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    finally:
+        capture.release()
+    # 40x20 -> target_width=400で拡大(400x200)し、オーバーレイで高さが2倍(400)
+    assert (width, height) == (400, 400)
+
+
+def test_buffered_crop_does_not_retain_the_source_frame(tmp_path):
+    """Issue #399: バッファがスライス(ビュー)のままだと元の1920x1080フレーム全体が
+    解放されなくなるため、必ずコピーを保持していることを確認する。
+    """
+    recorder = RankEntryClipRecorder(
+        output_dir=tmp_path, target_sample_fps=10.0, crop_roi=(0, 0, 4, 4), resize_on_encode=True
+    )
+    recorder.start(source_fps=10.0)
+    source = _make_frame(width=200, height=100)
+
+    recorder.add_frame(source)
+
+    assert recorder._frames[0].base is None, "バッファが元フレームのビューになっている"

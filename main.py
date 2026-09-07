@@ -72,6 +72,7 @@ from nss_tracker.obs_control import ObsSceneController
 from nss_tracker.rank_entry_clips import (
     DEFAULT_CLIPS_DIR,
     GAUGE_CLIPS_DIR,
+    GAUGE_SAMPLE_FPS,
     GAUGE_TARGET_WIDTH,
     RankEntryClipRecorder,
     _draw_gauge_ticks,
@@ -643,6 +644,11 @@ def main() -> None:
         crop_roi=GAUGE_ROI_ENLARGED,
         overlay_fn=_draw_gauge_ticks,
         db_path=db_path,
+        # Issue #399: ランク変動が止まった瞬間の値を目盛りに合わせて読み取れるよう、
+        # ゲージ動画だけサンプリングを上げる。あわせて拡大・目盛り描画を書き出し時に
+        # 回し、バッファには生クロップ(1枚約28KB)だけを保持する
+        target_sample_fps=GAUGE_SAMPLE_FPS,
+        resize_on_encode=True,
     )
     try:
         run(
