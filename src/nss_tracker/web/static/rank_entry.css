@@ -197,39 +197,76 @@ h1 {
     font-variant-numeric: tabular-nums;
 }
 
+/* Issue #409: 保持件数を50件に増やしたため、横一列のボタンから縦の
+   スクロールリストへ変更した。試合終了時刻で目的の試合を探せるようにする */
 .rank-entry-clip-selector {
     display: flex;
-    gap: 4px;
+    flex-direction: column;
+    gap: 2px;
     margin-top: 6px;
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 4px;
 }
 
-.rank-entry-clip-button {
-    flex: 1;
-    font-size: 11px;
-    padding: 4px 2px;
-    border: 1px solid #ccc;
+.rank-entry-clip-row {
+    display: grid;
+    grid-template-columns: 16px 84px 32px 1fr auto;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    font-size: 12px;
+    padding: 4px 6px;
+    border: 1px solid transparent;
     border-radius: 4px;
     background: #fff;
     color: #555;
     cursor: pointer;
+    text-align: left;
 }
 
-.rank-entry-clip-button-active {
+.rank-entry-clip-row:hover {
+    background: #f5f7fa;
+}
+
+.rank-entry-clip-row-active {
     border-color: #1a73e8;
     color: #1a73e8;
     font-weight: bold;
+    background: #eef4fd;
 }
 
-/* Issue #337: rank_afterの確定/未確定をラベル文字の前のドットで示す。配置・色は
-   Artifactでの見た目案(コーナーバッジ/インライン/2段組み/帯の5案)をユーザーと
-   比較した上で、テキストと自然に読める「ラベル前インラインドット」案を採用した。
-   色はdataviz skillのstatus palette(good/warning)をそのまま使う。 */
-.rank-entry-clip-button-content {
+.rank-entry-clip-marker {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    justify-content: center;
 }
 
+/* 警告のある試合は、確定/未確定のドットの代わりに警告色の記号を出す */
+.rank-entry-clip-marker-warning {
+    color: #8a5300;
+    font-size: 13px;
+}
+
+.rank-entry-clip-time {
+    font-variant-numeric: tabular-nums;
+}
+
+.rank-entry-clip-rank {
+    font-variant-numeric: tabular-nums;
+}
+
+.rank-entry-clip-latest {
+    font-size: 11px;
+    color: #1a73e8;
+    white-space: nowrap;
+}
+
+/* Issue #337: rank_afterの確定/未確定をドットで示す。色はdataviz skillの
+   status palette(good/warning)をそのまま使う。Issue #409で選択UIを縦リストへ
+   変更した際、ドットは行頭のマーカー列(.rank-entry-clip-marker)へ移した */
 .rank-entry-clip-status-dot {
     width: 6px;
     height: 6px;

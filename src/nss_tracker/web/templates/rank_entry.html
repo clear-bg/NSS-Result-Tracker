@@ -47,6 +47,7 @@
 {% endif %}
 
 <script id="rank-entry-clips-data" type="application/json">{{ clips | tojson }}</script>
+<script id="rank-entry-initial-match-id" type="application/json">{{ initial_match_id | tojson }}</script>
 <script>
 (function () {
   const dataEl = document.getElementById("rank-entry-clips-data");
@@ -54,6 +55,10 @@
     return;
   }
   let clips = JSON.parse(dataEl.textContent);
+  // Issue #409: ?match_id=Nで指定された試合を初期選択にする(#408からの導線)。
+  // 指定が無い/そのクリップが残っていない場合は従来どおり最新を選ぶ。
+  const initialMatchIdEl = document.getElementById("rank-entry-initial-match-id");
+  const initialMatchId = initialMatchIdEl ? JSON.parse(initialMatchIdEl.textContent) : null;
   const video = document.getElementById("rank-entry-video");
   const videoWrap = document.querySelector(".rank-entry-video-wrap-main");
   const gaugeVideo = document.getElementById("rank-entry-gauge-video");
@@ -337,27 +342,48 @@
     input.select();
   }
 
+  // Issue #409: 保持件数を50件に増やしたため、横一列のボタン(「49つ前」等)では
+  // 目的の試合を探せない。試合終了時刻・勝敗・確定状態・警告の有無を並べた
+  // 縦のスクロールリストにする(ユーザーとの相談で決定)。
+  function appendCell(row, className, text) {
+    const cell = document.createElement("span");
+    cell.className = className;
+    cell.textContent = text;
+    row.appendChild(cell);
+    return cell;
+  }
+
   function renderSelector() {
     selector.innerHTML = "";
-    clips.forEach(function (clip) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "rank-entry-clip-button" + (clip.match_id === selectedMatchId ? " rank-entry-clip-button-active" : "");
-
-      const content = document.createElement("span");
-      content.className = "rank-entry-clip-button-content";
+    clips.forEach(function (clip, index) {
       const confirmed = clip.rank_after !== null && clip.rank_after !== undefined;
-      const dot = document.createElement("span");
-      dot.className = "rank-entry-clip-status-dot " + (confirmed ? "rank-entry-clip-status-dot-confirmed" : "rank-entry-clip-status-dot-unconfirmed");
-      content.appendChild(dot);
-      content.appendChild(document.createTextNode(clip.recency_label));
-      button.appendChild(content);
+      const hasWarning = (clip.warnings || []).some(function (w) { return !w.acknowledged; });
 
-      button.addEventListener("click", function () {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "rank-entry-clip-row" + (clip.match_id === selectedMatchId ? " rank-entry-clip-row-active" : "");
+
+      const marker = appendCell(row, "rank-entry-clip-marker", hasWarning ? "⚠" : "");
+      if (hasWarning) {
+        marker.classList.add("rank-entry-clip-marker-warning");
+      } else {
+        const dot = document.createElement("span");
+        dot.className = "rank-entry-clip-status-dot " + (confirmed ? "rank-entry-clip-status-dot-confirmed" : "rank-entry-clip-status-dot-unconfirmed");
+        marker.appendChild(dot);
+      }
+
+      appendCell(row, "rank-entry-clip-time", clip.detected_at_text);
+      appendCell(row, "rank-entry-clip-result", clip.result_text);
+      appendCell(row, "rank-entry-clip-rank", confirmed ? String(clip.rank_after) : "未入力");
+      if (index === 0) {
+        appendCell(row, "rank-entry-clip-latest", clip.recency_label);
+      }
+
+      row.addEventListener("click", function () {
         userSelected = true;
         selectClip(clip.match_id);
       });
-      selector.appendChild(button);
+      selector.appendChild(row);
     });
   }
 
@@ -431,7 +457,14 @@
   }
 
   if (clips.length > 0) {
-    selectClip(clips[0].match_id);
+    const requested = initialMatchId !== null && findClip(initialMatchId) !== null;
+    if (requested) {
+      // 明示的に指定された試合は、以後の定期更新で最新へ移らないよう選択済み扱いにする
+      userSelected = true;
+      selectClip(initialMatchId);
+    } else {
+      selectClip(clips[0].match_id);
+    }
   }
   setInterval(refresh, 5000);
 })();
