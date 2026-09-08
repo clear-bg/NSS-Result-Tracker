@@ -111,6 +111,7 @@ def test_start_twice_raises():
         reader.stop()
 
 
+@requires_video_fixtures
 def test_frame_observer_receives_every_decoded_frame(videos_dir):
     """Issue #398: frame_observerには、read()が返さなかったフレームも含めて
     デコードした全フレームが渡ることを確認する。
@@ -138,6 +139,7 @@ def test_frame_observer_receives_every_decoded_frame(videos_dir):
     )
 
 
+@requires_video_fixtures
 def test_frame_observer_exception_does_not_stop_reading(videos_dir):
     """Issue #398: オブザーバが例外を投げてもフレーム取得自体は継続する。"""
 
