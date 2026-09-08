@@ -179,6 +179,18 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 - `rank_after` を修正すると判定の前提が変わるため、`db.save_manual_rank_after()` の修正パスがその試合の確認済みをすべて取り消す
 - `web/server.py` の `_connect()` はスキーマ作成・マイグレーションを行わない(Webサーバーは基本的にDBを読むだけ、という疎結合方針のため)。そのため `create_app()` が起動時に一度だけ `database.db.connect()` を呼んでスキーマを整える。`main.py` 経由なら起動時に呼ばれるが、`scripts/run_web_dashboard.py` でWebサーバーだけを起動した場合に新しいテーブルが既存DBに無く`OperationalError`になるため
 
+### ランク数値拡大クリップ(Issue #417)
+
+`/rank-entry` をモニターの片側半分に寄せて使うと、全画面クリップ(1920px幅を960pxで保存し、右カラム実測 約286px で表示)では**帯番号が約8px幅**にしかならず目視で読み間違える。ゲージには#312/#399で拡大クリップを用意済みだったため、帯番号にも同じ手当てを入れ、**3本目のクリップ**を追加した(`clips/rank_number_clips/`)。
+
+- 切り出し領域は `detection/rank_ocr.py` の `RANK_NUMBER_CLIP_ROI = (178, 836, 336, 953)`(158×117)。**読み取りには使わず、人間が目視するためだけのROI**。既存の `RANK_NUMBER_ROI_COMPACT`/`RANK_NUMBER_ROI_ENLARGED` の和集合 + マージン30pxで、新規の実測は不要
+  - **マージンは30px必要**。10pxだと拡大表示でピルの右端が切れる(`RANK_NUMBER_ROI_ENLARGED` は数値を読む用途のROIでピルの縁までは含んでいないため)。実フレームで切り出して確認済み
+  - 当初は `RANK_ROI`(330×330、バッジ全体)を使う案だったが、数値がROI面積の約1.7%しか占めず、286px幅に収めても帯番号は約49px止まり。数値ピル中心に絞ることで約101pxになる(比較結果はIssue #417参照)
+- `target_sample_fps` はゲージ動画と同じ30fps(`GAUGE_SAMPLE_FPS`)。同じ長さ・同じfpsになるため、2本を同じ位置までシークすれば同じ瞬間が見られる
+- `resize_on_encode=True` でバッファには生クロップだけを保持する(#399と同じ理由)。書き出し幅は `RANK_NUMBER_TARGET_WIDTH = 632`(ゲージと同じ4倍)
+- 目盛り等のオーバーレイは無し(数値を読むだけのため)
+- 配置は既存の並びの下(全画面 → ゲージ拡大 → ランク数値拡大)。この機能の導入前に録画された試合では `has_number_clip` がFalseになり、ラベルごと非表示になる(ゲージ動画と同じ扱い)
+
 ### ランク手動入力用クリップの解像度・fps(Issue #399)
 
 `/rank-entry` で見返すクリップは、画面全体(`clips/rank_entry_clips/`)とゲージクローズアップ(`clips/rank_gauge_clips/`、Issue #312)の2本を同じ区間で生成する。Issue #399 で、ゲージ側だけサンプリングを 8fps → **30fps**(`GAUGE_SAMPLE_FPS`)に上げた。8fpsではランク変動が止まった瞬間の値を目盛りに合わせて読み取れず、動画がある意味をほとんど失っていたため(実配信でのユーザー報告)。
