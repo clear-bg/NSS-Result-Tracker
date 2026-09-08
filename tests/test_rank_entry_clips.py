@@ -532,3 +532,26 @@ def test_default_max_clips_is_50():
     だったため、50件でも最悪約220MB・通常は100MB以下に収まる。
     """
     assert rank_entry_clips.DEFAULT_MAX_CLIPS == 50
+
+
+def test_rank_number_clip_roi_contains_both_badge_sizes():
+    """Issue #417: ランク数値拡大クリップのROIは、コンパクト表示・拡大表示の
+    どちらの数値ROIも余裕を持って包む必要がある(片方でも欠けると読めなくなる)。
+    """
+    from nss_tracker.detection.rank_ocr import (
+        RANK_NUMBER_CLIP_ROI,
+        RANK_NUMBER_ROI_COMPACT,
+        RANK_NUMBER_ROI_ENLARGED,
+    )
+
+    clip_x1, clip_y1, clip_x2, clip_y2 = RANK_NUMBER_CLIP_ROI
+    for roi in (RANK_NUMBER_ROI_COMPACT, RANK_NUMBER_ROI_ENLARGED):
+        x1, y1, x2, y2 = roi
+        # 数値ROIの外側にマージンが残っていること(ピルの縁まで含めるため)
+        assert clip_x1 < x1 and clip_y1 < y1
+        assert clip_x2 > x2 and clip_y2 > y2
+
+
+def test_rank_number_clip_dir_is_separate_from_other_clips():
+    assert rank_entry_clips.RANK_NUMBER_CLIPS_DIR != rank_entry_clips.DEFAULT_CLIPS_DIR
+    assert rank_entry_clips.RANK_NUMBER_CLIPS_DIR != rank_entry_clips.GAUGE_CLIPS_DIR
