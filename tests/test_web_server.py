@@ -2118,6 +2118,19 @@ def test_admin_post_marks_obs_scene_switching_confirmed(admin_client: TestClient
     assert startup_gate.is_obs_scene_switching_confirmed() is True
 
 
+def test_admin_css_link_has_cache_busting_version(tmp_path: Path):
+    """Issue #410: CSSを修正しても、ブラウザがキャッシュした古い内容を使い続けて
+    反映されない問題を避けるため、更新時刻をクエリに付ける。
+    """
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    match = re.search(r'href="/static/admin\.css\?v=(\d+)"', response.text)
+    assert match is not None, response.text
+    assert int(match.group(1)) > 0
+
+
 def test_admin_get_submit_button_is_always_enabled(tmp_path: Path, monkeypatch):
     """Issue #410: 未選択の項目があってもボタン自体は押せる(disabledにしない)。"""
     monkeypatch.setattr("nss_tracker.config._current_room_type", None)

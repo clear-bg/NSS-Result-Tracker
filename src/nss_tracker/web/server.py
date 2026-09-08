@@ -1214,6 +1214,24 @@ def _overlay_debug_bg_style(request: Request) -> str:
     return ""
 
 
+def _static_asset_version(filename: str) -> str:
+    """静的ファイルのURLに付けるキャッシュバスター(Issue #410)。
+
+    `<link rel="stylesheet" href="/static/xxx.css">`はURLが変わらない限り
+    ブラウザが古い内容を使い続けるため、CSSを修正しても手動でスーパーリロード
+    (Ctrl+F5)するまで反映されない(overlay系でも同じ問題があることをCLAUDE.mdに
+    記載済み)。ファイルの更新時刻をクエリに付けることで、内容を変えたときだけ
+    URLが変わり、変えていない間は従来どおりキャッシュが効くようにする。
+
+    ファイルが見つからない場合は"0"を返す(URLにクエリが付くだけで実害が無いため、
+    ここでアプリを止める理由にはならない)。
+    """
+    try:
+        return str(int((_WEB_DIR / "static" / filename).stat().st_mtime))
+    except OSError:
+        return "0"
+
+
 _MATCH_RESULT_LABELS = {"win": "勝ち", "lose": "負け", "draw": "引き分け"}
 
 
@@ -1339,6 +1357,7 @@ def create_app(db_path: Path) -> FastAPI:
             "error_room_type": error_room_type,
             "error_obs_scene_switching": error_obs_scene_switching,
             "overlay_links": app.state.overlay_links,
+            "admin_css_version": _static_asset_version("admin.css"),
         }
         return _TEMPLATES.TemplateResponse(request, "admin.html", context)
 
