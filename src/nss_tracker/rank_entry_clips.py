@@ -65,6 +65,14 @@ ffmpeg本体のパスを取得し、サブプロセスへ生フレーム(bgr24, 
 行う(Issue #189/#303と同じ考え方)。`_last_encode_thread`はテスト・シャットダウン時に
 完了を待てるようにするためのフックで、通常の検知ループはこれを待たない。
 
+## ランク数値拡大クリップ(Issue #417)
+
+画面全体・ゲージ拡大に加えて、帯番号だけを切り出した3本目のクリップを生成する
+(`RANK_NUMBER_CLIPS_DIR`)。`/rank-entry`をモニターの片側半分に寄せて使うと、
+画面全体のクリップでは帯番号が約8px幅にしかならず目視で読み間違えるため。
+切り出し領域は`detection/rank_ocr.py`の`RANK_NUMBER_CLIP_ROI`で、ゲージ拡大と
+同じく`crop_roi`+`resize_on_encode`の仕組みにそのまま乗せている。
+
 ## 保持数管理
 
 直近`max_clips`件(既定50件)を基本の保持数とし、新しいクリップが出来るたびに
@@ -199,6 +207,8 @@ logger = logging.getLogger("nss_tracker.rank_entry_clips")
 DEFAULT_CLIPS_DIR = Path("clips/rank_entry_clips")
 # Issue #312: ゲージクローズアップ動画の保存先(画面全体クリップとは別ディレクトリ)
 GAUGE_CLIPS_DIR = Path("clips/rank_gauge_clips")
+# Issue #417: ランク数値だけを拡大したクリップの保存先
+RANK_NUMBER_CLIPS_DIR = Path("clips/rank_number_clips")
 
 TARGET_SAMPLE_FPS = 8.0
 # Issue #399: ゲージクローズアップ動画だけは、ランク変動が止まった瞬間の値を
@@ -225,6 +235,9 @@ DEFAULT_MAX_CLIPS = 50
 PENDING_CLIP_WARNING_THRESHOLD = 5
 # Issue #312: ゲージのROI(実測290x32px程度)をどの幅まで拡大して見せるか
 GAUGE_TARGET_WIDTH = 1160
+# Issue #417: ランク数値クリップ(RANK_NUMBER_CLIP_ROI、158px幅)をどこまで
+# 拡大して書き出すか。ゲージ(290px→1160px)と同じ4倍にした
+RANK_NUMBER_TARGET_WIDTH = 632
 GAUGE_TICK_SEGMENTS = 20
 # Issue #334: 黄色は明るい塗りつぶし部分・暗い未塗りつぶし部分の両方で見にくかった
 # ため、どちらの背景でもはっきり視認できたマゼンタに変更した(複数候補をユーザーと
