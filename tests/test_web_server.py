@@ -3276,3 +3276,53 @@ def test_admin_links_to_health_check(tmp_path: Path):
     response = client.get("/admin")
 
     assert 'href="/health-check"' in response.text
+
+
+# --- Issue #417: ランク数値拡大クリップ(3本目) ---
+
+
+def test_rank_entry_clips_api_marks_has_number_clip_when_present(tmp_path: Path, monkeypatch):
+    clips_dir = tmp_path / "clips"
+    number_dir = tmp_path / "number_clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    monkeypatch.setattr(server_module, "RANK_NUMBER_CLIPS_DIR", number_dir)
+    clips_dir.mkdir()
+    number_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    with_number = _save_confirmed_match(conn, _warning_match("win", 42.20), 42.40)
+    without_number = _save_confirmed_match(conn, _warning_match("lose", 42.40), 42.18)
+    conn.close()
+    (clips_dir / f"{with_number}.mp4").write_bytes(b"dummy")
+    (clips_dir / f"{without_number}.mp4").write_bytes(b"dummy")
+    (number_dir / f"{with_number}.mp4").write_bytes(b"dummy")
+    client = TestClient(create_app(db_path))
+
+    clips = {clip["match_id"]: clip for clip in client.get("/api/rank-entry-clips").json()["clips"]}
+
+    assert clips[with_number]["has_number_clip"] is True
+    assert clips[without_number]["has_number_clip"] is False
+
+
+def test_rank_entry_number_clip_file_serves_existing_file(tmp_path: Path, monkeypatch):
+    number_dir = tmp_path / "number_clips"
+    monkeypatch.setattr(server_module, "RANK_NUMBER_CLIPS_DIR", number_dir)
+    number_dir.mkdir()
+    (number_dir / "7.mp4").write_bytes(b"dummy")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/rank-entry/number-clips/7.mp4")
+
+    assert response.status_code == 200
+    assert response.content == b"dummy"
+
+
+def test_rank_entry_number_clip_file_404_when_missing(tmp_path: Path, monkeypatch):
+    number_dir = tmp_path / "number_clips"
+    monkeypatch.setattr(server_module, "RANK_NUMBER_CLIPS_DIR", number_dir)
+    number_dir.mkdir()
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/rank-entry/number-clips/7.mp4")
+
+    assert response.status_code == 404

@@ -63,6 +63,7 @@ from nss_tracker.database import db
 from nss_tracker.detection.motion import BlackoutWatcher, StabilityMonitor, is_full_blackout
 from nss_tracker.detection.rank_ocr import (
     GAUGE_ROI_ENLARGED,
+    RANK_NUMBER_CLIP_ROI,
     RANK_ROI,
     _get_reader,
 )
@@ -74,6 +75,8 @@ from nss_tracker.rank_entry_clips import (
     GAUGE_CLIPS_DIR,
     GAUGE_SAMPLE_FPS,
     GAUGE_TARGET_WIDTH,
+    RANK_NUMBER_CLIPS_DIR,
+    RANK_NUMBER_TARGET_WIDTH,
     RankEntryClipRecorder,
     _draw_gauge_ticks,
 )
@@ -374,6 +377,7 @@ def run(
     fps: float,
     clip_recorder: RankEntryClipRecorder,
     gauge_clip_recorder: RankEntryClipRecorder,
+    rank_number_clip_recorder: RankEntryClipRecorder,
     blackout_watcher: Optional[BlackoutWatcher] = None,
 ) -> None:
     prev_state = machine.current_state
@@ -385,7 +389,7 @@ def run(
     # (トリガー・タイミング)で並行して生成する(rank_entry_clips.pyのモジュール
     # docstring参照)。両方とも同じ試合の録画のため、対応するmatch_idは共通の
     # 1変数で管理する
-    clip_recorders = [clip_recorder, gauge_clip_recorder]
+    clip_recorders = [clip_recorder, gauge_clip_recorder, rank_number_clip_recorder]
     # 録画中の区間に対応する試合のID。試合結果確定(_record_match_result)
     # の時点で判明するまではNone(録画自体はそれより前、tracking_rank突入時点で
     # 始まっているため)。clip_recorder.is_recordingがFalseの間は常にNone
@@ -650,6 +654,20 @@ def main() -> None:
         target_sample_fps=GAUGE_SAMPLE_FPS,
         resize_on_encode=True,
     )
+    # Issue #417: 帯番号だけを切り出した拡大クリップ。ブラウザをモニター半分幅で
+    # 見ていると全画面クリップでは帯番号が約8px幅にしかならず読み間違えるため
+    # (rank_entry_clips.pyのモジュールdocstring参照)。目盛り等の合成は不要なので
+    # overlay_fnは指定しない
+    rank_number_clip_recorder = RankEntryClipRecorder(
+        output_dir=RANK_NUMBER_CLIPS_DIR,
+        target_width=RANK_NUMBER_TARGET_WIDTH,
+        crop_roi=RANK_NUMBER_CLIP_ROI,
+        db_path=db_path,
+        # ゲージ動画と同じfpsにすることで、2本を同じ位置までシークすれば
+        # 同じ瞬間が見られる
+        target_sample_fps=GAUGE_SAMPLE_FPS,
+        resize_on_encode=True,
+    )
     try:
         run(
             reader,
@@ -660,6 +678,7 @@ def main() -> None:
             fps,
             clip_recorder,
             gauge_clip_recorder,
+            rank_number_clip_recorder,
             blackout_watcher,
         )
     finally:

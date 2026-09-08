@@ -31,7 +31,12 @@
 body {
     margin: 0;
     padding: 16px;
-    max-width: 480px;
+    /* Issue #417: 動画が3本になったため480px→900pxへ広げた。3本を縦に積むと
+       その下の入力フォームまで届かず見づらかったので、3本目を既存2本の右へ
+       並べる(下の .rank-entry-videos)。480pxのままだと右カラムを2列に割った
+       時点で1列あたり約137pxになり、かえって小さくなってしまう。max-width
+       (固定幅ではない)なので、ウィンドウが狭いときは従来どおり縮んで縦積みに戻る */
+    max-width: 900px;
     font-family: sans-serif;
     color: #222;
     background: #fff;
@@ -120,6 +125,20 @@ h1 {
     padding-top: 8px;
 }
 
+/* Issue #417: 既存2本(全画面・ゲージ拡大)を左、ランク数値拡大を右に並べる。
+   flex-wrapとflex-basisにより、幅が足りないウィンドウでは自動的に縦積みへ戻る */
+.rank-entry-videos {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.rank-entry-video-column {
+    flex: 1 1 260px;
+    min-width: 0;
+}
+
 .rank-entry-video-wrap {
     position: relative;
     width: 100%;
@@ -146,8 +165,22 @@ h1 {
     padding-bottom: 14.83%;
 }
 
+.rank-entry-number-label {
+    font-size: 11px;
+    color: #888;
+    /* 列の先頭に来るため、ゲージ見出し(margin-top: 8px)とは違い上を詰める */
+    margin: 0 0 4px;
+}
+
+/* Issue #417: ランク数値クリップの縦横比(RANK_NUMBER_CLIP_ROI = 158x117)。
+   117 / 158 = 74.05% */
+.rank-entry-video-wrap-number {
+    padding-bottom: 74.05%;
+}
+
 .rank-entry-video,
-.rank-entry-gauge-video {
+.rank-entry-gauge-video,
+.rank-entry-number-video {
     position: absolute;
     top: 0;
     left: 0;

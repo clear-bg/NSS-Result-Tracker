@@ -22,24 +22,39 @@
 <div class="rank-entry-layout">
   <div class="rank-entry-left" id="rank-entry-left"></div>
   <div class="rank-entry-right">
-    <div class="rank-entry-video-wrap rank-entry-video-wrap-main">
-      <video id="rank-entry-video" class="rank-entry-video" muted playsinline></video>
+    <div class="rank-entry-videos">
+      <div class="rank-entry-video-column">
+        <div class="rank-entry-video-wrap rank-entry-video-wrap-main">
+          <video id="rank-entry-video" class="rank-entry-video" muted playsinline></video>
+        </div>
+        <div class="rank-entry-video-controls">
+          <button type="button" id="rank-entry-video-play-btn" class="rank-entry-video-play-btn">&#9654;</button>
+          <input type="range" id="rank-entry-video-seek" class="rank-entry-video-seek" min="0" max="1000" value="0">
+          <span id="rank-entry-video-time" class="rank-entry-video-time">0:00 / 0:00</span>
+        </div>
+        <p class="rank-entry-gauge-label">ゲージ拡大(目盛り付き)</p>
+        <div class="rank-entry-video-wrap rank-entry-video-wrap-gauge">
+          <video id="rank-entry-gauge-video" class="rank-entry-gauge-video" muted playsinline></video>
+        </div>
+        <div class="rank-entry-video-controls">
+          <button type="button" id="rank-entry-gauge-video-play-btn" class="rank-entry-video-play-btn">&#9654;</button>
+          <input type="range" id="rank-entry-gauge-video-seek" class="rank-entry-video-seek" min="0" max="1000" value="0">
+          <span id="rank-entry-gauge-video-time" class="rank-entry-video-time">0:00 / 0:00</span>
+        </div>
+        <div id="rank-entry-clip-selector" class="rank-entry-clip-selector"></div>
+      </div>
+      <div class="rank-entry-video-column" id="rank-entry-number-column">
+        <p class="rank-entry-number-label">ランク数値拡大</p>
+        <div class="rank-entry-video-wrap rank-entry-video-wrap-number">
+          <video id="rank-entry-number-video" class="rank-entry-number-video" muted playsinline></video>
+        </div>
+        <div class="rank-entry-video-controls">
+          <button type="button" id="rank-entry-number-video-play-btn" class="rank-entry-video-play-btn">&#9654;</button>
+          <input type="range" id="rank-entry-number-video-seek" class="rank-entry-video-seek" min="0" max="1000" value="0">
+          <span id="rank-entry-number-video-time" class="rank-entry-video-time">0:00 / 0:00</span>
+        </div>
+      </div>
     </div>
-    <div class="rank-entry-video-controls">
-      <button type="button" id="rank-entry-video-play-btn" class="rank-entry-video-play-btn">&#9654;</button>
-      <input type="range" id="rank-entry-video-seek" class="rank-entry-video-seek" min="0" max="1000" value="0">
-      <span id="rank-entry-video-time" class="rank-entry-video-time">0:00 / 0:00</span>
-    </div>
-    <p class="rank-entry-gauge-label">ゲージ拡大(目盛り付き)</p>
-    <div class="rank-entry-video-wrap rank-entry-video-wrap-gauge">
-      <video id="rank-entry-gauge-video" class="rank-entry-gauge-video" muted playsinline></video>
-    </div>
-    <div class="rank-entry-video-controls">
-      <button type="button" id="rank-entry-gauge-video-play-btn" class="rank-entry-video-play-btn">&#9654;</button>
-      <input type="range" id="rank-entry-gauge-video-seek" class="rank-entry-video-seek" min="0" max="1000" value="0">
-      <span id="rank-entry-gauge-video-time" class="rank-entry-video-time">0:00 / 0:00</span>
-    </div>
-    <div id="rank-entry-clip-selector" class="rank-entry-clip-selector"></div>
   </div>
 </div>
 {% else %}
@@ -64,6 +79,9 @@
   const gaugeVideo = document.getElementById("rank-entry-gauge-video");
   const gaugeVideoWrap = document.querySelector(".rank-entry-video-wrap-gauge");
   const gaugeLabel = document.querySelector(".rank-entry-gauge-label");
+  // Issue #417: 帯番号だけを拡大した3本目のクリップ
+  const numberVideo = document.getElementById("rank-entry-number-video");
+  const numberColumn = document.getElementById("rank-entry-number-column");
   const selector = document.getElementById("rank-entry-clip-selector");
   const left = document.getElementById("rank-entry-left");
   let selectedMatchId = null;
@@ -137,6 +155,13 @@
     document.getElementById("rank-entry-gauge-video-play-btn"),
     document.getElementById("rank-entry-gauge-video-seek"),
     document.getElementById("rank-entry-gauge-video-time")
+  );
+
+  const resetNumberVideoControls = attachCustomControls(
+    numberVideo,
+    document.getElementById("rank-entry-number-video-play-btn"),
+    document.getElementById("rank-entry-number-video-seek"),
+    document.getElementById("rank-entry-number-video-time")
   );
 
   function findClip(matchId) {
@@ -422,6 +447,17 @@
         gaugeVideoWrap.style.display = "none";
         gaugeVideo.removeAttribute("src");
       }
+      // Issue #417: ゲージ動画と同じ理由(定期更新のたびにsrcを再設定すると
+      // 読み込みが中断され続ける)で、このガードの内側に入れる
+      resetNumberVideoControls();
+      if (clip.has_number_clip) {
+        numberColumn.style.display = "";
+        numberVideo.src = "/rank-entry/number-clips/" + matchId + ".mp4?t=" + Date.now();
+      } else {
+        // 列ごと隠す(見出しと動画だけ隠すと、空の再生コントロールが残るため)
+        numberColumn.style.display = "none";
+        numberVideo.removeAttribute("src");
+      }
     }
     renderSelector();
   }
@@ -441,6 +477,9 @@
           gaugeVideo.removeAttribute("src");
           gaugeLabel.style.display = "none";
           gaugeVideoWrap.style.display = "none";
+          resetNumberVideoControls();
+          numberVideo.removeAttribute("src");
+          numberColumn.style.display = "none";
           selectedMatchId = null;
           return;
         }

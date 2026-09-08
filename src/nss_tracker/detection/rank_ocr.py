@@ -100,6 +100,13 @@ RANK_ROI = get_detection_value("rank_ocr", "RANK_ROI", (90, 600, 420, 930))
 RANK_NUMBER_ROI_COMPACT = get_detection_value("rank_ocr", "RANK_NUMBER_ROI_COMPACT", (208, 890, 264, 923))
 RANK_NUMBER_ROI_ENLARGED = get_detection_value("rank_ocr", "RANK_NUMBER_ROI_ENLARGED", (238, 866, 306, 909))
 
+# Issue #417: /rank-entryの「ランク数値拡大」クリップ用の切り出し領域。読み取りには
+# 使わず、人間が目視で帯番号を確認するためだけに使う。上記2つの数値ROIの和集合に
+# マージン30pxを足したもので、コンパクト表示・拡大表示のどちらでも数値ピル全体が
+# 枠内に収まる(実フレームで確認済み)。マージン10pxだと拡大表示でピルの右端が
+# 切れる(RANK_NUMBER_ROI_ENLARGEDは数値を読む用途のROIでピルの縁を含まないため)
+RANK_NUMBER_CLIP_ROI = get_detection_value("rank_ocr", "RANK_NUMBER_CLIP_ROI", (178, 836, 336, 953))
+
 # ランク数値バッジ下部のゲージ(横長の帯)の領域。コンパクト表示・拡大表示で
 # バーの実寸(幅・位置とも)が異なるため個別に用意する(モジュールdocstring参照)。
 # 丸みを帯びた両端のアンチエイリアス部分を避けるため、実測した真のバー端から
