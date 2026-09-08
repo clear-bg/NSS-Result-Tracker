@@ -17,24 +17,41 @@
 {% if status == "updated" %}
 <p class="admin-message admin-message-success">更新しました。</p>
 {% endif %}
+{% if status == "confirmed" %}
+<p class="admin-message admin-message-success">確認完了しました。OBS Virtual Camera・OBS・YouTube連携への接続を開始します。</p>
+{% endif %}
 {% if error %}
 <p class="admin-message admin-message-error">{{ error }}</p>
 {% endif %}
-<h2>野良/専用部屋</h2>
-<p>アプリ起動のたびに必ず未選択に戻ります。専用部屋で配信するときは、最初の試合を記録するまでの間に選んでください。</p>
-<form method="post" action="/admin/room-type">
-  <div class="admin-field">
-    <label for="room_type">現在の設定</label>
-    <select id="room_type" name="room_type" required>
+<h2>配信設定</h2>
+{% if startup_confirmed %}
+<p class="admin-message admin-message-success">確認完了済みです。OBS Virtual Camera・OBS・YouTube連携への接続を開始しています。</p>
+{% else %}
+<p>「野良/専用部屋」と「OBSシーン自動切替」を選んで送信すると、OBS Virtual Camera・OBS(obs-websocket)・YouTube連携への接続を開始します(接続結果はターミナルのログを確認してください)。</p>
+{% endif %}
+<form method="post" action="/admin">
+  <div class="admin-field{% if error_room_type %} admin-field-error-target{% endif %}">
+    <label for="room_type">野良/専用部屋(アプリ起動のたびに必ず未選択に戻ります)</label>
+    <select id="room_type" name="room_type">
       <option value="" disabled {% if not room_type %}selected{% endif %}>未選択</option>
       <option value="random" {% if room_type == "random" %}selected{% endif %}>random(野良)</option>
       <option value="private" {% if room_type == "private" %}selected{% endif %}>private(専用部屋)</option>
     </select>
+    {% if error_room_type %}
+    <p class="admin-field-error">{{ error_room_type }}</p>
+    {% endif %}
   </div>
-  <button type="submit">切り替え</button>
-</form>
-<h2>配信中の設定</h2>
-<form method="post" action="/admin">
+  <div class="admin-field{% if error_obs_scene_switching %} admin-field-error-target{% endif %}">
+    <label for="obs_scene_switching_enabled">OBSシーン自動切替</label>
+    <select id="obs_scene_switching_enabled" name="obs_scene_switching_enabled">
+      <option value="" disabled {% if not obs_scene_switching_confirmed %}selected{% endif %}>未選択</option>
+      <option value="true" {% if obs_scene_switching_confirmed and settings.OBS_SCENE_SWITCHING_ENABLED == "true" %}selected{% endif %}>true(試合状態に応じて自動切替する)</option>
+      <option value="false" {% if obs_scene_switching_confirmed and settings.OBS_SCENE_SWITCHING_ENABLED == "false" %}selected{% endif %}>false(自動切替しない、手動でシーンを操作する)</option>
+    </select>
+    {% if error_obs_scene_switching %}
+    <p class="admin-field-error">{{ error_obs_scene_switching }}</p>
+    {% endif %}
+  </div>
   <div class="admin-field">
     <label for="allowed_players">許可リスト(得点・アシストを記録する対象のプレイヤー名、カンマ区切り)</label>
     <input type="text" id="allowed_players" name="allowed_players" value="{{ settings.ALLOWED_PLAYERS }}">
@@ -58,24 +75,7 @@
       <option value="all" {% if settings.RANK_DELTA_DISTRIBUTION_SCOPE == "all" %}selected{% endif %}>all(累計・全期間)</option>
     </select>
   </div>
-  <div class="admin-field">
-    <label for="obs_scene_switching_enabled">OBSシーン自動切替</label>
-    <select id="obs_scene_switching_enabled" name="obs_scene_switching_enabled" required>
-      <option value="" disabled {% if not obs_scene_switching_confirmed %}selected{% endif %}>未選択</option>
-      <option value="true" {% if obs_scene_switching_confirmed and settings.OBS_SCENE_SWITCHING_ENABLED == "true" %}selected{% endif %}>true(試合状態に応じて自動切替する)</option>
-      <option value="false" {% if obs_scene_switching_confirmed and settings.OBS_SCENE_SWITCHING_ENABLED == "false" %}selected{% endif %}>false(自動切替しない、手動でシーンを操作する)</option>
-    </select>
-  </div>
-  <button type="submit">更新</button>
+  <button type="submit">{% if startup_confirmed %}更新{% else %}確認完了・接続開始{% endif %}</button>
 </form>
-<h2>起動確認</h2>
-{% if startup_confirmed %}
-<p class="admin-message admin-message-success">確認完了済みです。OBS Virtual Camera・OBS・YouTube連携への接続を開始しています。</p>
-{% else %}
-<p>「野良/専用部屋」と「OBSシーン自動切替」を選択すると押せるようになります。押すとOBS Virtual Camera・OBS(obs-websocket)・YouTube連携への接続を開始します(接続結果はターミナルのログを確認してください)。</p>
-<form method="post" action="/admin/confirm-start">
-  <button type="submit" {% if not can_confirm_start %}disabled{% endif %}>確認完了・接続開始</button>
-</form>
-{% endif %}
 </body>
 </html>

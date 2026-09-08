@@ -67,6 +67,17 @@ h2 {
     color: #555;
 }
 
+/* Issue #410: 未選択の項目を、フォーム全体ではなくその項目の直下で指摘する */
+.admin-field-error {
+    margin: 0;
+    font-size: 13px;
+    color: #b3261e;
+}
+
+.admin-field-error-target select {
+    border-color: #b3261e;
+}
+
 .admin-field input,
 .admin-field select {
     font-size: 14px;

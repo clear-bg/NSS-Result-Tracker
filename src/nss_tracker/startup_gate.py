@@ -9,14 +9,19 @@
 直前をブロックする(タイムアウトは設けない。配信を始めるまでいくら待たされても
 実害が無いため)。
 
-対象は`config.get_room_type()`(Issue #358)と`OBS_SCENE_SWITCHING_ENABLED`
-(`_EDITABLE_ENV_KEYS`の一括フォーム、`web/server.py`の`admin_update`)の2項目。
-どちらも起動のたびに「未選択」から始まり(`web/templates/admin.html`側で
-初期表示を空欄にする)、`/admin`で明示的に選択・送信されるまで「確認完了」
-ボタン自体をdisabledにする(機械的に押してしまうリスクを下げるため、エラー
-表示で弾く方式は採らない、ユーザーとの相談で決定)。`confirm_start()`側にも
-同じ条件のチェックを持たせているのは、disabled属性をバイパスして直接POSTされた
-場合の防御(defense in depth)。
+対象は`config.get_room_type()`(Issue #358)と`OBS_SCENE_SWITCHING_ENABLED`の2項目。
+どちらも起動のたびに「未選択」から始まり(`web/templates/admin.html`側で初期表示を
+空欄にする)、`/admin`のフォーム(`web/server.py`の`admin_update`)で明示的に選択・
+送信されるまでゲートを通過できない。
+
+Issue #410: 当初は「確認完了」ボタン自体をdisabledにしていた(機械的に押して
+しまうリスクを下げるため、エラー表示で弾く方式は採らない、という判断)。しかし
+そのままだと起動のたびに3回フォームを送信する必要があり操作が煩わしかったため、
+`/admin`のフォームを1つに統合し、ボタンは常に押せる・未選択の項目はその直下に
+エラーを表示する方式へ変更した(ユーザーとの相談で決定)。`can_confirm_start()`は
+`confirm_start()`側のチェックとして引き続き使い、未選択のまま接続が始まらない
+ことを担保する(`web/server.py`側でも同じ条件を先に判定しているため、こちらは
+フォームをバイパスして直接POSTされた場合の防御(defense in depth)にあたる)。
 
 `match_transition.py`・`youtube_chat.py`の`DiveTimeState`と同じ「DBを経由しない
 一過性のインメモリ状態」パターン(main.pyのプロセス起動ごとに0からリセットされる)。
@@ -60,8 +65,10 @@ def can_confirm_start() -> bool:
 def confirm_start() -> None:
     """「確認完了」ボタン押下を反映し、main.py側のwait_for_confirmation()のブロックを解除する。
 
-    can_confirm_start()がFalseの場合はConfigErrorを送出する(disabled属性を
-    バイパスして直接POSTされた場合の防御)。既に確認済みの場合は何もしない(冪等)。
+    can_confirm_start()がFalseの場合はConfigErrorを送出する(Issue #410以降は
+    /adminのフォーム側で先に未選択を判定してエラー表示するため、こちらは
+    フォームをバイパスして直接POSTされた場合の防御)。既に確認済みの場合は
+    何もしない(冪等)。
     """
     if _confirmed_event.is_set():
         return
