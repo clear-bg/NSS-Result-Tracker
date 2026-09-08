@@ -192,6 +192,19 @@ CREATE TABLE IF NOT EXISTS vs_slot_ranks (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS match_rank_warning_acks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id INTEGER NOT NULL REFERENCES matches(id),
+    rule_code TEXT NOT NULL,        -- rank_warnings.RULE_CODESのいずれか('A'/'C'/'D'/'E'/'I'/'J')
+    acknowledged_at TEXT NOT NULL,  -- 確認済みにした時刻(ISO8601, JST)
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    -- Issue #407: 試合単位ではなくルール単位で記録する。ルールI(次の試合のVS画面との
+    -- 照合)のように後から判定可能になって新しく警告が付くことがあるため、試合単位で
+    -- 一括非表示にすると後から増えた警告まで隠れてしまう
+    UNIQUE (match_id, rule_code)
+);
+
 CREATE TABLE IF NOT EXISTS vs_rank_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER REFERENCES sessions(id),
@@ -723,6 +736,10 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
     このrank_afterを引き継ぎ元として待っていた後続の試合のrank_beforeが
     解決できないか確認する(_backfill_next_rank_before参照)。
 
+    Issue #407: 値の修正時は、この試合の「確認済み」にされたランク警告
+    (match_rank_warning_acks)をすべて取り消す。判定の前提になっている値そのものが
+    変わるため、確認し直させる。
+
     Issue #338: 既にrank_afterが確定済みの試合に対して呼ばれた場合(値の修正)は、
     通常の初回確定時とは連動更新の扱いを分ける。直後の試合が既に未確定→確定済み
     どちらの状態でも構わず、rank_beforeだけを新しい値へ強制的に上書きする
@@ -769,6 +786,13 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
         league_changed,
     )
     if is_correction:
+        # Issue #407: rank_afterが変われば警告の前提そのものが変わるため、
+        # この試合の「確認済み」はすべて取り消して判定し直させる
+        cleared = clear_rank_warning_acks(conn, match_id)
+        if cleared:
+            logger.info(
+                "matches.id=%d のrank_after修正に伴い、確認済みのランク警告%d件を取り消しました", match_id, cleared
+            )
         _force_overwrite_next_rank_before(conn, match_id, rank_after)
     else:
         _backfill_next_rank_before(conn, match_id, rank_after)
@@ -968,6 +992,55 @@ def save_vs_slot_ranks(
             inserted_ids.append(cursor.lastrowid)
     conn.commit()
     return inserted_ids
+
+
+def fetch_next_match(conn: sqlite3.Connection, match_id: int) -> Optional[sqlite3.Row]:
+    """指定した試合の次の試合(id昇順で直後の1件)を返す。無ければNone(Issue #407)。
+
+    ランク入力値の検証ルールI(次の試合のVS画面で読んだ自分の帯と照合する)で使う。
+    ランクを賭けたかどうかで絞り込まないのは、次の試合が「ランクを賭けない試合」
+    だった場合もVS画面自体は表示され、自分のバッジが読めていれば照合に使えるため
+    (読めていなければ呼び出し元がルールごとスキップする)。
+    """
+    return conn.execute("SELECT * FROM matches WHERE id > ? ORDER BY id ASC LIMIT 1", (match_id,)).fetchone()
+
+
+def fetch_rank_warning_acks(conn: sqlite3.Connection, match_id: int) -> frozenset[str]:
+    """指定した試合で「確認済み」にされている警告のルールコード集合を返す(Issue #407)。"""
+    rows = conn.execute(
+        "SELECT rule_code FROM match_rank_warning_acks WHERE match_id = ?", (match_id,)
+    ).fetchall()
+    return frozenset(row["rule_code"] for row in rows)
+
+
+def save_rank_warning_ack(conn: sqlite3.Connection, match_id: int, rule_code: str) -> None:
+    """警告1件を「確認済み」にする(Issue #407)。既に確認済みの場合は何もしない(冪等)。"""
+    now = now_jst().isoformat()
+    conn.execute(
+        "INSERT OR IGNORE INTO match_rank_warning_acks "
+        "(match_id, rule_code, acknowledged_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (match_id, rule_code, now, now, now),
+    )
+    conn.commit()
+
+
+def delete_rank_warning_ack(conn: sqlite3.Connection, match_id: int, rule_code: str) -> None:
+    """「確認済み」を取り消す(Issue #407)。誤って押した場合に戻せるようにするため。"""
+    conn.execute(
+        "DELETE FROM match_rank_warning_acks WHERE match_id = ? AND rule_code = ?", (match_id, rule_code)
+    )
+    conn.commit()
+
+
+def clear_rank_warning_acks(conn: sqlite3.Connection, match_id: int) -> int:
+    """指定した試合の「確認済み」をすべて取り消し、削除件数を返す(Issue #407)。
+
+    rank_afterが修正されると警告の前提そのものが変わるため、
+    save_manual_rank_after()の修正パスから呼ぶ。
+    """
+    cursor = conn.execute("DELETE FROM match_rank_warning_acks WHERE match_id = ?", (match_id,))
+    conn.commit()
+    return cursor.rowcount
 
 
 def fetch_vs_slot_ranks(conn: sqlite3.Connection, match_id: int) -> list[sqlite3.Row]:
