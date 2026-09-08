@@ -994,6 +994,15 @@ def save_vs_slot_ranks(
     return inserted_ids
 
 
+def fetch_all_sessions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """配信セッションを開始順(id昇順)ですべて取得する(Issue #408)。
+
+    健全性チェック一覧で、試合を配信セッションごとに区切って表示するために使う
+    (どの配信のアーカイブを見に行けばよいか分かるようにするため)。
+    """
+    return conn.execute("SELECT * FROM sessions ORDER BY id").fetchall()
+
+
 def fetch_next_match(conn: sqlite3.Connection, match_id: int) -> Optional[sqlite3.Row]:
     """指定した試合の次の試合(id昇順で直後の1件)を返す。無ければNone(Issue #407)。
 
