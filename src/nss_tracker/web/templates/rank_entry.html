@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>ランク手動入力</title>
-<link rel="stylesheet" href="/static/rank_entry.css">
+<link rel="stylesheet" href="/static/rank_entry.css?v={{ rank_entry_css_version }}">
 </head>
 <body>
 <h1>ランク手動入力</h1>
@@ -154,6 +154,64 @@
     container.appendChild(row);
   }
 
+  // Issue #407: 入力値の矛盾を検出した警告を表示する。原理的に無くせない誤検知が
+  // あるため(チームの人数がDBに無く、味方が抜けて3人になった試合のΔ=0を区別できない)、
+  // 「確認済み」にして個別に隠せるようにし、隠したものも折りたたみから戻せるようにする。
+  function warningForm(clip, warning, action, label, className) {
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = "/rank-entry/warnings";
+    form.className = "rank-entry-warning-form";
+    [["match_id", clip.match_id], ["rule_code", warning.rule_code], ["action", action]].forEach(function (pair) {
+      const hidden = document.createElement("input");
+      hidden.type = "hidden";
+      hidden.name = pair[0];
+      hidden.value = pair[1];
+      form.appendChild(hidden);
+    });
+    const button = document.createElement("button");
+    button.type = "submit";
+    button.className = className;
+    button.textContent = label;
+    form.appendChild(button);
+    return form;
+  }
+
+  function renderWarnings(clip) {
+    const warnings = clip.warnings || [];
+    const active = warnings.filter(function (w) { return !w.acknowledged; });
+    const acknowledged = warnings.filter(function (w) { return w.acknowledged; });
+
+    active.forEach(function (warning) {
+      const item = document.createElement("div");
+      item.className = "rank-entry-warning";
+      const text = document.createElement("span");
+      text.textContent = warning.message;
+      item.appendChild(text);
+      item.appendChild(warningForm(clip, warning, "acknowledge", "確認済みにする", "rank-entry-warning-ack-button"));
+      left.appendChild(item);
+    });
+
+    if (acknowledged.length === 0) {
+      return;
+    }
+    const details = document.createElement("details");
+    details.className = "rank-entry-warning-acknowledged";
+    const summary = document.createElement("summary");
+    summary.textContent = "確認済み: " + acknowledged.length + "件";
+    details.appendChild(summary);
+    acknowledged.forEach(function (warning) {
+      const item = document.createElement("div");
+      item.className = "rank-entry-warning rank-entry-warning-muted";
+      const text = document.createElement("span");
+      text.textContent = warning.message;
+      item.appendChild(text);
+      item.appendChild(warningForm(clip, warning, "unacknowledge", "戻す", "rank-entry-warning-ack-button"));
+      details.appendChild(item);
+    });
+    left.appendChild(details);
+  }
+
   function renderLeftPanel(clip) {
     left.innerHTML = "";
 
@@ -166,6 +224,8 @@
       addRow(info, "自動検知(参考)", clip.rank_after_ocr, "rank-entry-match-row-hint");
     }
     left.appendChild(info);
+
+    renderWarnings(clip);
 
     const isConfirmed = clip.rank_after !== null && clip.rank_after !== undefined;
     const isEditing = isConfirmed && editingMatchId === clip.match_id;
