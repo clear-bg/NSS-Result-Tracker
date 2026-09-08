@@ -2152,6 +2152,8 @@ def test_admin_post_without_both_selections_shows_field_errors(admin_client: Tes
     assert response.url.params["error_obs_scene_switching"]
     assert "野良/専用部屋を選択してください。" in response.text
     assert "OBSシーン自動切替を選択してください。" in response.text
+    # 赤枠(admin.cssの.admin-field.admin-field-error-target)を当てるためのクラスが付く
+    assert response.text.count('class="admin-field admin-field-error-target"') == 2
 
 
 def test_admin_post_with_only_room_type_keeps_it_and_reports_other_field(admin_client: TestClient):
