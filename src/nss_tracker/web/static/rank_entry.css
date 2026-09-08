@@ -393,9 +393,12 @@ h1 {
    位置付けのため、赤ではない) */
 .rank-entry-warning {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 8px;
+    /* Issue #414: 左カラムは150px固定(.rank-entry-left)のため、メッセージとボタンを
+       横並びにするとメッセージ側に60px程度しか残らず、1〜2文字ごとに改行されてしまう。
+       縦積みにしてメッセージが枠の幅いっぱいを使えるようにし、ボタンは枠の下部へ置く */
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
     font-size: 13px;
     color: #8a5300;
     background: #fff4e0;
@@ -406,8 +409,8 @@ h1 {
 }
 
 .rank-entry-warning-form {
-    flex: 0 0 auto;
     margin: 0;
+    align-self: flex-end;
 }
 
 .rank-entry-warning-ack-button {
