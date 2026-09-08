@@ -7,20 +7,25 @@ from nss_tracker.database.db import (
     connect,
     create_session,
     end_session,
+    clear_rank_warning_acks,
+    delete_rank_warning_ack,
     fetch_all_goals,
     fetch_all_matches,
     fetch_current_session_id,
     fetch_goals_for_session,
     fetch_latest_vs_rank_snapshot,
     fetch_matches_for_session,
+    fetch_next_match,
     fetch_oldest_pending_manual_rank_match,
     fetch_pending_manual_rank_match_count,
+    fetch_rank_warning_acks,
     fetch_recent_matches,
     fetch_vs_rank_snapshot_slots,
     fetch_vs_slot_ranks,
     save_goal,
     save_manual_rank_after,
     save_match_result,
+    save_rank_warning_ack,
     save_vs_rank_snapshot,
     save_vs_slot_ranks,
 )
@@ -2212,3 +2217,105 @@ def test_save_vs_rank_snapshot_created_at_is_jst():
     row = fetch_vs_rank_snapshot_slots(conn, snapshot_id)[0]
     assert row["created_at"].endswith("+09:00")
     assert row["updated_at"].endswith("+09:00")
+
+
+# --- Issue #407: ランク入力値の警告の「確認済み」記録 ---
+
+
+def _make_ranked_match(conn, result: str = "win", rank_before: float = 42.20) -> int:
+    return save_match_result(
+        conn,
+        MatchResult(
+            result=result,
+            rank_before=rank_before,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+
+
+def test_fetch_next_match_returns_following_match():
+    conn = connect(":memory:")
+    first = _make_ranked_match(conn)
+    second = _make_ranked_match(conn)
+
+    assert fetch_next_match(conn, first)["id"] == second
+    assert fetch_next_match(conn, second) is None
+
+
+def test_save_and_fetch_rank_warning_acks():
+    conn = connect(":memory:")
+    match_id = _make_ranked_match(conn)
+
+    save_rank_warning_ack(conn, match_id, "A")
+    save_rank_warning_ack(conn, match_id, "J")
+
+    assert fetch_rank_warning_acks(conn, match_id) == frozenset({"A", "J"})
+
+
+def test_save_rank_warning_ack_is_idempotent():
+    conn = connect(":memory:")
+    match_id = _make_ranked_match(conn)
+
+    save_rank_warning_ack(conn, match_id, "A")
+    save_rank_warning_ack(conn, match_id, "A")
+
+    assert fetch_rank_warning_acks(conn, match_id) == frozenset({"A"})
+    count = conn.execute("SELECT COUNT(*) AS c FROM match_rank_warning_acks").fetchone()["c"]
+    assert count == 1
+
+
+def test_delete_rank_warning_ack_removes_only_that_rule():
+    conn = connect(":memory:")
+    match_id = _make_ranked_match(conn)
+    save_rank_warning_ack(conn, match_id, "A")
+    save_rank_warning_ack(conn, match_id, "J")
+
+    delete_rank_warning_ack(conn, match_id, "A")
+
+    assert fetch_rank_warning_acks(conn, match_id) == frozenset({"J"})
+
+
+def test_rank_warning_acks_are_scoped_per_match():
+    conn = connect(":memory:")
+    first = _make_ranked_match(conn)
+    second = _make_ranked_match(conn)
+    save_rank_warning_ack(conn, first, "A")
+
+    assert fetch_rank_warning_acks(conn, second) == frozenset()
+
+
+def test_clear_rank_warning_acks_returns_deleted_count():
+    conn = connect(":memory:")
+    match_id = _make_ranked_match(conn)
+    save_rank_warning_ack(conn, match_id, "A")
+    save_rank_warning_ack(conn, match_id, "C")
+
+    assert clear_rank_warning_acks(conn, match_id) == 2
+    assert fetch_rank_warning_acks(conn, match_id) == frozenset()
+
+
+def test_save_manual_rank_after_clears_acks_on_correction():
+    """Issue #407: rank_afterを修正すると警告の前提が変わるため、確認済みを取り消す。"""
+    conn = connect(":memory:")
+    match_id = _make_ranked_match(conn)
+    save_manual_rank_after(conn, match_id, 42.40)
+    save_rank_warning_ack(conn, match_id, "A")
+
+    save_manual_rank_after(conn, match_id, 42.50)
+
+    assert fetch_rank_warning_acks(conn, match_id) == frozenset()
+
+
+def test_save_manual_rank_after_keeps_acks_on_first_confirmation():
+    """初回確定(修正ではない)では、他の試合の確認済みに影響しない。"""
+    conn = connect(":memory:")
+    first = _make_ranked_match(conn)
+    save_manual_rank_after(conn, first, 42.40)
+    save_rank_warning_ack(conn, first, "A")
+    second = _make_ranked_match(conn)
+
+    save_manual_rank_after(conn, second, 42.60)
+
+    assert fetch_rank_warning_acks(conn, first) == frozenset({"A"})

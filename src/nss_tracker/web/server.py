@@ -107,6 +107,14 @@ signalモード(`data-animate-on-change="signal"`、#360のcountモードの拡�
 この遅れを人間の目に気にならない程度まで縮めるため、`/overlay/rank-graph`だけ
 `_RANK_GRAPH_REFRESH_INTERVAL_MS`(0.5秒)を使う。
 
+Issue #407: `/rank-entry`は、手動入力された`rank_after`の矛盾を検出して警告を表示する。
+判定そのものは`nss_tracker/rank_warnings.py`(DBにもWebにも依存しない純粋関数)が持ち、
+このモジュールは判定に必要な値をDBから集めて渡す役割に徹する(#408の健全性チェック
+一覧ページからも同じロジックを使うため)。警告には原理的に無くせない誤検知が含まれる
+(チームの人数がDBに無く、味方が抜けて3人になった試合のΔ=0を区別できない)ため、
+ルール単位で「確認済み」にして隠せる(`POST /rank-entry/warnings`、
+`matches`とは別の`match_rank_warning_acks`テーブル)。
+
 Issue #379: `main.py`はWebサーバー起動・`/admin`/`/rank-entry`の自動オープンまでを
 終えた後、`startup_gate.confirm_start()`が呼ばれるまでOBS Virtual Camera・
 OBS(obs-websocket)・YouTube連携への接続を一切行わずブロックする(詳細は
@@ -138,7 +146,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from nss_tracker import match_transition, startup_gate, youtube_chat
+from nss_tracker import match_transition, rank_warnings, startup_gate, youtube_chat
 from nss_tracker.config import (
     ConfigError,
     get_allowed_players,
@@ -151,6 +159,8 @@ from nss_tracker.config import (
     update_editable_settings,
 )
 from nss_tracker.database.db import (
+    connect as _connect_and_migrate,
+    delete_rank_warning_ack,
     fetch_all_matches,
     fetch_current_session_id,
     fetch_goals_for_session,
@@ -159,11 +169,15 @@ from nss_tracker.database.db import (
     fetch_match,
     fetch_matches_for_session,
     fetch_max_rank_after,
+    fetch_next_match,
     fetch_oldest_pending_manual_rank_match,
     fetch_pending_manual_rank_match_count,
+    fetch_rank_warning_acks,
     fetch_recent_matches,
     fetch_vs_rank_snapshot_slots,
+    fetch_vs_slot_ranks,
     save_manual_rank_after,
+    save_rank_warning_ack,
 )
 from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR
 
@@ -1244,7 +1258,59 @@ def _rank_entry_recency_label(index: int) -> str:
     return "最新" if index == 0 else f"{index}つ前"
 
 
-def _build_rank_entry_clip_info(row: sqlite3.Row, index: int, has_clip: bool, has_gauge_clip: bool = False) -> dict:
+def _mine_vs_tier(rows: list[sqlite3.Row]) -> Optional[int]:
+    """VSスロットランクから、自チームのスロット0(自分自身)の∞帯の帯番号を返す(Issue #407)。
+
+    ∞帯以外(S/A/B〜E帯・読み取り失敗)は、`rank_before`/`rank_after`の整数部と
+    比較できるスケールでないためNoneを返す(呼び出し元がルールIをスキップする)。
+    """
+    for row in rows:
+        if row["side"] == "mine" and row["slot_index"] == 0 and row["rank_tier_label"] == "∞":
+            return row["rank_tier"]
+    return None
+
+
+def _build_rank_warnings(conn: sqlite3.Connection, row: sqlite3.Row) -> list[dict]:
+    """1試合分の入力値検証の警告を、テンプレートが扱える形(dictのリスト)で返す(Issue #407)。
+
+    判定自体は`rank_warnings.evaluate()`(DBに依存しない純粋関数)が行う。この関数は
+    判定に必要な値をDBから集める役割に徹する。
+    """
+    match_id = row["id"]
+    next_match = fetch_next_match(conn, match_id)
+    next_match_vs_tier = _mine_vs_tier(fetch_vs_slot_ranks(conn, next_match["id"])) if next_match else None
+
+    slot_rows = fetch_vs_slot_ranks(conn, match_id)
+    mine = _summarize_vs_slot_ranks([r for r in slot_rows if r["side"] == "mine"])
+    opponent = _summarize_vs_slot_ranks([r for r in slot_rows if r["side"] == "opponent"])
+    totals = rank_warnings.TeamRankTotals(
+        mine=mine["total"],
+        opponent=opponent["total"],
+        mine_known_count=mine["known_count"],
+        opponent_known_count=opponent["known_count"],
+    )
+
+    warnings = rank_warnings.evaluate(
+        result=row["result"],
+        rank_before=row["rank_before"],
+        rank_after=row["rank_after"],
+        league_change_label_detected=row["league_change_label_detected"],
+        next_match_vs_tier=next_match_vs_tier,
+        team_rank_totals=totals,
+        acknowledged_rule_codes=fetch_rank_warning_acks(conn, match_id),
+    )
+    return [
+        {"rule_code": w.rule_code, "message": w.message, "acknowledged": w.acknowledged} for w in warnings
+    ]
+
+
+def _build_rank_entry_clip_info(
+    row: sqlite3.Row,
+    index: int,
+    has_clip: bool,
+    has_gauge_clip: bool = False,
+    warnings: Optional[list[dict]] = None,
+) -> dict:
     detected_at = datetime.fromisoformat(row["detected_at"])
     return {
         "match_id": row["id"],
@@ -1259,6 +1325,8 @@ def _build_rank_entry_clip_info(row: sqlite3.Row, index: int, has_clip: bool, ha
         # 存在するかどうか。画面全体クリップより後から追加した機能のため、
         # 導入前に生成された試合や、まだエンコードが終わっていない試合ではFalseになりうる
         "has_gauge_clip": has_gauge_clip,
+        # Issue #407: 入力値の矛盾の警告(rank_afterが未確定の試合では常に空)
+        "warnings": warnings or [],
     }
 
 
@@ -1299,7 +1367,11 @@ def _build_rank_entry_context(db_path: Path) -> dict:
                 continue
             clips.append(
                 _build_rank_entry_clip_info(
-                    row, len(clips), has_clip=True, has_gauge_clip=match_id in gauge_clip_ids
+                    row,
+                    len(clips),
+                    has_clip=True,
+                    has_gauge_clip=match_id in gauge_clip_ids,
+                    warnings=_build_rank_warnings(conn, row),
                 )
             )
         if not clips:
@@ -1323,6 +1395,13 @@ def _list_clip_match_ids(clips_dir: Path) -> list[int]:
 
 def create_app(db_path: Path) -> FastAPI:
     app = FastAPI()
+    # Issue #407: このモジュールの_connect()はスキーマ作成・マイグレーションを行わない
+    # (Webサーバーは基本的にDBを読むだけ、という疎結合方針のため)。main.py経由なら
+    # 起動時にdatabase.db.connect()が呼ばれるため問題にならないが、
+    # scripts/run_web_dashboard.pyでWebサーバーだけを起動した場合は、新しく追加した
+    # テーブル(match_rank_warning_acks等)が既存のDBファイルに無くOperationalErrorに
+    # なる。起動時に一度だけスキーマを整えることでどちらの経路でも同じように動かす
+    _connect_and_migrate(db_path).close()
     app.mount("/static", StaticFiles(directory=_WEB_DIR / "static"), name="static")
 
     @app.get("/api/health")
@@ -1431,7 +1510,12 @@ def create_app(db_path: Path) -> FastAPI:
 
     @app.get("/rank-entry")
     def rank_entry(request: Request, status: Optional[str] = None, error: Optional[str] = None):
-        context = {**_build_rank_entry_context(db_path), "status": status, "error": error}
+        context = {
+            **_build_rank_entry_context(db_path),
+            "status": status,
+            "error": error,
+            "rank_entry_css_version": _static_asset_version("rank_entry.css"),
+        }
         return _TEMPLATES.TemplateResponse(request, "rank_entry.html", context)
 
     @app.post("/rank-entry")
@@ -1450,6 +1534,31 @@ def create_app(db_path: Path) -> FastAPI:
             conn.close()
         _logger.info("手動ランク入力(/rank-entry)からrank_afterを記録しました: match_id=%d rank_after=%s", match_id, rank_after_value)
         return RedirectResponse("/rank-entry?status=saved", status_code=303)
+
+    @app.post("/rank-entry/warnings")
+    def rank_entry_warning_ack(match_id: int = Form(...), rule_code: str = Form(...), action: str = Form(...)):
+        """入力値検証の警告を「確認済み」にする/取り消す(Issue #407)。
+
+        警告には原理的に無くせない誤検知が含まれる(チームの人数がDBに記録されて
+        いないため、味方が抜けて3人になった試合のΔ=0を区別できない。
+        rank_warnings.pyのモジュールdocstring参照)。試合が溜まってきたときに
+        確認済みの警告が残り続けて新しい警告に気付けなくなるのを避けるため、
+        人間が確認したうえで個別に消せるようにする。
+        """
+        if rule_code not in rank_warnings.RULE_CODES:
+            _logger.warning("不明なルールコードのため警告の更新を拒否しました: %s", rule_code)
+            return RedirectResponse(f"/rank-entry?error={quote('不明なルールコードです')}", status_code=303)
+        conn = _connect(db_path)
+        try:
+            if action == "unacknowledge":
+                delete_rank_warning_ack(conn, match_id, rule_code)
+                _logger.info("ランク警告の確認済みを取り消しました: match_id=%d rule=%s", match_id, rule_code)
+            else:
+                save_rank_warning_ack(conn, match_id, rule_code)
+                _logger.info("ランク警告を確認済みにしました: match_id=%d rule=%s", match_id, rule_code)
+        finally:
+            conn.close()
+        return RedirectResponse("/rank-entry", status_code=303)
 
     @app.get("/api/rank-entry-clips")
     def rank_entry_clips() -> dict:

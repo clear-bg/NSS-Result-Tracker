@@ -4,6 +4,7 @@ import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import httpx
 import pytest
@@ -2839,3 +2840,170 @@ def test_start_web_server_thread_serves_requests_and_stops_cleanly(tmp_path: Pat
         handle.stop()
 
     assert not handle.thread.is_alive()
+
+
+# --- Issue #407: /rank-entry の入力値検証の警告 ---
+
+
+def _warning_match(result: str, rank_before: float, label_detected=None) -> MatchResult:
+    """Issue #306: rank_afterはsave_match_result()では書かれない(手動入力専用)ため、
+    ここではrank_before(=rank_before_ocr)までを持つMatchResultを作る。
+    確定値は_save_confirmed_match()がsave_manual_rank_after()で入れる。
+    """
+    return MatchResult(
+        result=result,
+        rank_before=rank_before,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime(2026, 9, 6, 22, 0, tzinfo=timezone.utc),
+        league_change_label_detected=label_detected,
+    )
+
+
+def _save_confirmed_match(conn, match: MatchResult, rank_after: float) -> int:
+    match_id = db.save_match_result(conn, match)
+    db.save_manual_rank_after(conn, match_id, rank_after)
+    return match_id
+
+
+def _setup_warning_client(
+    tmp_path: Path, monkeypatch, match: MatchResult, rank_after: Optional[float]
+) -> tuple[TestClient, int]:
+    """1試合だけ保存し、そのクリップを置いた/rank-entry用のクライアントを返す。"""
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    if rank_after is None:
+        match_id = db.save_match_result(conn, match)
+    else:
+        match_id = _save_confirmed_match(conn, match, rank_after)
+    conn.close()
+    (clips_dir / f"{match_id}.mp4").write_bytes(b"dummy")
+    return TestClient(create_app(db_path)), match_id
+
+
+def test_rank_entry_clips_api_reports_warning_for_win_with_decrease(tmp_path: Path, monkeypatch):
+    client, _ = _setup_warning_client(tmp_path, monkeypatch, _warning_match("win", 42.90), 42.75)
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+
+    codes = [w["rule_code"] for w in clips[0]["warnings"]]
+    assert codes == ["A"]
+    assert clips[0]["warnings"][0]["acknowledged"] is False
+
+
+def test_rank_entry_clips_api_reports_no_warning_for_normal_match(tmp_path: Path, monkeypatch):
+    client, _ = _setup_warning_client(tmp_path, monkeypatch, _warning_match("win", 42.20), 42.40)
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+
+    assert clips[0]["warnings"] == []
+
+
+def test_rank_entry_clips_api_reports_no_warning_for_pending_match(tmp_path: Path, monkeypatch):
+    """rank_afterが未確定の試合は判定できないため、警告を出さない。"""
+    client, _ = _setup_warning_client(tmp_path, monkeypatch, _warning_match("win", 42.20), None)
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+
+    assert clips[0]["warnings"] == []
+
+
+def test_rank_entry_clips_api_uses_next_match_vs_screen_tier(tmp_path: Path, monkeypatch):
+    """ルールI: 次の試合のVS画面で読んだ自分の帯と食い違えば警告する。"""
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    first = _save_confirmed_match(conn, _warning_match("lose", 42.40, label_detected="down"), 41.28)
+    second = _save_confirmed_match(conn, _warning_match("win", 41.28), 41.50)
+    db.save_vs_slot_ranks(
+        conn,
+        match_id=second,
+        mine_ranks=[SlotRank(tier="∞", value=42)],
+        opponent_ranks=[],
+    )
+    conn.close()
+    (clips_dir / f"{first}.mp4").write_bytes(b"dummy")
+    client = TestClient(create_app(db_path))
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+
+    target = next(clip for clip in clips if clip["match_id"] == first)
+    assert "I" in [w["rule_code"] for w in target["warnings"]]
+
+
+def test_rank_entry_clips_api_reports_rule_j_for_evenly_matched_zero_delta(tmp_path: Path, monkeypatch):
+    """ルールJ: 合計ランク差が小さいのにΔ=0(実データのid=11と同じ形)。"""
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = _save_confirmed_match(conn, _warning_match("lose", 42.20), 42.20)
+    db.save_vs_slot_ranks(
+        conn,
+        match_id=match_id,
+        mine_ranks=[
+            SlotRank(tier="∞", value=42),
+            SlotRank(tier="S", value=2),
+            SlotRank(tier="A", value=24),
+            SlotRank(tier="∞", value=26),
+        ],
+        opponent_ranks=[
+            SlotRank(tier="A", value=27),
+            SlotRank(tier="A", value=28),
+            SlotRank(tier="∞", value=29),
+            SlotRank(tier="∞", value=40),
+        ],
+    )
+    conn.close()
+    (clips_dir / f"{match_id}.mp4").write_bytes(b"dummy")
+    client = TestClient(create_app(db_path))
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+
+    assert [w["rule_code"] for w in clips[0]["warnings"]] == ["J"]
+
+
+def test_rank_entry_warning_acknowledge_hides_and_restores(tmp_path: Path, monkeypatch):
+    client, match_id = _setup_warning_client(tmp_path, monkeypatch, _warning_match("win", 42.90), 42.75)
+
+    response = client.post(
+        "/rank-entry/warnings", data={"match_id": match_id, "rule_code": "A", "action": "acknowledge"}
+    )
+    assert response.status_code == 200
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+    assert clips[0]["warnings"][0]["acknowledged"] is True
+
+    client.post(
+        "/rank-entry/warnings", data={"match_id": match_id, "rule_code": "A", "action": "unacknowledge"}
+    )
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+    assert clips[0]["warnings"][0]["acknowledged"] is False
+
+
+def test_rank_entry_warning_acknowledge_rejects_unknown_rule_code(tmp_path: Path, monkeypatch):
+    client, match_id = _setup_warning_client(tmp_path, monkeypatch, _warning_match("win", 42.90), 42.75)
+
+    response = client.post(
+        "/rank-entry/warnings", data={"match_id": match_id, "rule_code": "ZZZ", "action": "acknowledge"}
+    )
+
+    assert response.status_code == 200
+    assert response.url.params["error"]
+
+
+def test_rank_entry_warning_acknowledge_is_cleared_when_rank_is_corrected(tmp_path: Path, monkeypatch):
+    client, match_id = _setup_warning_client(tmp_path, monkeypatch, _warning_match("win", 42.90), 42.75)
+    client.post("/rank-entry/warnings", data={"match_id": match_id, "rule_code": "A", "action": "acknowledge"})
+
+    client.post("/rank-entry", data={"match_id": match_id, "rank_after": "42.70"})
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+    warnings = clips[0]["warnings"]
+    assert [w["rule_code"] for w in warnings] == ["A"]
+    assert warnings[0]["acknowledged"] is False

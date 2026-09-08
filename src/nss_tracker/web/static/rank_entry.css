@@ -351,6 +351,66 @@ h1 {
     background: #e6f4ea;
 }
 
+/* Issue #407: 入力値の矛盾を検出した警告。確認済みの緑(.rank-entry-confirmed)と
+   一目で区別できるよう、注意を促す黄色の背景にする(エラーではなく「要確認」の
+   位置付けのため、赤ではない) */
+.rank-entry-warning {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    color: #8a5300;
+    background: #fff4e0;
+    border: 1px solid #f0c884;
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+}
+
+.rank-entry-warning-form {
+    flex: 0 0 auto;
+    margin: 0;
+}
+
+.rank-entry-warning-ack-button {
+    font-size: 11px;
+    padding: 2px 8px;
+    border: 1px solid #8a5300;
+    border-radius: 4px;
+    background: #fff;
+    color: #8a5300;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.rank-entry-warning-ack-button:hover {
+    background: #fff4e0;
+}
+
+/* 確認済みにした警告は折りたたんで残す(誤って押しても戻せるようにするため) */
+.rank-entry-warning-acknowledged {
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 12px;
+}
+
+.rank-entry-warning-acknowledged summary {
+    cursor: pointer;
+    margin-bottom: 6px;
+}
+
+.rank-entry-warning-muted {
+    color: #666;
+    background: #f5f5f5;
+    border-color: #ddd;
+}
+
+.rank-entry-warning-muted .rank-entry-warning-ack-button {
+    border-color: #999;
+    color: #666;
+}
+
 .rank-entry-empty {
     color: #666;
     font-size: 13px;
