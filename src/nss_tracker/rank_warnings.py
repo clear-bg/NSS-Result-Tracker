@@ -20,6 +20,7 @@
 - E: 勝敗と帯変化が矛盾している(勝ったのに降格/負けたのに昇格)
 - I: 次の試合のVS画面で読んだ自分の帯と一致しない
 - J: 両チームの合計ランク差が小さいのに変化量がゼロ
+- H: 次の試合のバッジ読み取り値と乖離している(Issue #408の一覧ページ専用)
 
 **変化量ゼロ(Δ=0)そのものは警告対象にしない(ルールAの重要な前提)。** 自チームと
 相手チームの合計ランク差が大きい場合、および試合中に味方が抜けて3人になり人数差が
@@ -33,6 +34,11 @@ id=17(lose, 42.28→42.28)がいずれも配信映像で確認済みの正しい
 できない**(id=11がまさにこのケースで、ルールJでは誤検知になる)。そのため警告は
 人間が確認したうえで消せる前提で設計してあり、確認済みの記録は
 `database/db.py`の`match_rank_warning_acks`テーブルが持つ。
+
+ルールHはIssue #408の健全性チェック一覧ページ専用で、`/rank-entry`(#407)からは
+呼ばない。次の試合が記録されて初めて判定できるため、入力直後に警告を出す
+`/rank-entry`では意味を成さないという理由による(呼び出し元が
+`next_match_rank_before_ocr`を渡さなければ自動的にスキップされる)。
 """
 
 from dataclasses import dataclass
@@ -53,7 +59,15 @@ TEAM_RANK_DIFF_THRESHOLD = 20
 # チームを過大評価して逆に誤検知を生むため不採用。ユーザーとの相談で決定)
 _REQUIRED_SLOT_COUNT = 4
 
-RULE_CODES = ("A", "C", "D", "E", "I", "J")
+# ルールH: 「次の試合のバッジ読み取り値と乖離している」とみなす境界。
+# 2026-09-08の実データ25試合の実測に基づく。手動入力値と次の試合の
+# rank_before_ocr(結果バナー直後に読んだコンパクトバッジ)は、値が正しければ
+# ±0.01で一致していた(24組中11組)。一方で誤入力だったid=1は0.39、id=15は1.00
+# 離れていた。両者の間を取り、正しい試合を巻き込まない0.3にしてある
+# (0.1まで下げると正しい試合が9件誤検知になる、Issue #407のコメント参照)。
+NEXT_BADGE_GAP_THRESHOLD = 0.3
+
+RULE_CODES = ("A", "C", "D", "E", "H", "I", "J")
 
 _LEAGUE_CHANGE_LABELS = {"up": "昇格演出", "down": "降格ラベル"}
 
@@ -108,6 +122,7 @@ def evaluate(
     rank_after: Optional[float],
     league_change_label_detected: Optional[str] = None,
     next_match_vs_tier: Optional[int] = None,
+    next_match_rank_before_ocr: Optional[float] = None,
     team_rank_totals: Optional[TeamRankTotals] = None,
     acknowledged_rule_codes: frozenset[str] = frozenset(),
 ) -> list[RankWarning]:
@@ -117,8 +132,15 @@ def evaluate(
     まだ手動入力していない)は判定できないため、常に空リストを返す。
 
     `next_match_vs_tier`は次の試合のVS画面で読んだ自分の帯番号(∞帯のみ、
-    未検知ならNone)。`team_rank_totals`はこの試合のVS画面から集計した両チームの
-    合計ランク。どちらも無ければ対応するルールをスキップする。
+    未検知ならNone)。`next_match_rank_before_ocr`は次の試合の結果バナー直後に
+    読んだバッジの値(ルールH、Issue #408の一覧ページからのみ渡す)。
+    `team_rank_totals`はこの試合のVS画面から集計した両チームの合計ランク。
+    いずれも無ければ対応するルールをスキップする。
+
+    ルールHは`next_match_vs_tier`が分かっている場合、**次の試合のバッジ読み取り値の
+    帯がVS画面の帯と一致するときだけ**判定に使う。バッジOCRは帯番号を誤読すること
+    があり(実データでid=24が43.00と読めていた)、ガード無しだとその誤読でそのまま
+    誤検知するため(Issue #408のコメント参照)。
 
     `acknowledged_rule_codes`に含まれるルールは`acknowledged=True`にして返す
     (呼び出し元が非表示にする)。判定自体は行うため、値を修正して矛盾が解消されれば
@@ -178,6 +200,20 @@ def evaluate(
                 f"入力値は帯{tier_after}({rank_after})です。",
             )
         )
+
+    # H: 次の試合のバッジ読み取り値と乖離している(Issue #408の一覧ページ専用)
+    if next_match_rank_before_ocr is not None:
+        # バッジOCRの帯番号の誤読をそのまま拾わないよう、VS画面の帯と突き合わせる
+        badge_tier_is_trusted = next_match_vs_tier is None or int(next_match_rank_before_ocr) == next_match_vs_tier
+        gap = round(abs(next_match_rank_before_ocr - rank_after), 2)
+        if badge_tier_is_trusted and gap >= NEXT_BADGE_GAP_THRESHOLD:
+            found.append(
+                (
+                    "H",
+                    f"次の試合で読み取ったランク({next_match_rank_before_ocr})と{gap}離れています。"
+                    f"試合の間にランクは変動しないため、どちらかが誤っている可能性があります。",
+                )
+            )
 
     # J: 両チームの合計ランク差が小さいのに変化量がゼロ
     if delta == 0 and team_rank_totals is not None:

@@ -1,0 +1,338 @@
+/* Issue #408: 健全性チェック一覧(/health-check)専用のスタイル。/admin・/rank-entry
+   と同じくOBSへの配置を想定しないため、通常のページとして組む。色は既存の
+   rank_entry.css(確定=#0ca30c / 警告=#8a5300 on #fff4e0 / エラー=#b3261e)と
+   揃えてあり、警告の見た目は/rank-entry側の.rank-entry-warningと同じ配色にしている
+   (同じ内容が両方の画面に出るため)。
+
+   /rank-entryが1試合ずつ動画を見ながら入力する画面なのに対し、こちらはDB全体を
+   俯瞰して矛盾を探す画面のため、横に情報を並べた行のリストにする。 */
+body {
+    margin: 0;
+    padding: 16px;
+    font-family: sans-serif;
+    color: #222;
+    background: #fff;
+}
+
+h1 {
+    font-size: 16px;
+    margin: 0 0 12px;
+}
+
+.hc-sublink {
+    display: flex;
+    gap: 14px;
+    margin: -8px 0 12px;
+}
+
+.hc-sublink a {
+    font-size: 12px;
+    color: #1a73e8;
+    text-decoration: none;
+}
+
+.hc-sublink a:hover {
+    text-decoration: underline;
+}
+
+.hc-message {
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    margin: 0 0 12px;
+}
+
+.hc-message-success {
+    background: #e6f4ea;
+    color: #1e7a34;
+}
+
+.hc-message-error {
+    background: #fbe9e7;
+    color: #b3261e;
+}
+
+/* まず全体の状況を出し、その下に個別の行を並べる */
+.hc-summary {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 12px;
+}
+
+.hc-summary b {
+    color: #222;
+    font-size: 15px;
+    font-variant-numeric: tabular-nums;
+}
+
+.hc-summary .warn b {
+    color: #8a5300;
+}
+
+.hc-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #e0e0e0;
+    margin-bottom: 10px;
+}
+
+.hc-filters {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: #666;
+}
+
+.hc-filters label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+}
+
+/* 一括修正モード。既定は表示専用で、押したときだけ入力欄が並ぶ */
+.hc-mode {
+    font-size: 12px;
+    padding: 5px 12px;
+    border: 1px solid #1a73e8;
+    border-radius: 4px;
+    background: #fff;
+    color: #1a73e8;
+    cursor: pointer;
+    white-space: nowrap;
+    font-family: inherit;
+}
+
+.hc-mode[aria-pressed="true"] {
+    background: #1a73e8;
+    color: #fff;
+}
+
+.hc-session {
+    font-size: 11px;
+    color: #666;
+    letter-spacing: .04em;
+    padding: 10px 0 4px;
+    border-bottom: 1px solid #eee;
+    margin-bottom: 2px;
+}
+
+.hc-head,
+.hc-cells {
+    display: grid;
+    grid-template-columns: 40px 96px 44px 140px 56px 48px minmax(180px, 1fr);
+    gap: 8px;
+    align-items: center;
+}
+
+.hc-head {
+    font-size: 10.5px;
+    color: #666;
+    letter-spacing: .06em;
+    padding: 0 8px 6px;
+}
+
+.hc-match {
+    border-bottom: 1px solid #eee;
+}
+
+.hc-cells {
+    padding: 7px 8px;
+    font-size: 12.5px;
+}
+
+/* 警告のある試合だけを帯で持ち上げる(全行を枠で囲うと逆に目立たなくなるため) */
+.hc-match-flagged {
+    border-left: 3px solid #f0c884;
+    background: #fffdf8;
+}
+
+.hc-match-flagged .hc-cells {
+    padding-left: 5px;
+}
+
+.hc-id {
+    font-size: 11.5px;
+    color: #666;
+    font-variant-numeric: tabular-nums;
+}
+
+.hc-time,
+.hc-ranks,
+.hc-delta {
+    font-variant-numeric: tabular-nums;
+}
+
+.hc-arrow {
+    color: #666;
+    margin: 0 3px;
+}
+
+.hc-delta-up {
+    color: #0ca30c;
+}
+
+.hc-delta-down {
+    color: #b3261e;
+}
+
+.hc-delta-flat {
+    color: #666;
+}
+
+.hc-league {
+    font-size: 10.5px;
+}
+
+.hc-league-up {
+    color: #0ca30c;
+}
+
+.hc-league-down {
+    color: #b3261e;
+}
+
+.hc-league-none {
+    color: #ccc;
+}
+
+.hc-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.hc-cliplink {
+    font-size: 11.5px;
+    color: #1a73e8;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.hc-cliplink:hover {
+    text-decoration: underline;
+}
+
+.hc-noclip {
+    font-size: 11px;
+    color: #b9b9b9;
+    white-space: nowrap;
+}
+
+/* 修正フォームは一括修正モードのときだけ出す。常時出していると
+   一覧としての見通しが悪くなるため(ユーザーとの相談で決定) */
+.hc-edit {
+    display: none;
+    align-items: center;
+    gap: 5px;
+    margin: 0;
+}
+
+.hc-editing .hc-edit {
+    display: inline-flex;
+}
+
+.hc-editing .hc-cliponly {
+    display: none;
+}
+
+.hc-edit input {
+    width: 80px;
+    font-size: 12.5px;
+    padding: 3px 6px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: inherit;
+    font-variant-numeric: tabular-nums;
+}
+
+.hc-edit button {
+    font-size: 11px;
+    padding: 3px 9px;
+    border: 1px solid #1a73e8;
+    border-radius: 4px;
+    background: #1a73e8;
+    color: #fff;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.hc-warnings {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 0 8px 8px 5px;
+}
+
+/* 配色は/rank-entry側の.rank-entry-warningと揃える(同じ警告が両方に出るため)。
+   ただしこちらは行が十分広いので、メッセージとボタンは横並びのままでよい
+   (Issue #414で/rank-entry側だけ縦積みにした経緯を参照) */
+.hc-warn {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 11.5px;
+    color: #8a5300;
+    background: #fff4e0;
+    border: 1px solid #f0c884;
+    border-radius: 4px;
+    padding: 5px 8px;
+}
+
+.hc-warn-rule {
+    flex: 0 0 auto;
+    font-weight: bold;
+}
+
+.hc-warn-message {
+    flex: 1;
+    min-width: 0;
+}
+
+.hc-warn-form {
+    flex: 0 0 auto;
+    margin: 0;
+}
+
+.hc-warn button {
+    font-size: 10px;
+    padding: 2px 6px;
+    border: 1px solid #8a5300;
+    border-radius: 4px;
+    background: #fff;
+    color: #8a5300;
+    cursor: pointer;
+    white-space: nowrap;
+    font-family: inherit;
+}
+
+.hc-warn button:hover {
+    background: #fff4e0;
+}
+
+/* 確認済みの警告は、切り替えで表示したときにトーンを落として区別する */
+.hc-warn-acked {
+    color: #666;
+    background: #f5f5f5;
+    border-color: #ddd;
+}
+
+.hc-warn-acked button {
+    border-color: #999;
+    color: #666;
+}
+
+.hc-empty {
+    color: #666;
+    font-size: 13px;
+    padding: 16px 8px;
+}

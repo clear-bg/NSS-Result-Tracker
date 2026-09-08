@@ -122,6 +122,16 @@ OBS(obs-websocket)・YouTube連携への接続を一切行わずブロックす�
 `OBS_SCENE_SWITCHING_ENABLED`の2項目で、`/admin`の他フィールドと異なり
 起動のたびに前回値をプリフィルせず空欄から始まる(`admin.html`参照)。
 
+Issue #408: `/health-check`は、DB全体のランク記録の矛盾を一覧表示し、その場で
+`rank_after`を修正できるページ。判定は#407と同じ`rank_warnings.evaluate()`を
+`include_next_badge=True`で呼び、ルールH(次の試合のバッジ読み取り値との乖離)も
+有効にする(次の試合が記録されて初めて判定できるため`/rank-entry`には出さない)。
+修正フォームを出すのはクリップが残っていない行だけで、クリップがある行は
+`/rank-entry?match_id=N`(#409)へのリンクにする。書き込みは`/rank-entry`と同じ
+`db.save_manual_rank_after()`を使うため、`rank_before`チェーンの連動更新も
+そのまま効く。自動更新(ポーリング)は入れない(入力途中のフォームが差し替わる
+Issue #307の不具合を避けるため)。
+
 Issue #410: `/admin`のフォームは1つだけで、送信先も`POST /admin`のみ(`admin_update`)。
 当初は「野良/専用部屋」「配信中の設定」「起動確認」の3フォーム・3エンドポイントに
 分かれており、起動のたびに3回送信する必要があったため統合した。送信ボタンは常に
@@ -162,6 +172,7 @@ from nss_tracker.database.db import (
     connect as _connect_and_migrate,
     delete_rank_warning_ack,
     fetch_all_matches,
+    fetch_all_sessions,
     fetch_current_session_id,
     fetch_goals_for_session,
     fetch_latest_rank_after,
@@ -1270,15 +1281,25 @@ def _mine_vs_tier(rows: list[sqlite3.Row]) -> Optional[int]:
     return None
 
 
-def _build_rank_warnings(conn: sqlite3.Connection, row: sqlite3.Row) -> list[dict]:
+def _build_rank_warnings(
+    conn: sqlite3.Connection, row: sqlite3.Row, include_next_badge: bool = False
+) -> list[dict]:
     """1試合分の入力値検証の警告を、テンプレートが扱える形(dictのリスト)で返す(Issue #407)。
 
     判定自体は`rank_warnings.evaluate()`(DBに依存しない純粋関数)が行う。この関数は
     判定に必要な値をDBから集める役割に徹する。
+
+    Issue #408: `include_next_badge`を指定すると、次の試合のバッジ読み取り値
+    (`rank_before_ocr`)も渡してルールHを有効にする。健全性チェック一覧ページ専用で、
+    `/rank-entry`からはFalseのまま呼ぶ(次の試合が記録されて初めて判定できるため、
+    入力直後の警告としては意味を成さない)。
     """
     match_id = row["id"]
     next_match = fetch_next_match(conn, match_id)
     next_match_vs_tier = _mine_vs_tier(fetch_vs_slot_ranks(conn, next_match["id"])) if next_match else None
+    next_match_rank_before_ocr = (
+        next_match["rank_before_ocr"] if include_next_badge and next_match is not None else None
+    )
 
     slot_rows = fetch_vs_slot_ranks(conn, match_id)
     mine = _summarize_vs_slot_ranks([r for r in slot_rows if r["side"] == "mine"])
@@ -1296,6 +1317,7 @@ def _build_rank_warnings(conn: sqlite3.Connection, row: sqlite3.Row) -> list[dic
         rank_after=row["rank_after"],
         league_change_label_detected=row["league_change_label_detected"],
         next_match_vs_tier=next_match_vs_tier,
+        next_match_rank_before_ocr=next_match_rank_before_ocr,
         team_rank_totals=totals,
         acknowledged_rule_codes=fetch_rank_warning_acks(conn, match_id),
     )
@@ -1381,6 +1403,69 @@ def _build_rank_entry_context(db_path: Path) -> dict:
     finally:
         conn.close()
     return {"clips": clips, "pending_count": pending_count}
+
+
+def _build_health_check_context(db_path: Path) -> dict:
+    """健全性チェック一覧(/health-check)用に、全試合と警告をまとめて返す(Issue #408)。
+
+    `/rank-entry`(#407)がクリップの残っている試合しか開けないのに対し、こちらは
+    DB全体を対象にする。2026-09-08に記録済みのランク値を配信映像と突き合わせて
+    検証した際、誤りのあった4試合のうち3試合はクリップが既に削除されており
+    `/rank-entry`から開けなかった(スクリプトを書いて修正した)ため。
+
+    判定は`/rank-entry`と同じ`_build_rank_warnings()`を使うが、こちらは
+    `include_next_badge=True`でルールH(次の試合のバッジ読み取り値との乖離)も有効に
+    する(次の試合が記録されて初めて判定できるため、入力直後ではなくこちらに置く)。
+
+    各試合に`has_clip`(クリップが残っているか)を持たせ、テンプレート側で
+    「クリップを見る」リンクを出すか、直接の修正フォームを出すかを分ける。
+    """
+    conn = _connect(db_path)
+    try:
+        session_labels = {}
+        for session in fetch_all_sessions(conn):
+            started_at = datetime.fromisoformat(session["started_at"])
+            session_labels[session["id"]] = started_at.strftime("配信 %m/%d %H:%M 開始")
+        clip_ids = set(_list_clip_match_ids(DEFAULT_CLIPS_DIR))
+
+        matches = []
+        warned_count = 0
+        for row in fetch_all_matches(conn):
+            warnings = _build_rank_warnings(conn, row, include_next_badge=True)
+            if any(not warning["acknowledged"] for warning in warnings):
+                warned_count += 1
+            detected_at = datetime.fromisoformat(row["detected_at"])
+            rank_before = row["rank_before"]
+            rank_after = row["rank_after"]
+            matches.append(
+                {
+                    "match_id": row["id"],
+                    "session_label": session_labels.get(row["session_id"], "配信セッション不明"),
+                    "detected_at_text": detected_at.strftime("%m/%d %H:%M"),
+                    "result_text": _MATCH_RESULT_LABELS.get(row["result"], row["result"]),
+                    "rank_before": rank_before,
+                    "rank_after": rank_after,
+                    "delta": (
+                        None if rank_before is None or rank_after is None else round(rank_after - rank_before, 2)
+                    ),
+                    "league_changed": row["league_changed"],
+                    # ランクを賭けていない試合(rank_before_ocrがNULL)は修正できない
+                    # (save_manual_rank_afterがValueErrorを送出する)
+                    "editable": row["rank_before_ocr"] is not None and rank_before is not None,
+                    "has_clip": row["id"] in clip_ids,
+                    "warnings": warnings,
+                }
+            )
+    finally:
+        conn.close()
+    # 新しい試合ほど直したくなる可能性が高いため、新しい順で返す
+    matches.reverse()
+    return {
+        "matches": matches,
+        "total_count": len(matches),
+        "warned_count": warned_count,
+        "clip_count": sum(1 for match in matches if match["has_clip"]),
+    }
 
 
 def _list_clip_match_ids(clips_dir: Path) -> list[int]:
@@ -1542,6 +1627,72 @@ def create_app(db_path: Path) -> FastAPI:
             conn.close()
         _logger.info("手動ランク入力(/rank-entry)からrank_afterを記録しました: match_id=%d rank_after=%s", match_id, rank_after_value)
         return RedirectResponse("/rank-entry?status=saved", status_code=303)
+
+    @app.get("/health-check")
+    def health_check(request: Request, status: Optional[str] = None, error: Optional[str] = None):
+        """DB全体のランク記録の矛盾を一覧表示する(Issue #408)。
+
+        `/rank-entry`と異なり自動更新(ポーリング)は入れない。見返して直すための
+        ページなのでリロードで足り、自動更新があると入力途中のフォームが差し替わる
+        事故が起きる(Issue #307で`/rank-entry`が実際に踏んだ不具合)。
+        """
+        context = {
+            **_build_health_check_context(db_path),
+            "status": status,
+            "error": error,
+            "health_check_css_version": _static_asset_version("health_check.css"),
+        }
+        return _TEMPLATES.TemplateResponse(request, "health_check.html", context)
+
+    @app.post("/health-check/rank-after")
+    def health_check_rank_after(match_id: int = Form(...), rank_after: str = Form(...)):
+        """一覧から直接rank_afterを修正する(Issue #408)。
+
+        クリップが残っていない試合はこのページ以外に直す手段が無いため
+        (`/rank-entry`はディスク上のクリップを列挙して表示対象を決めている)。
+        書き込み自体は`/rank-entry`と同じ`db.save_manual_rank_after()`を使うため、
+        rank_beforeチェーンの連動更新・確認済み警告のクリアもそのまま効く。
+        """
+        try:
+            rank_after_value = float(rank_after)
+        except ValueError:
+            return RedirectResponse(f"/health-check?error={quote('数値を入力してください')}", status_code=303)
+        conn = _connect(db_path)
+        try:
+            save_manual_rank_after(conn, match_id, rank_after_value)
+        except ValueError as exc:
+            _logger.warning("健全性チェック(/health-check)からの更新が拒否されました: %s", exc)
+            return RedirectResponse(f"/health-check?error={quote(str(exc))}", status_code=303)
+        finally:
+            conn.close()
+        _logger.info(
+            "健全性チェック(/health-check)からrank_afterを修正しました: match_id=%d rank_after=%s",
+            match_id,
+            rank_after_value,
+        )
+        return RedirectResponse("/health-check?status=saved", status_code=303)
+
+    @app.post("/health-check/warnings")
+    def health_check_warning_ack(match_id: int = Form(...), rule_code: str = Form(...), action: str = Form(...)):
+        """一覧から警告を「確認済み」にする/取り消す(Issue #408)。
+
+        `/rank-entry`側(#407)と同じ`match_rank_warning_acks`テーブルを共有するため、
+        どちらで確認済みにしても両方の画面に反映される。
+        """
+        if rule_code not in rank_warnings.RULE_CODES:
+            _logger.warning("不明なルールコードのため警告の更新を拒否しました: %s", rule_code)
+            return RedirectResponse(f"/health-check?error={quote('不明なルールコードです')}", status_code=303)
+        conn = _connect(db_path)
+        try:
+            if action == "unacknowledge":
+                delete_rank_warning_ack(conn, match_id, rule_code)
+                _logger.info("ランク警告の確認済みを取り消しました: match_id=%d rule=%s", match_id, rule_code)
+            else:
+                save_rank_warning_ack(conn, match_id, rule_code)
+                _logger.info("ランク警告を確認済みにしました: match_id=%d rule=%s", match_id, rule_code)
+        finally:
+            conn.close()
+        return RedirectResponse("/health-check", status_code=303)
 
     @app.post("/rank-entry/warnings")
     def rank_entry_warning_ack(match_id: int = Form(...), rule_code: str = Form(...), action: str = Form(...)):

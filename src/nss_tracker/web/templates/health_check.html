@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ランク記録の健全性チェック</title>
+<link rel="stylesheet" href="/static/health_check.css?v={{ health_check_css_version }}">
+</head>
+<body>
+<h1>ランク記録の健全性チェック</h1>
+<p class="hc-sublink">
+  <a href="/admin" target="_blank" rel="noopener">設定画面(/admin)へ</a>
+  <a href="/rank-entry" target="_blank" rel="noopener">ランク手動入力へ</a>
+</p>
+{% if status == "saved" %}
+<p class="hc-message hc-message-success">記録しました。</p>
+{% endif %}
+{% if error %}
+<p class="hc-message hc-message-error">{{ error }}</p>
+{% endif %}
+
+{% if matches %}
+<div class="hc-summary">
+  <span>記録した試合 <b>{{ total_count }}</b></span>
+  <span class="warn">警告のある試合 <b>{{ warned_count }}</b></span>
+  <span>クリップが残っている <b>{{ clip_count }}</b></span>
+</div>
+
+<div class="hc-toolbar">
+  <div class="hc-filters">
+    <label><input type="checkbox" id="hc-only-warned" checked> 警告のある試合のみ</label>
+    <label><input type="checkbox" id="hc-show-acked"> 確認済みも含める</label>
+  </div>
+  <button type="button" id="hc-mode" class="hc-mode" aria-pressed="false">一括修正モード</button>
+</div>
+
+<div class="hc-head">
+  <span>ID</span><span>試合終了</span><span>結果</span><span>ランク</span>
+  <span>Δ</span><span>帯</span><span>操作</span>
+</div>
+<div id="hc-list"></div>
+<p class="hc-empty" id="hc-empty" hidden>該当する試合はありません。</p>
+{% else %}
+<p class="hc-empty">記録された試合がありません。</p>
+{% endif %}
+
+<script id="hc-matches-data" type="application/json">{{ matches | tojson }}</script>
+<script>
+(function () {
+  const dataEl = document.getElementById("hc-matches-data");
+  if (!dataEl) {
+    return;
+  }
+  const matches = JSON.parse(dataEl.textContent);
+  const list = document.getElementById("hc-list");
+  const emptyEl = document.getElementById("hc-empty");
+  const onlyWarnedEl = document.getElementById("hc-only-warned");
+  const showAckedEl = document.getElementById("hc-show-acked");
+  const modeEl = document.getElementById("hc-mode");
+
+  function unacknowledged(match) {
+    return match.warnings.filter(function (w) { return !w.acknowledged; });
+  }
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) { node.className = className; }
+    if (text !== undefined) { node.textContent = text; }
+    return node;
+  }
+
+  function hiddenInput(name, value) {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = value;
+    return input;
+  }
+
+  // Issue #408: 警告には原理的に無くせない誤検知が含まれるため(チームの人数がDBに
+  // 無く、味方が抜けて3人になった試合のΔ=0を区別できない)、ルール単位で確認済みに
+  // して隠せるようにする。/rank-entry(#407)と同じテーブルを共有する。
+  function warningAckForm(match, warning) {
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = "/health-check/warnings";
+    form.className = "hc-warn-form";
+    form.appendChild(hiddenInput("match_id", match.match_id));
+    form.appendChild(hiddenInput("rule_code", warning.rule_code));
+    form.appendChild(hiddenInput("action", warning.acknowledged ? "unacknowledge" : "acknowledge"));
+    const button = el("button", null, warning.acknowledged ? "戻す" : "確認済みにする");
+    button.type = "submit";
+    form.appendChild(button);
+    return form;
+  }
+
+  // Issue #408: クリップが残っていない試合はこのページ以外に直す手段が無いため、
+  // 直接の修正フォームを置く。クリップがある試合は/rank-entryで動画を見ながら
+  // 直せるので、そちらへのリンクだけにする。
+  function editForm(match) {
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = "/health-check/rank-after";
+    form.className = "hc-edit";
+    form.appendChild(hiddenInput("match_id", match.match_id));
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "0.01";
+    input.name = "rank_after";
+    input.value = match.rank_after === null ? "" : match.rank_after;
+    input.setAttribute("aria-label", match.match_id + "試合目の確定ランク");
+    form.appendChild(input);
+    const save = el("button", null, "保存");
+    save.type = "submit";
+    form.appendChild(save);
+    return form;
+  }
+
+  function renderActions(match) {
+    const actions = el("div", "hc-actions");
+    if (match.has_clip) {
+      const link = el("a", "hc-cliplink", "▶ クリップを見る");
+      link.href = "/rank-entry?match_id=" + match.match_id;
+      link.target = "_blank";
+      link.rel = "noopener";
+      actions.appendChild(link);
+    } else if (match.editable) {
+      actions.appendChild(editForm(match));
+      actions.appendChild(el("span", "hc-noclip hc-cliponly", "クリップなし"));
+    } else {
+      actions.appendChild(el("span", "hc-noclip", "ランクなし"));
+    }
+    return actions;
+  }
+
+  function formatRank(value) {
+    return value === null || value === undefined ? "—" : String(value);
+  }
+
+  function renderMatch(match, showAcked) {
+    const visible = showAcked ? match.warnings : unacknowledged(match);
+    const wrap = el("div", "hc-match" + (unacknowledged(match).length ? " hc-match-flagged" : ""));
+
+    const cells = el("div", "hc-cells");
+    cells.appendChild(el("span", "hc-id", "#" + match.match_id));
+    cells.appendChild(el("span", "hc-time", match.detected_at_text));
+    cells.appendChild(el("span", "hc-result", match.result_text));
+
+    const ranks = el("span", "hc-ranks");
+    ranks.appendChild(el("span", null, formatRank(match.rank_before)));
+    ranks.appendChild(el("span", "hc-arrow", "→"));
+    ranks.appendChild(el("span", null, formatRank(match.rank_after)));
+    cells.appendChild(ranks);
+
+    if (match.delta === null) {
+      cells.appendChild(el("span", "hc-delta hc-delta-flat", "—"));
+    } else {
+      const cls = match.delta > 0 ? "hc-delta-up" : (match.delta < 0 ? "hc-delta-down" : "hc-delta-flat");
+      const sign = match.delta > 0 ? "+" : "";
+      cells.appendChild(el("span", "hc-delta " + cls, sign + match.delta.toFixed(2)));
+    }
+
+    const leagueClass = match.league_changed ? "hc-league-" + match.league_changed : "hc-league-none";
+    const leagueText = match.league_changed === "up" ? "昇格"
+      : (match.league_changed === "down" ? "降格" : "—");
+    cells.appendChild(el("span", "hc-league " + leagueClass, leagueText));
+
+    cells.appendChild(renderActions(match));
+    wrap.appendChild(cells);
+
+    if (visible.length) {
+      const box = el("div", "hc-warnings");
+      visible.forEach(function (warning) {
+        const item = el("div", "hc-warn" + (warning.acknowledged ? " hc-warn-acked" : ""));
+        item.appendChild(el("span", "hc-warn-rule", warning.rule_code));
+        item.appendChild(el("span", "hc-warn-message", warning.message));
+        item.appendChild(warningAckForm(match, warning));
+        box.appendChild(item);
+      });
+      wrap.appendChild(box);
+    }
+    return wrap;
+  }
+
+  function render() {
+    const onlyWarned = onlyWarnedEl.checked;
+    const showAcked = showAckedEl.checked;
+    list.textContent = "";
+
+    const shown = matches.filter(function (match) {
+      if (!onlyWarned) { return true; }
+      return showAcked ? match.warnings.length > 0 : unacknowledged(match).length > 0;
+    });
+    emptyEl.hidden = shown.length > 0;
+
+    let sessionLabel = null;
+    shown.forEach(function (match) {
+      if (match.session_label !== sessionLabel) {
+        sessionLabel = match.session_label;
+        list.appendChild(el("div", "hc-session", sessionLabel));
+      }
+      list.appendChild(renderMatch(match, showAcked));
+    });
+  }
+
+  modeEl.addEventListener("click", function () {
+    const on = modeEl.getAttribute("aria-pressed") !== "true";
+    modeEl.setAttribute("aria-pressed", String(on));
+    modeEl.textContent = on ? "一括修正モードを終了" : "一括修正モード";
+    list.classList.toggle("hc-editing", on);
+  });
+  onlyWarnedEl.addEventListener("change", render);
+  showAckedEl.addEventListener("change", render);
+
+  render();
+})();
+</script>
+</body>
+</html>
