@@ -1509,11 +1509,19 @@ def create_app(db_path: Path) -> FastAPI:
         return RedirectResponse("/admin?status=confirmed", status_code=303)
 
     @app.get("/rank-entry")
-    def rank_entry(request: Request, status: Optional[str] = None, error: Optional[str] = None):
+    def rank_entry(
+        request: Request,
+        status: Optional[str] = None,
+        error: Optional[str] = None,
+        match_id: Optional[int] = None,
+    ):
         context = {
             **_build_rank_entry_context(db_path),
             "status": status,
             "error": error,
+            # Issue #409: ?match_id=Nでその試合のクリップを選択した状態で開く
+            # (#408の健全性チェック一覧から該当試合へ飛ぶ導線で使う)
+            "initial_match_id": match_id,
             "rank_entry_css_version": _static_asset_version("rank_entry.css"),
         }
         return _TEMPLATES.TemplateResponse(request, "rank_entry.html", context)

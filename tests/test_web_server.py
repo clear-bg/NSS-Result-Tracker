@@ -3007,3 +3007,31 @@ def test_rank_entry_warning_acknowledge_is_cleared_when_rank_is_corrected(tmp_pa
     warnings = clips[0]["warnings"]
     assert [w["rule_code"] for w in warnings] == ["A"]
     assert warnings[0]["acknowledged"] is False
+
+
+# --- Issue #409: ?match_id=N での初期選択(#408からの導線) ---
+
+
+def test_rank_entry_get_embeds_requested_match_id(tmp_path: Path, monkeypatch):
+    client, match_id = _setup_warning_client(tmp_path, monkeypatch, _warning_match("win", 42.20), 42.40)
+
+    response = client.get(f"/rank-entry?match_id={match_id}")
+
+    assert response.status_code == 200
+    match = re.search(
+        r'<script id="rank-entry-initial-match-id" type="application/json">(.*?)</script>', response.text
+    )
+    assert match is not None
+    assert json.loads(match.group(1)) == match_id
+
+
+def test_rank_entry_get_embeds_null_when_match_id_omitted(tmp_path: Path, monkeypatch):
+    client, _ = _setup_warning_client(tmp_path, monkeypatch, _warning_match("win", 42.20), 42.40)
+
+    response = client.get("/rank-entry")
+
+    match = re.search(
+        r'<script id="rank-entry-initial-match-id" type="application/json">(.*?)</script>', response.text
+    )
+    assert match is not None
+    assert json.loads(match.group(1)) is None

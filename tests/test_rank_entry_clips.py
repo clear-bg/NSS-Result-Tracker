@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from nss_tracker import config
+from nss_tracker import config, rank_entry_clips
 from nss_tracker.database import db
 from nss_tracker.rank_entry_clips import (
     GAUGE_LABEL_PADDING_HEIGHT,
@@ -523,3 +523,12 @@ def test_buffered_crop_does_not_retain_the_source_frame(tmp_path):
     recorder.add_frame(source)
 
     assert recorder._frames[0].base is None, "バッファが元フレームのビューになっている"
+
+
+def test_default_max_clips_is_50():
+    """Issue #409: 誤入力に後から気付いたときに見返せるよう、保持件数を3件→50件にした。
+
+    実測で1試合あたり平均約1.6MB・最大約4.3MB(Issue #395の18秒上限より前の値)
+    だったため、50件でも最悪約220MB・通常は100MB以下に収まる。
+    """
+    assert rank_entry_clips.DEFAULT_MAX_CLIPS == 50
