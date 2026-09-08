@@ -75,6 +75,24 @@ h2 {
     border-radius: 4px;
 }
 
+/* Issue #410: 未選択の項目を、フォーム全体ではなくその項目の直下で指摘する。
+   .admin-fieldはgap: 4pxのflexカラムのため、負のmargin-topで対象の入力欄との
+   間隔だけを詰め、ラベル-入力欄よりも近くに見えるようにする(入力欄に属する
+   メッセージだと一目で分かるようにするため)。文字サイズはラベルと同じ13px
+   (入力欄の14pxより大きくしない)。
+   赤枠の指定は、上の`.admin-field select`(同じ詳細度)のborderショートハンドに
+   後勝ちで打ち消されないよう、この位置に置いたうえで詳細度も上げてある。 */
+.admin-field-error {
+    margin: -2px 0 0;
+    font-size: 13px;
+    color: #b3261e;
+}
+
+.admin-field.admin-field-error-target input,
+.admin-field.admin-field-error-target select {
+    border-color: #b3261e;
+}
+
 button[type="submit"] {
     font-size: 14px;
     padding: 8px 20px;

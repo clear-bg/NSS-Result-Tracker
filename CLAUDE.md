@@ -103,7 +103,7 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 
 `ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・`RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`の5項目(`config.py`の`_EDITABLE_ENV_KEYS`。5つ目はIssue #248で追加)のみ、配信中に調整したくなり得る値としてWebダッシュボードの管理画面(`/admin`)からGUIで編集できる。キャプチャ設定・OBS接続情報等、配信開始前に一度決めれば十分な値は対象外(`.env`の手動編集のまま)。対象項目の選定理由・バリデーション方式・`.env`同時更新の仕組みは`src/nss_tracker/config.py`のモジュールdocstring参照。
 
-`/admin`には上記5項目とは別に、野良/専用部屋の切り替え(Issue #358、下記「専用部屋の試合の区別」節参照)もある。こちらは`.env`に永続化しない別の仕組みのため`_EDITABLE_ENV_KEYS`には含めず、`/admin/room-type`への独立したフォーム・POSTで扱う。
+`/admin`には上記5項目とは別に、野良/専用部屋の切り替え(Issue #358、下記「専用部屋の試合の区別」節参照)もある。こちらは`.env`に永続化しない別の仕組みのため`_EDITABLE_ENV_KEYS`には含めない(保存先は別のまま)が、フォーム自体はIssue #410で1つに統合した(下記「起動時の設定確認ゲート」節参照)。
 
 - 別プロセスのネイティブGUI(tkinter等)は不採用とし、既存のFastAPI Webダッシュボード(同一プロセス内・別スレッド)に`/admin`ページを追加する方式にした(ユーザーとの相談で決定)。理由: 対象5項目は呼び出しのたびに`os.environ`を読み直す実装のため、同一プロセス内で直接書き換えれば検知ループの再起動なしに反映できる。別プロセスのGUIだとプロセス間で値を受け渡す仕組みが別途必要になる
 - `main.py`起動時に`/admin`のURLを既定ブラウザで自動的に開く(`webbrowser.open()`、失敗してもWARNINGログのみでアプリ全体は継続する)。視聴者向けオーバーレイページ(`/overlay/xxx`、透過背景)とは別パスにし、`/admin`自体は`overlay.css`を使わず通常のブラウザ表示として組む(`static/admin.css`)
@@ -117,18 +117,19 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 
 - `matches.room_type`(`TEXT NOT NULL DEFAULT 'random'`、`'random'`(野良) / `'private'`(専用部屋))を追加した(`database/db.py`の`_migrate_matches_add_room_type`)。既存データは全件`'random'`扱いになる(専用部屋の試合を遡って区別することはできない)
 - ランクが検出された試合(`match.rank_before`/`match.rank_after`のいずれかが非None)は、ブラウザ側の設定値によらず`save_match_result()`が必ず`room_type='random'`を強制する(切り替え忘れによる誤混入を防ぐ安全装置。ランクを賭けた対戦は仕組み上野良でしか成立しないため)
-- 「野良/専用部屋」の現在設定(`config.get_room_type`/`set_room_type`)は、既存の`/admin`編集可能5項目(`_EDITABLE_ENV_KEYS`)とは異なり`.env`に永続化しない。モジュールレベル変数のみで完結させ、アプリ起動のたびに必ずリセットされる。`/admin`には`_EDITABLE_ENV_KEYS`の一括更新フォームとは別に、`/admin/room-type`への独立したPOSTフォームを設けた。Issue #379で、リセット先を`'random'`(常に野良として起動)から未選択(`None`)へ変更した(下記「起動時の設定確認ゲート」参照。暗黙のデフォルト値自体が「起動できたことに満足して切り替えを忘れる」事故の温床だったため)
+- 「野良/専用部屋」の現在設定(`config.get_room_type`/`set_room_type`)は、既存の`/admin`編集可能5項目(`_EDITABLE_ENV_KEYS`)とは異なり`.env`に永続化しない。モジュールレベル変数のみで完結させ、アプリ起動のたびに必ずリセットされる。`/admin`のフォームはIssue #410で1つに統合され、`_EDITABLE_ENV_KEYS`の5項目と同じ送信(`POST /admin`)で切り替える(保存先が`.env`でない点は変わらない)。Issue #379で、リセット先を`'random'`(常に野良として起動)から未選択(`None`)へ変更した(下記「起動時の設定確認ゲート」参照。暗黙のデフォルト値自体が「起動できたことに満足して切り替えを忘れる」事故の温床だったため)
 - 切り替えタイミングは「セッション開始後、最初の試合を記録するまでの間」を想定。配信内で野良⇔専用部屋が混在するケースはスコープ外(将来必要になれば別途検討)
 - `web/server.py`の`_fetch_matches_count()`は、`session_id`を指定しない呼び出し(累計集計)にのみ`WHERE room_type = 'random'`を追加する。`session_id`指定時(配信セッション単位、`_fetch_winrate`の`session`側)は野良・専用部屋を問わずそのまま含める
 - 得点/アシスト集計(`_fetch_goal_stats`)は元々配信セッション単位のみで累計表示自体が無いため、ランク推移グラフ(`_fetch_rank_history`)はランクが検出された試合が常に`room_type='random'`として保存される(上記の強制ルール)ため、いずれも対象外(自然と野良のみになる)
 
 ### 起動時の設定確認ゲート(`startup_gate.py`、Issue #379)
 
-「システムを起動できたこと自体に満足してしまい、専用部屋で遊ぶ日でも`room_type`を`random`のまま起動しっぱなしにしてしまう」といった設定忘れを防ぐため、起動直後は`/admin`・`/rank-entry`のWebダッシュボードだけを開き、OBS Virtual Camera・OBS(obs-websocket)・YouTube連携への実際の接続は`/admin`で「確認完了」ボタンを押すまで一切行わない。
+「システムを起動できたこと自体に満足してしまい、専用部屋で遊ぶ日でも`room_type`を`random`のまま起動しっぱなしにしてしまう」といった設定忘れを防ぐため、起動直後は`/admin`・`/rank-entry`のWebダッシュボードだけを開き、OBS Virtual Camera・OBS(obs-websocket)・YouTube連携への実際の接続は`/admin`のフォームを送信するまで一切行わない。
 
-- `main.py`は`webbrowser.open()`で`/admin`・`/rank-entry`を自動的に開いた直後、`startup_gate.wait_for_confirmation()`でブロックする(タイムアウトなし)。`/admin`の「確認完了」ボタン(`POST /admin/confirm-start`)が押され`startup_gate.confirm_start()`が呼ばれるまで、`ObsSceneController`(OBS websocket接続)・`DiveTimeWatcher`(YouTube連携)の構築・起動を行わない。`FfmpegFrameReader`・`MatchStateMachine`の構築自体は接続を伴わない(実際にOBS Virtual Cameraへ接続するのは`run()`内の`reader.start()`)ため、このゲートより前のままでよい
-- 対象は`room_type`と`OBS_SCENE_SWITCHING_ENABLED`(`_EDITABLE_ENV_KEYS`の一括フォーム)の2項目。どちらも起動のたびに「未選択」から始まり(`admin.html`側で初期表示を空欄のプレースホルダーにする)、明示的に選択・送信されるまで「確認完了」ボタン自体をdisabledにする(`startup_gate.can_confirm_start()`。機械的に押してしまうリスクを下げるため、エラー表示で弾く方式は不採用、ユーザーとの相談で決定)。`OBS_SCENE_SWITCHING_ENABLED`以外の4項目(`ALLOWED_PLAYERS`等)は今回困っている実例が無いため対象外とし、従来通り`.env`の現在値をプリフィルする
-- `confirm_start()`側にも同じ選択済み条件のチェックを持たせている(disabled属性をバイパスして直接POSTされた場合の防御)
+- `main.py`は`webbrowser.open()`で`/admin`・`/rank-entry`を自動的に開いた直後、`startup_gate.wait_for_confirmation()`でブロックする(タイムアウトなし)。`/admin`のフォーム(`POST /admin`)が送信され`startup_gate.confirm_start()`が呼ばれるまで、`ObsSceneController`(OBS websocket接続)・`DiveTimeWatcher`(YouTube連携)の構築・起動を行わない。`FfmpegFrameReader`・`MatchStateMachine`の構築自体は接続を伴わない(実際にOBS Virtual Cameraへ接続するのは`run()`内の`reader.start()`)ため、このゲートより前のままでよい
+- 対象は`room_type`と`OBS_SCENE_SWITCHING_ENABLED`の2項目。どちらも起動のたびに「未選択」から始まる(`admin.html`側で初期表示を空欄のプレースホルダーにする)。`OBS_SCENE_SWITCHING_ENABLED`以外の4項目(`ALLOWED_PLAYERS`等)は今回困っている実例が無いため対象外とし、従来通り`.env`の現在値をプリフィルする
+- **Issue #410: `/admin`のフォームは1つ・送信先も`POST /admin`のみ**(`web/server.py`の`admin_update`)。当初は「野良/専用部屋」「配信中の設定」「起動確認」の3フォーム・3エンドポイント(`POST /admin/room-type`・`POST /admin`・`POST /admin/confirm-start`)に分かれており、起動のたびに3回送信する必要があったため統合した。送信ボタンは常に押せる状態で、上記2項目のいずれかが未選択なら**その項目の直下にエラーを表示**して起動確認だけを保留する。このとき選択済みの項目の反映自体は行う(片方だけ選んで送信した場合に、選んだ方をやり直さずに済むようにするため)。Issue #379時点の「機械的に押してしまうリスクを下げるためボタン自体をdisabledにし、エラー表示で弾く方式は採らない」という判断は、この統合にあたり意図的に覆した(ユーザーとの相談で決定)。未選択のまま接続が始まらない点は変わらない
+- `confirm_start()`側にも同じ選択済み条件のチェック(`startup_gate.can_confirm_start()`)を持たせている(フォームをバイパスして直接POSTされた場合の防御)
 - `--video`指定時(動画ファイルでの配線確認)もこのゲートを同じように通過する必要がある(特別扱いしない)
 - 確認完了は起動シーケンスのゲートであり、一度確認完了したらそのプロセスの生存中(=そのセッション中)は再度要求しない
 - 接続結果(OBS接続成功/失敗・YouTube連携成功/失敗)は`/admin`上には表示せず、従来通りターミナルのログ出力のみで確認する(ユーザー確認済み、追加のUI実装は行わない)

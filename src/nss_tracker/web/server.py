@@ -78,11 +78,11 @@ Issue #259: 全`/overlay/xxx`ページは、クエリパラメータ`?debug_bg=1
 影響しない。`/admin`のoverlayリンク一覧(#257)はこのパラメータ付きのURLにすることで、
 通常のブラウザで開いても白文字(overlay.cssのcolor: #fff)が読めるようにする。
 
-Issue #358: `/admin`には上記5項目とは別に、野良/専用部屋の切り替えUI(`/admin/room-type`
-への独立したPOST)がある。`config.get_room_type`/`set_room_type`は`.env`へ永続化せず
-プロセス起動のたびにリセットされる値のため、`_EDITABLE_ENV_KEYS`のPRGフォーム
-(全項目必須の一括更新)とはあえて分けている(Issue #379で、リセット先が`'random'`から
-未選択(`None`)へ変更された。下記「起動確認ゲート」節参照)。累計勝率
+Issue #358: `/admin`には上記5項目とは別に野良/専用部屋の切り替えがある。
+`config.get_room_type`/`set_room_type`は`.env`へ永続化せずプロセス起動のたびに
+リセットされる値のため、保存先は`_EDITABLE_ENV_KEYS`とは別のままだが、フォーム
+自体はIssue #410で1つに統合した(当初は`/admin/room-type`への独立したPOSTだった。
+下記「起動確認ゲート」節参照)。累計勝率
 (`_fetch_matches_count`のsession_id省略時)のみroom_type='random'の試合に絞り込み、
 配信セッション単位の集計・直近試合結果ログ(`/overlay/match-log`)はroom_typeを問わず
 従来通り表示する。得点/アシスト統計(`_fetch_goal_stats`)は元々配信セッション単位のみで
@@ -107,14 +107,22 @@ signalモード(`data-animate-on-change="signal"`、#360のcountモードの拡�
 この遅れを人間の目に気にならない程度まで縮めるため、`/overlay/rank-graph`だけ
 `_RANK_GRAPH_REFRESH_INTERVAL_MS`(0.5秒)を使う。
 
-Issue #379: `/admin`には「確認完了」ボタン(`/admin/confirm-start`へのPOST)がある。
-`main.py`はWebサーバー起動・`/admin`/`/rank-entry`の自動オープンまでを終えた後、
-このボタンが押されて`startup_gate.confirm_start()`が呼ばれるまでOBS Virtual Camera・
+Issue #379: `main.py`はWebサーバー起動・`/admin`/`/rank-entry`の自動オープンまでを
+終えた後、`startup_gate.confirm_start()`が呼ばれるまでOBS Virtual Camera・
 OBS(obs-websocket)・YouTube連携への接続を一切行わずブロックする(詳細は
-`startup_gate.py`のモジュールdocstring参照)。ボタンは`room_type`と
-`OBS_SCENE_SWITCHING_ENABLED`が今回の起動で明示的に選択済みになるまでdisabled
-にする(`can_confirm_start`)。この2項目は`/admin`の他フィールドと異なり、
+`startup_gate.py`のモジュールdocstring参照)。ゲートの対象は`room_type`と
+`OBS_SCENE_SWITCHING_ENABLED`の2項目で、`/admin`の他フィールドと異なり
 起動のたびに前回値をプリフィルせず空欄から始まる(`admin.html`参照)。
+
+Issue #410: `/admin`のフォームは1つだけで、送信先も`POST /admin`のみ(`admin_update`)。
+当初は「野良/専用部屋」「配信中の設定」「起動確認」の3フォーム・3エンドポイントに
+分かれており、起動のたびに3回送信する必要があったため統合した。送信ボタンは常に
+押せる状態で、ゲート対象2項目のいずれかが未選択なら、その項目の直下にエラーを
+表示して起動確認だけを保留する(選択済みの項目の反映自体は行う)。Issue #379時点の
+「機械的に押してしまうリスクを下げるためボタン自体をdisabledにし、エラー表示で
+弾く方式は採らない」という判断は、この統合にあたり意図的に覆した(ユーザーとの
+相談で決定)。未選択のまま接続が始まらない点は`confirm_start()`側の
+`can_confirm_start()`チェックで従来どおり担保される。
 """
 
 import logging
@@ -1206,6 +1214,24 @@ def _overlay_debug_bg_style(request: Request) -> str:
     return ""
 
 
+def _static_asset_version(filename: str) -> str:
+    """静的ファイルのURLに付けるキャッシュバスター(Issue #410)。
+
+    `<link rel="stylesheet" href="/static/xxx.css">`はURLが変わらない限り
+    ブラウザが古い内容を使い続けるため、CSSを修正しても手動でスーパーリロード
+    (Ctrl+F5)するまで反映されない(overlay系でも同じ問題があることをCLAUDE.mdに
+    記載済み)。ファイルの更新時刻をクエリに付けることで、内容を変えたときだけ
+    URLが変わり、変えていない間は従来どおりキャッシュが効くようにする。
+
+    ファイルが見つからない場合は"0"を返す(URLにクエリが付くだけで実害が無いため、
+    ここでアプリを止める理由にはならない)。
+    """
+    try:
+        return str(int((_WEB_DIR / "static" / filename).stat().st_mtime))
+    except OSError:
+        return "0"
+
+
 _MATCH_RESULT_LABELS = {"win": "勝ち", "lose": "負け", "draw": "引き分け"}
 
 
@@ -1313,68 +1339,95 @@ def create_app(db_path: Path) -> FastAPI:
         return _TEMPLATES.TemplateResponse(request, "index.html", {"counts": counts})
 
     @app.get("/admin")
-    def admin(request: Request, status: Optional[str] = None, error: Optional[str] = None):
+    def admin(
+        request: Request,
+        status: Optional[str] = None,
+        error: Optional[str] = None,
+        error_room_type: Optional[str] = None,
+        error_obs_scene_switching: Optional[str] = None,
+    ):
         context = {
             "settings": get_editable_settings(),
             "room_type": get_room_type(),
             "obs_scene_switching_confirmed": startup_gate.is_obs_scene_switching_confirmed(),
-            "can_confirm_start": startup_gate.can_confirm_start(),
             "startup_confirmed": startup_gate.is_confirmed(),
             "status": status,
             "error": error,
+            # Issue #410: 未選択の項目は、フォーム全体ではなくその項目の直下で指摘する
+            "error_room_type": error_room_type,
+            "error_obs_scene_switching": error_obs_scene_switching,
             "overlay_links": app.state.overlay_links,
+            "admin_css_version": _static_asset_version("admin.css"),
         }
         return _TEMPLATES.TemplateResponse(request, "admin.html", context)
 
     @app.post("/admin")
     def admin_update(
+        room_type: str = Form(""),
         allowed_players: str = Form(""),
         goal_record_mode: str = Form(...),
         rank_graph_match_limit: str = Form(...),
         rank_delta_distribution_scope: str = Form(...),
-        obs_scene_switching_enabled: str = Form(...),
+        obs_scene_switching_enabled: str = Form(""),
     ):
+        """/adminの唯一のフォーム送信を処理する(Issue #410、モジュールdocstring参照)。
+
+        起動確認ゲート(Issue #379)の対象2項目(room_type・OBS_SCENE_SWITCHING_ENABLED)が
+        未選択の場合はフィールド単位のエラーを返すが、**選択済みの項目は反映する**。
+        片方だけ選んで送信した場合に、選んだ方をやり直さずに済むようにするため。
+        両方選択済みなら、設定を反映したうえで起動確認(startup_gate.confirm_start())まで
+        行い、main.py側のwait_for_confirmation()のブロックを解除する。
+        """
+        field_errors: dict[str, str] = {}
+        if not room_type:
+            field_errors["error_room_type"] = "野良/専用部屋を選択してください。"
+        if not obs_scene_switching_enabled:
+            field_errors["error_obs_scene_switching"] = "OBSシーン自動切替を選択してください。"
+
         old_values = get_editable_settings()
         new_values = {
             "ALLOWED_PLAYERS": allowed_players,
             "GOAL_RECORD_MODE": goal_record_mode,
             "RANK_GRAPH_MATCH_LIMIT": rank_graph_match_limit,
             "RANK_DELTA_DISTRIBUTION_SCOPE": rank_delta_distribution_scope,
-            "OBS_SCENE_SWITCHING_ENABLED": obs_scene_switching_enabled,
+            # 未選択の場合は現在値をそのまま渡し、この項目だけ変更しないまま他の4項目を更新する
+            # (update_editable_settingsは5項目すべてが必須のため、空文字列は渡せない)
+            "OBS_SCENE_SWITCHING_ENABLED": obs_scene_switching_enabled or old_values["OBS_SCENE_SWITCHING_ENABLED"],
         }
         try:
             update_editable_settings(new_values)
         except ConfigError as exc:
             _logger.warning("設定画面(/admin)からの更新が拒否されました: %s(送信値: %s)", exc, new_values)
             return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
-        # Issue #379: この一括フォームはOBS_SCENE_SWITCHING_ENABLEDが必須項目のため、
-        # ここまで到達した時点でユーザーが明示的に選択・送信したことが確定する
-        # (テンプレート側は起動確認が済むまでこの項目の初期表示を空欄にしている)
-        startup_gate.mark_obs_scene_switching_confirmed()
+        if obs_scene_switching_enabled:
+            # Issue #379: 空欄のプレースホルダーから明示的に選び直された場合のみ確認済みとみなす
+            startup_gate.mark_obs_scene_switching_confirmed()
         _logger.info("設定画面(/admin)から設定を更新しました: %s -> %s", old_values, new_values)
-        return RedirectResponse("/admin?status=updated", status_code=303)
 
-    @app.post("/admin/room-type")
-    def admin_room_type_update(room_type: str = Form(...)):
-        old_value = get_room_type()
-        try:
-            set_room_type(room_type)
-        except ConfigError as exc:
-            _logger.warning("設定画面(/admin)からの野良/専用部屋切り替えが拒否されました: %s", exc)
-            return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
-        _logger.info("設定画面(/admin)から野良/専用部屋設定を更新しました: %s -> %s", old_value, room_type)
-        return RedirectResponse("/admin?status=updated", status_code=303)
+        if room_type:
+            old_room_type = get_room_type()
+            try:
+                set_room_type(room_type)
+            except ConfigError as exc:
+                _logger.warning("設定画面(/admin)からの野良/専用部屋切り替えが拒否されました: %s", exc)
+                return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
+            _logger.info("設定画面(/admin)から野良/専用部屋設定を更新しました: %s -> %s", old_room_type, room_type)
 
-    @app.post("/admin/confirm-start")
-    def admin_confirm_start():
-        """起動確認ゲート(Issue #379)を解除する。main.pyのwait_for_confirmation()のブロックが解ける。"""
+        if field_errors:
+            _logger.warning("設定画面(/admin)の未選択項目のため起動確認を保留しました: %s", sorted(field_errors))
+            params = "&".join(f"{key}={quote(message)}" for key, message in field_errors.items())
+            return RedirectResponse(f"/admin?{params}", status_code=303)
+
+        if startup_gate.is_confirmed():
+            return RedirectResponse("/admin?status=updated", status_code=303)
         try:
             startup_gate.confirm_start()
         except ConfigError as exc:
+            # 通常はここに到達しない(上のfield_errorsで弾かれる)。防御的なフォールバック
             _logger.warning("設定画面(/admin)からの起動確認が拒否されました: %s", exc)
             return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
         _logger.info("設定画面(/admin)から起動確認が完了しました。OBS・YouTube連携への接続を開始します")
-        return RedirectResponse("/admin?status=updated", status_code=303)
+        return RedirectResponse("/admin?status=confirmed", status_code=303)
 
     @app.get("/rank-entry")
     def rank_entry(request: Request, status: Optional[str] = None, error: Optional[str] = None):

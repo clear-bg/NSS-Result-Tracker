@@ -2044,42 +2044,25 @@ def test_admin_get_obs_scene_switching_shows_unselected_placeholder_by_default(t
     assert 'value="false" selected' not in select_html
 
 
-def test_admin_post_room_type_updates_without_persisting_to_env(tmp_path: Path, monkeypatch):
-    """Issue #358: /admin/room-typeは_EDITABLE_ENV_KEYSの5項目と異なり、
-    os.environ・.envのいずれも変更しないことを確認する。
+def _admin_form_data(**overrides) -> dict:
+    """Issue #410: /adminは1フォーム・1エンドポイントに統合されたため、
+    どの項目を試すテストでも全フィールドを送る必要がある。
     """
-    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
-    monkeypatch.delenv("ROOM_TYPE", raising=False)
-    client = TestClient(create_app(tmp_path / "test.db"))
-
-    response = client.post("/admin/room-type", data={"room_type": "private"})
-
-    assert response.status_code == 200
-    assert response.url.path == "/admin"
-    assert response.url.params["status"] == "updated"
-    assert "ROOM_TYPE" not in os.environ
-
-    follow_up = client.get("/admin")
-    assert '<option value="private" selected>' in follow_up.text
+    data = {
+        "room_type": "random",
+        "obs_scene_switching_enabled": "false",
+        "allowed_players": "NewName",
+        "goal_record_mode": "allowlist",
+        "rank_graph_match_limit": "10",
+        "rank_delta_distribution_scope": "session",
+    }
+    data.update(overrides)
+    return data
 
 
-def test_admin_post_room_type_with_invalid_value_shows_error_and_does_not_update(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
-    client = TestClient(create_app(tmp_path / "test.db"))
-
-    response = client.post("/admin/room-type", data={"room_type": "not-a-real-room-type"})
-
-    assert response.status_code == 200
-    assert response.url.params["error"]
-
-    follow_up = client.get("/admin")
-    assert '<option value="random" selected>' in follow_up.text
-
-
-def test_admin_post_marks_obs_scene_switching_confirmed(tmp_path: Path, monkeypatch):
-    """Issue #379: /adminへの一括フォーム送信が成功すると、OBS_SCENE_SWITCHING_ENABLEDを
-    今回の起動で明示的に選び直したことになる(startup_gate.can_confirm_startの条件の1つ)。
-    """
+@pytest.fixture
+def admin_client(tmp_path: Path, monkeypatch) -> TestClient:
+    """/adminへのPOSTは_EDITABLE_ENV_KEYSを.envへ書き込むため、書き込み先を用意する。"""
     env_path = tmp_path / ".env"
     _write_admin_env_file(env_path)
     monkeypatch.setattr("nss_tracker.config.find_dotenv", lambda: str(env_path))
@@ -2088,73 +2071,141 @@ def test_admin_post_marks_obs_scene_switching_confirmed(tmp_path: Path, monkeypa
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
     monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
-    client = TestClient(create_app(tmp_path / "test.db"))
-    assert startup_gate.is_obs_scene_switching_confirmed() is False
-
-    client.post(
-        "/admin",
-        data={
-            "allowed_players": "NewName",
-            "goal_record_mode": "allowlist",
-            "rank_graph_match_limit": "10",
-            "rank_delta_distribution_scope": "session",
-            "obs_scene_switching_enabled": "false",
-        },
-    )
-
-    assert startup_gate.is_obs_scene_switching_confirmed() is True
-
-
-def test_admin_get_confirm_start_button_disabled_when_not_ready(tmp_path: Path, monkeypatch):
-    """Issue #379: room_type・OBS_SCENE_SWITCHING_ENABLEDのどちらか一方でも
-    未選択の間は、「確認完了」ボタン自体をdisabledにする。
-    """
     monkeypatch.setattr("nss_tracker.config._current_room_type", None)
-    client = TestClient(create_app(tmp_path / "test.db"))
-
-    response = client.get("/admin")
-
-    assert response.status_code == 200
-    assert '<button type="submit" disabled>確認完了・接続開始</button>' in response.text
+    return TestClient(create_app(tmp_path / "test.db"))
 
 
-def test_admin_get_confirm_start_button_enabled_when_both_selected(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
-    startup_gate.mark_obs_scene_switching_confirmed()
-    client = TestClient(create_app(tmp_path / "test.db"))
+def test_admin_post_room_type_updates_without_persisting_to_env(admin_client: TestClient, monkeypatch):
+    """Issue #358: room_typeは_EDITABLE_ENV_KEYSの5項目と異なり、
+    os.environ・.envのいずれも変更しないことを確認する(Issue #410でフォームは統合されたが、
+    保存先が別である点は変わらない)。
+    """
+    monkeypatch.delenv("ROOM_TYPE", raising=False)
 
-    response = client.get("/admin")
-
-    assert response.status_code == 200
-    assert '<button type="submit" >確認完了・接続開始</button>' in response.text
-
-
-def test_admin_post_confirm_start_succeeds_when_ready(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
-    startup_gate.mark_obs_scene_switching_confirmed()
-    client = TestClient(create_app(tmp_path / "test.db"))
-
-    response = client.post("/admin/confirm-start")
+    response = admin_client.post("/admin", data=_admin_form_data(room_type="private"))
 
     assert response.status_code == 200
     assert response.url.path == "/admin"
-    assert response.url.params["status"] == "updated"
-    assert startup_gate.is_confirmed() is True
+    assert "ROOM_TYPE" not in os.environ
+
+    follow_up = admin_client.get("/admin")
+    assert '<option value="private" selected>' in follow_up.text
 
 
-def test_admin_post_confirm_start_rejected_when_not_ready(tmp_path: Path, monkeypatch):
-    """disabled属性をバイパスして直接POSTされた場合も、サーバー側で拒否する。"""
-    monkeypatch.setattr("nss_tracker.config._current_room_type", None)
-    client = TestClient(create_app(tmp_path / "test.db"))
+def test_admin_post_room_type_with_invalid_value_shows_error_and_does_not_update(
+    admin_client: TestClient, monkeypatch
+):
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
 
-    response = client.post("/admin/confirm-start")
+    response = admin_client.post("/admin", data=_admin_form_data(room_type="not-a-real-room-type"))
 
     assert response.status_code == 200
     assert response.url.params["error"]
     assert startup_gate.is_confirmed() is False
 
+    follow_up = admin_client.get("/admin")
+    assert '<option value="random" selected>' in follow_up.text
 
-def test_admin_get_shows_startup_confirmed_message_instead_of_button(tmp_path: Path, monkeypatch):
+
+def test_admin_post_marks_obs_scene_switching_confirmed(admin_client: TestClient):
+    """Issue #379: フォーム送信が成功すると、OBS_SCENE_SWITCHING_ENABLEDを
+    今回の起動で明示的に選び直したことになる(startup_gate.can_confirm_startの条件の1つ)。
+    """
+    assert startup_gate.is_obs_scene_switching_confirmed() is False
+
+    admin_client.post("/admin", data=_admin_form_data())
+
+    assert startup_gate.is_obs_scene_switching_confirmed() is True
+
+
+def test_admin_css_link_has_cache_busting_version(tmp_path: Path):
+    """Issue #410: CSSを修正しても、ブラウザがキャッシュした古い内容を使い続けて
+    反映されない問題を避けるため、更新時刻をクエリに付ける。
+    """
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    match = re.search(r'href="/static/admin\.css\?v=(\d+)"', response.text)
+    assert match is not None, response.text
+    assert int(match.group(1)) > 0
+
+
+def test_admin_get_submit_button_is_always_enabled(tmp_path: Path, monkeypatch):
+    """Issue #410: 未選択の項目があってもボタン自体は押せる(disabledにしない)。"""
+    monkeypatch.setattr("nss_tracker.config._current_room_type", None)
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert "disabled>確認完了・接続開始" not in response.text
+    assert "<button type=\"submit\">確認完了・接続開始</button>" in response.text
+
+
+def test_admin_post_confirms_startup_when_both_selected(admin_client: TestClient):
+    """Issue #410: 1回の送信で設定の反映と起動確認の両方が完了する。"""
+    response = admin_client.post("/admin", data=_admin_form_data())
+
+    assert response.status_code == 200
+    assert response.url.path == "/admin"
+    assert response.url.params["status"] == "confirmed"
+    assert startup_gate.is_confirmed() is True
+
+
+def test_admin_post_without_both_selections_shows_field_errors(admin_client: TestClient):
+    """Issue #410: 未選択の項目はそれぞれの直下にエラーを表示し、起動確認は保留する。"""
+    response = admin_client.post(
+        "/admin", data=_admin_form_data(room_type="", obs_scene_switching_enabled="")
+    )
+
+    assert response.status_code == 200
+    assert startup_gate.is_confirmed() is False
+    assert response.url.params["error_room_type"]
+    assert response.url.params["error_obs_scene_switching"]
+    assert "野良/専用部屋を選択してください。" in response.text
+    assert "OBSシーン自動切替を選択してください。" in response.text
+    # 赤枠(admin.cssの.admin-field.admin-field-error-target)を当てるためのクラスが付く
+    assert response.text.count('class="admin-field admin-field-error-target"') == 2
+
+
+def test_admin_post_with_only_room_type_keeps_it_and_reports_other_field(admin_client: TestClient):
+    """Issue #410: 片方だけ選んで送信した場合、選んだ方は反映して残す
+    (もう一度選び直さずに済むようにするため)。
+    """
+    response = admin_client.post(
+        "/admin", data=_admin_form_data(room_type="private", obs_scene_switching_enabled="")
+    )
+
+    assert startup_gate.is_confirmed() is False
+    assert startup_gate.is_obs_scene_switching_confirmed() is False
+    assert "error_room_type" not in response.url.params
+    assert response.url.params["error_obs_scene_switching"]
+    assert '<option value="private" selected>' in response.text
+
+
+def test_admin_post_with_unselected_obs_keeps_current_env_value(admin_client: TestClient):
+    """Issue #410: OBSシーン自動切替が未選択でも、他4項目の更新自体は行う
+    (未選択の項目だけ現在値のまま据え置く)。
+    """
+    admin_client.post("/admin", data=_admin_form_data(obs_scene_switching_enabled=""))
+
+    assert os.environ["OBS_SCENE_SWITCHING_ENABLED"] == "true"
+    assert os.environ["ALLOWED_PLAYERS"] == "NewName"
+
+
+def test_admin_post_after_confirmed_updates_without_reconfirming(admin_client: TestClient):
+    """確認完了後は通常の設定変更フォームとして使える(status=updatedに戻る)。"""
+    admin_client.post("/admin", data=_admin_form_data())
+    assert startup_gate.is_confirmed() is True
+
+    response = admin_client.post("/admin", data=_admin_form_data(allowed_players="Another"))
+
+    assert response.url.params["status"] == "updated"
+    assert os.environ["ALLOWED_PLAYERS"] == "Another"
+
+
+def test_admin_get_shows_update_label_after_confirmed(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
     startup_gate.mark_obs_scene_switching_confirmed()
     startup_gate.confirm_start()
@@ -2165,6 +2216,7 @@ def test_admin_get_shows_startup_confirmed_message_instead_of_button(tmp_path: P
     assert response.status_code == 200
     assert "確認完了済みです" in response.text
     assert "確認完了・接続開始" not in response.text
+    assert "<button type=\"submit\">更新</button>" in response.text
 
 
 def test_admin_get_shows_overlay_widget_links(tmp_path: Path):
@@ -2194,7 +2246,8 @@ def test_admin_get_shows_rank_entry_link(tmp_path: Path):
 
 def test_admin_get_shows_dashboard_heading_before_settings_heading(tmp_path: Path):
     """Issue #314: 見出し構成を「配信ダッシュボード」→「配信ウィジェット一覧」→
-    「配信中の設定」の順に再構成したことを確認する。
+    設定の順に再構成したことを確認する(Issue #410でフォーム統合に伴い
+    見出しが「配信中の設定」から「配信設定」になった)。
     """
     client = TestClient(create_app(tmp_path / "test.db"))
 
@@ -2204,7 +2257,7 @@ def test_admin_get_shows_dashboard_heading_before_settings_heading(tmp_path: Pat
     assert "<h1>配信ダッシュボード</h1>" in response.text
     dashboard_index = response.text.index("配信ダッシュボード")
     widget_list_index = response.text.index("配信ウィジェット一覧")
-    settings_index = response.text.index("配信中の設定")
+    settings_index = response.text.index("配信設定")
     assert dashboard_index < widget_list_index < settings_index
 
 
@@ -2251,6 +2304,7 @@ def test_admin_post_updates_settings_and_persists_to_env_file(tmp_path: Path, mo
     response = client.post(
         "/admin",
         data={
+            "room_type": "random",
             "allowed_players": "NewName",
             "goal_record_mode": "allowlist",
             "rank_graph_match_limit": "10",
@@ -2261,7 +2315,8 @@ def test_admin_post_updates_settings_and_persists_to_env_file(tmp_path: Path, mo
 
     assert response.status_code == 200
     assert response.url.path == "/admin"
-    assert response.url.params["status"] == "updated"
+    # Issue #410: 未確認状態からの送信は、設定の反映と起動確認の両方が完了する
+    assert response.url.params["status"] == "confirmed"
     assert os.environ["ALLOWED_PLAYERS"] == "NewName"
     assert os.environ["RANK_GRAPH_MATCH_LIMIT"] == "10"
     assert os.environ["OBS_SCENE_SWITCHING_ENABLED"] == "false"
