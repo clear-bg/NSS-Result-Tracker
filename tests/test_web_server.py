@@ -3035,3 +3035,244 @@ def test_rank_entry_get_embeds_null_when_match_id_omitted(tmp_path: Path, monkey
     )
     assert match is not None
     assert json.loads(match.group(1)) is None
+
+
+# --- Issue #408: 健全性チェック一覧(/health-check) ---
+
+
+def _health_check_matches(client: TestClient) -> dict:
+    """ページに埋め込まれたJSON(サーバー側の実際の出力)をmatch_id引きで返す。"""
+    response = client.get("/health-check")
+    assert response.status_code == 200
+    payload = re.search(
+        r'id="hc-matches-data" type="application/json">(.*?)</script>', response.text, re.S
+    )
+    assert payload is not None
+    return {m["match_id"]: m for m in json.loads(payload.group(1))}
+
+
+def _setup_health_check(tmp_path: Path, monkeypatch) -> tuple[TestClient, Path]:
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    return TestClient(create_app(tmp_path / "test.db")), tmp_path / "test.db"
+
+
+def _unranked_match() -> MatchResult:
+    return MatchResult(
+        result="win",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime(2026, 9, 6, 22, 0, tzinfo=timezone.utc),
+    )
+
+
+def test_health_check_lists_matches_newest_first(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    first = _save_confirmed_match(conn, _warning_match("win", 42.20), 42.40)
+    second = _save_confirmed_match(conn, _warning_match("lose", 42.40), 42.18)
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert list(matches) == [second, first]
+
+
+def test_health_check_reports_warnings_and_delta(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = _save_confirmed_match(conn, _warning_match("win", 42.90), 42.75)
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert matches[match_id]["delta"] == -0.15
+    assert [w["rule_code"] for w in matches[match_id]["warnings"]] == ["A"]
+
+
+def test_health_check_applies_rule_h(tmp_path: Path, monkeypatch):
+    """Issue #408: 次の試合のバッジ読み取り値との乖離は、この一覧だけで判定する。"""
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    first = _save_confirmed_match(conn, _warning_match("win", 42.39), 42.90)
+    # 次の試合のrank_before_ocr(=42.51)が、前の試合の確定値42.90と0.39離れている
+    _save_confirmed_match(conn, _warning_match("win", 42.51), 42.75)
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert "H" in [w["rule_code"] for w in matches[first]["warnings"]]
+
+
+def test_rank_entry_does_not_apply_rule_h(tmp_path: Path, monkeypatch):
+    """同じデータでも/rank-entry(#407)側ではルールHを出さない。
+
+    次の試合が記録されて初めて判定できるため、入力直後の警告としては意味を成さない。
+    """
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    first = _save_confirmed_match(conn, _warning_match("win", 42.39), 42.90)
+    _save_confirmed_match(conn, _warning_match("win", 42.51), 42.75)
+    conn.close()
+    (clips_dir / f"{first}.mp4").write_bytes(b"dummy")
+    client = TestClient(create_app(db_path))
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+
+    target = next(clip for clip in clips if clip["match_id"] == first)
+    assert "H" not in [w["rule_code"] for w in target["warnings"]]
+
+
+def test_health_check_marks_rows_with_and_without_clips(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    without_clip = _save_confirmed_match(conn, _warning_match("win", 42.20), 42.40)
+    with_clip = _save_confirmed_match(conn, _warning_match("lose", 42.40), 42.18)
+    conn.close()
+    (tmp_path / "clips" / f"{with_clip}.mp4").write_bytes(b"dummy")
+
+    matches = _health_check_matches(client)
+
+    assert matches[with_clip]["has_clip"] is True
+    assert matches[without_clip]["has_clip"] is False
+    assert matches[without_clip]["editable"] is True
+
+
+def test_health_check_marks_unranked_match_as_not_editable(tmp_path: Path, monkeypatch):
+    """ランクを賭けていない試合はsave_manual_rank_afterが受け付けないため修正できない。"""
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert matches[match_id]["editable"] is False
+    assert matches[match_id]["warnings"] == []
+
+
+def test_health_check_post_rank_after_updates_and_cascades(tmp_path: Path, monkeypatch):
+    """一覧から直接修正すると、rank_beforeチェーンも連動して直る。"""
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    first = _save_confirmed_match(conn, _warning_match("lose", 42.40, label_detected="down"), 41.28)
+    second = _save_confirmed_match(conn, _warning_match("win", 42.29), 42.50)
+    conn.close()
+
+    response = client.post("/health-check/rank-after", data={"match_id": first, "rank_after": "42.28"})
+
+    assert response.status_code == 200
+    assert response.url.params["status"] == "saved"
+    matches = _health_check_matches(client)
+    assert matches[first]["rank_after"] == 42.28
+    assert matches[first]["league_changed"] is None
+    assert matches[second]["rank_before"] == 42.28
+
+
+def test_health_check_post_rank_after_rejects_non_numeric(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = _save_confirmed_match(conn, _warning_match("win", 42.20), 42.40)
+    conn.close()
+
+    response = client.post("/health-check/rank-after", data={"match_id": match_id, "rank_after": "abc"})
+
+    assert response.url.params["error"]
+    assert _health_check_matches(client)[match_id]["rank_after"] == 42.40
+
+
+def test_health_check_post_rank_after_rejects_unranked_match(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    response = client.post("/health-check/rank-after", data={"match_id": match_id, "rank_after": "42.40"})
+
+    assert response.url.params["error"]
+
+
+def test_health_check_warning_acknowledge_shares_state_with_rank_entry(tmp_path: Path, monkeypatch):
+    """Issue #408: 確認済みは#407と同じテーブルなので、両方の画面に反映される。"""
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = _save_confirmed_match(conn, _warning_match("win", 42.90), 42.75)
+    conn.close()
+    (clips_dir / f"{match_id}.mp4").write_bytes(b"dummy")
+    client = TestClient(create_app(db_path))
+
+    client.post(
+        "/health-check/warnings", data={"match_id": match_id, "rule_code": "A", "action": "acknowledge"}
+    )
+
+    assert _health_check_matches(client)[match_id]["warnings"][0]["acknowledged"] is True
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+    assert clips[0]["warnings"][0]["acknowledged"] is True
+
+
+def test_health_check_warning_acknowledge_can_be_undone(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = _save_confirmed_match(conn, _warning_match("win", 42.90), 42.75)
+    conn.close()
+    client.post(
+        "/health-check/warnings", data={"match_id": match_id, "rule_code": "A", "action": "acknowledge"}
+    )
+
+    client.post(
+        "/health-check/warnings", data={"match_id": match_id, "rule_code": "A", "action": "unacknowledge"}
+    )
+
+    assert _health_check_matches(client)[match_id]["warnings"][0]["acknowledged"] is False
+
+
+def test_health_check_warning_acknowledge_rejects_unknown_rule_code(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = _save_confirmed_match(conn, _warning_match("win", 42.90), 42.75)
+    conn.close()
+
+    response = client.post(
+        "/health-check/warnings", data={"match_id": match_id, "rule_code": "ZZZ", "action": "acknowledge"}
+    )
+
+    assert response.url.params["error"]
+
+
+def test_health_check_counts_only_unacknowledged_warnings(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = _save_confirmed_match(conn, _warning_match("win", 42.90), 42.75)
+    conn.close()
+    assert "警告のある試合 <b>1</b>" in client.get("/health-check").text
+
+    client.post(
+        "/health-check/warnings", data={"match_id": match_id, "rule_code": "A", "action": "acknowledge"}
+    )
+
+    assert "警告のある試合 <b>0</b>" in client.get("/health-check").text
+
+
+def test_health_check_shows_empty_message_without_matches(tmp_path: Path, monkeypatch):
+    client, _ = _setup_health_check(tmp_path, monkeypatch)
+
+    response = client.get("/health-check")
+
+    assert response.status_code == 200
+    assert "記録された試合がありません。" in response.text
+
+
+def test_admin_links_to_health_check(tmp_path: Path):
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert 'href="/health-check"' in response.text

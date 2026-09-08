@@ -137,6 +137,46 @@ def test_rule_i_skipped_when_next_match_vs_tier_unknown():
     assert _evaluate(result="win", rank_before=42.20, rank_after=42.40, next_match_vs_tier=None) == []
 
 
+# --- ルールH: 次の試合のバッジ読み取り値との乖離(Issue #408の一覧ページ専用) ---
+
+
+def test_rule_h_flags_gap_from_next_match_badge():
+    """実データのid=1(42.90と入力したが次の試合のバッジは42.51)と同じ形。"""
+    warnings = _evaluate(result="win", rank_before=42.39, rank_after=42.90, next_match_rank_before_ocr=42.51)
+    assert "H" in _codes(warnings)
+
+
+def test_rule_h_no_warning_when_badge_agrees():
+    assert _evaluate(result="win", rank_before=42.20, rank_after=42.40, next_match_rank_before_ocr=42.39) == []
+
+
+def test_rule_h_boundary_is_inclusive():
+    threshold = rank_warnings.NEXT_BADGE_GAP_THRESHOLD
+    assert _codes(_evaluate(result="win", rank_before=42.00, rank_after=42.40,
+                            next_match_rank_before_ocr=round(42.40 - threshold, 2))) == ["H"]
+    assert _evaluate(result="win", rank_before=42.00, rank_after=42.40,
+                     next_match_rank_before_ocr=round(42.40 - threshold + 0.01, 2)) == []
+
+
+def test_rule_h_skipped_when_badge_tier_disagrees_with_vs_screen():
+    """バッジOCRは帯番号を誤読することがある(実データでid=24が43.00と読めていた)。
+    VS画面の帯と食い違うバッジ値は信用せず、判定をスキップする。
+    """
+    assert _evaluate(result="lose", rank_before=42.34, rank_after=42.05,
+                     next_match_rank_before_ocr=43.00, next_match_vs_tier=42) == []
+
+
+def test_rule_h_used_when_badge_tier_matches_vs_screen():
+    warnings = _evaluate(result="lose", rank_before=42.40, rank_after=41.28,
+                         next_match_rank_before_ocr=42.28, next_match_vs_tier=42)
+    assert "H" in _codes(warnings)
+
+
+def test_rule_h_skipped_when_next_match_badge_missing():
+    """/rank-entry(#407)はこの引数を渡さないため、ルールHは発火しない。"""
+    assert _evaluate(result="win", rank_before=42.39, rank_after=42.90) == []
+
+
 # --- ルールJ: 合計ランク差が小さいのにΔ=0 ---
 
 
