@@ -146,8 +146,21 @@ h1 {
     padding-bottom: 14.83%;
 }
 
+.rank-entry-number-label {
+    font-size: 11px;
+    color: #888;
+    margin: 8px 0 4px;
+}
+
+/* Issue #417: ランク数値クリップの縦横比(RANK_NUMBER_CLIP_ROI = 158x117)。
+   117 / 158 = 74.05% */
+.rank-entry-video-wrap-number {
+    padding-bottom: 74.05%;
+}
+
 .rank-entry-video,
-.rank-entry-gauge-video {
+.rank-entry-gauge-video,
+.rank-entry-number-video {
     position: absolute;
     top: 0;
     left: 0;
