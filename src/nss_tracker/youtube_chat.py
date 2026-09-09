@@ -58,6 +58,21 @@ Issue #356で「スナイプ中」表示を追加した際の見た目の決め�
   付けたテキスト(例: 「たろうさんスナイプ」→「たろうさん配信」)を、時刻より
   控えめな見た目(小さめ・非bold)で表示する。prefixが空文字列(コメントが
   「スナイプ」単独等)の場合、値行自体を表示しない(見出しのみ)
+
+Issue #419: チャットポーリングの待機秒数には**下限(`_MIN_POLL_INTERVAL_SECONDS`)を
+設ける**。Issue #265時点では「API応答の`pollingIntervalMillis`をそのまま使う
+(ハードコードしない)」方針だったが、実測でこの値が約1.41秒と短く、YouTube Data API
+のデイリークォータ(既定10,000ユニット/日、`liveChatMessages.list`は1回5ユニット
+=1日2,000回)を**47分**で使い切っていた。実配信4セッションすべてで、放送検出から
+47〜48分後に403(`reason: quotaExceeded`)が始まり、そのセッション中は二度と復帰
+しないことをログとGoogle Cloudコンソールの実測で確認した。この機能の用途は
+「配信者が自分で打った時刻コメントの検知」であり数秒〜十数秒の遅れに実害が無い
+一方、現状は1日の大半で機能が全く動かないため、方針を覆した(ユーザーとの相談で決定)。
+
+あわせて403からの復帰処理を持たせた。従来は404のときだけ`_live_chat_id`をNoneに
+戻して放送の再検出へ戻っていたが、YouTubeはライブチャット終了時に403
+(`reason: liveChatEnded`)を返すため、この経路では復帰できず同じ死んだチャットIDへ
+投げ続けていた(実配信のログにも`liveChatEnded`が実際に出ている)。
 """
 
 import logging
@@ -86,11 +101,28 @@ _API_BASE = "https://www.googleapis.com/youtube/v3"
 
 # 配信中の放送が見つからない間、再検索するまでの待機秒数
 _BROADCAST_SEARCH_INTERVAL_SECONDS = 60
-# APIエラー(クォータ超過・一時的な通信障害等)発生時のリトライまでの待機秒数
+# APIエラー(一時的な通信障害等)発生時のリトライまでの待機秒数
 _ERROR_BACKOFF_SECONDS = 30
+# Issue #419: クォータ超過(quotaExceeded)は日次リセットまで回復しないため、
+# 通常のバックオフ(30秒)で再試行し続けても無駄にログを埋めるだけになる。
+# 実配信では403開始からセッション終了まで95〜121件のWARNINGが並んでいた
+_QUOTA_EXCEEDED_BACKOFF_SECONDS = 1800
 _HTTP_TIMEOUT_SECONDS = 10.0
 # Issue #372: 403/429等のエラーログに含めるレスポンス本文の最大文字数
 _HTTP_ERROR_BODY_MAX_LENGTH = 500
+
+# Issue #419: チャットポーリング間隔の下限(秒)。
+# YouTube Data APIのデイリークォータは既定10,000ユニット/日で、
+# liveChatMessages.listは1回5ユニットのため1日2,000回しか呼べない。
+# APIが返す`pollingIntervalMillis`をそのまま使うと実測で約1.41秒間隔になり、
+# 2,000回=**47分**で1日分を使い切っていた(Google Cloudコンソールの実測:
+# 直近30日で20,511リクエスト、配信した日は毎回上限に張り付き)。
+# 10秒あれば 2,000回 x 10秒 = 5時間33分もち、配信1〜2回分をカバーできる。
+# Issue #265時点の「pollingIntervalMillisをそのまま使う(ハードコードしない)」
+# 方針を、この実測を根拠に意図的に覆している(モジュールdocstring参照)
+_MIN_POLL_INTERVAL_SECONDS = 10.0
+# APIが`pollingIntervalMillis`を返さなかった場合のフォールバック
+_DEFAULT_POLL_INTERVAL_SECONDS = 10.0
 
 _FULLWIDTH_TO_HALFWIDTH = str.maketrans("０１２３４５６７８９：", "0123456789:")
 _MINUTE_ONLY_PATTERN = re.compile(r"^\d{1,2}$")
@@ -214,6 +246,31 @@ def _describe_http_error(exc: httpx.HTTPError) -> str:
     return f" レスポンス本文: {body}"
 
 
+def _error_reason(exc: httpx.HTTPError) -> Optional[str]:
+    """YouTube Data APIのエラーレスポンスから`error.errors[].reason`を取り出す(Issue #419)。
+
+    `quotaExceeded`(デイリークォータ超過)と`liveChatEnded`(ライブチャット終了)は
+    同じ403でも取るべき対処が正反対のため、ステータスコードだけでは分岐できない。
+    レスポンスが無い・JSONでない・想定した構造でない場合はNoneを返す
+    (呼び出し元は「理由の分からない一時的なエラー」として通常のバックオフに乗せる)。
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    try:
+        payload = exc.response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    errors = payload.get("error", {}).get("errors")
+    if not isinstance(errors, list):
+        return None
+    for entry in errors:
+        if isinstance(entry, dict) and entry.get("reason"):
+            return str(entry["reason"])
+    return None
+
+
 class DiveTimeWatcher:
     """配信中の放送を自動検出し、自分自身のチャットコメントから
     「次に潜る時間」を検知してモジュールレベルの状態を更新するバックグラウンド監視。
@@ -230,6 +287,12 @@ class DiveTimeWatcher:
         self._live_chat_id: Optional[str] = None
         self._next_page_token: Optional[str] = None
         self._skip_next_result = False
+        # Issue #419: クォータ超過のWARNINGを毎回出すとログが埋まるため、
+        # 復帰(成功)するまで1回だけ出す
+        self._quota_exceeded_reported = False
+        # Issue #419: APIが返すポーリング間隔を、放送検出のたびに1回だけログへ出す
+        # (下限を何秒にすべきかを実測で詰められるようにするため)
+        self._poll_interval_logged = False
 
         try:
             self._credentials = Credentials.from_authorized_user_file(str(token_path), _SCOPES)
@@ -261,12 +324,41 @@ class DiveTimeWatcher:
                 else:
                     self._poll_chat_messages()
             except httpx.HTTPError as exc:
+                self._handle_http_error(exc)
+
+    def _handle_http_error(self, exc: httpx.HTTPError) -> None:
+        """APIエラーを理由(reason)ごとに処理する(Issue #419)。
+
+        - `liveChatEnded`: ライブチャットが終了した。同じチャットIDへ投げ続けても
+          復帰しないため、放送の再検出へ戻す(従来は404のときだけ戻していた)
+        - `quotaExceeded`: デイリークォータ超過。日次リセットまで回復しないため、
+          30秒ごとの再試行はログを埋めるだけで無意味。長めに待つ
+        - それ以外: 従来どおり通常のバックオフで再試行する
+        """
+        reason = _error_reason(exc)
+        if reason == "liveChatEnded":
+            logger.info("ライブチャットが終了したため、放送の再検出に戻ります")
+            self._live_chat_id = None
+            self._next_page_token = None
+            return
+        if reason == "quotaExceeded":
+            if not self._quota_exceeded_reported:
+                self._quota_exceeded_reported = True
                 logger.warning(
-                    "YouTube Data APIの呼び出しに失敗しました: %s%s",
-                    exc,
+                    "YouTube Data APIのデイリークォータを使い切りました。"
+                    "太平洋時間の0時(JSTの16時または17時)にリセットされるまで"
+                    "「次に潜る時間」の検知は復帰しません。%d秒ごとに再確認します%s",
+                    _QUOTA_EXCEEDED_BACKOFF_SECONDS,
                     _describe_http_error(exc),
                 )
-                self._stopped.wait(_ERROR_BACKOFF_SECONDS)
+            self._stopped.wait(_QUOTA_EXCEEDED_BACKOFF_SECONDS)
+            return
+        logger.warning(
+            "YouTube Data APIの呼び出しに失敗しました: %s%s",
+            exc,
+            _describe_http_error(exc),
+        )
+        self._stopped.wait(_ERROR_BACKOFF_SECONDS)
 
     def _access_token(self) -> Optional[str]:
         assert self._credentials is not None
@@ -301,6 +393,7 @@ class DiveTimeWatcher:
             return
         self._live_chat_id = items[0]["snippet"]["liveChatId"]
         self._next_page_token = None
+        self._poll_interval_logged = False
         # 起動時点で既にチャット欄に溜まっている過去コメントを「今打たれたコメント」
         # として誤検知しないよう、最初の1ページはnextPageTokenの取得のみに使う
         self._skip_next_result = True
@@ -332,7 +425,22 @@ class DiveTimeWatcher:
 
         payload = response.json()
         self._next_page_token = payload.get("nextPageToken")
-        poll_interval_seconds = payload.get("pollingIntervalMillis", 10000) / 1000
+        # Issue #419: 成功したらクォータ超過の報告済みフラグを戻す(日次リセット後の復帰)
+        self._quota_exceeded_reported = False
+        api_interval_millis = payload.get("pollingIntervalMillis")
+        api_interval_seconds = (
+            api_interval_millis / 1000 if api_interval_millis is not None else _DEFAULT_POLL_INTERVAL_SECONDS
+        )
+        # Issue #419: APIの値をそのまま使うとクォータを47分で使い切るため下限を設ける
+        poll_interval_seconds = max(api_interval_seconds, _MIN_POLL_INTERVAL_SECONDS)
+        if not self._poll_interval_logged:
+            self._poll_interval_logged = True
+            logger.info(
+                "チャットのポーリング間隔: %.2f秒(APIの提示値: %s、下限: %.1f秒)",
+                poll_interval_seconds,
+                f"{api_interval_seconds:.2f}秒" if api_interval_millis is not None else "なし",
+                _MIN_POLL_INTERVAL_SECONDS,
+            )
 
         if self._skip_next_result:
             self._skip_next_result = False
