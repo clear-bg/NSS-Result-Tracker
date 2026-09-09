@@ -1858,7 +1858,8 @@ def test_overlay_refresh_script_supports_signal_mode_entrance_animation(tmp_path
         "/overlay/goal-stats-winrate",
         "/overlay/match-log",
         "/overlay/rank-delta-distribution",
-        "/overlay/dive-time",
+        # Issue #419: /overlay/dive-timeは既定より短い間隔を使うため対象外
+        # (test_overlay_dive_time_polls_faster_than_other_widgetsで別途検証する)
     ],
 )
 def test_overlay_pages_include_refresh_script_with_default_interval(tmp_path: Path, path: str, monkeypatch):
@@ -3326,3 +3327,16 @@ def test_rank_entry_number_clip_file_404_when_missing(tmp_path: Path, monkeypatc
     response = client.get("/rank-entry/number-clips/7.mp4")
 
     assert response.status_code == 404
+
+
+def test_overlay_dive_time_polls_faster_than_other_widgets(tmp_path: Path):
+    """Issue #419: YouTube側のポーリングを10秒へ広げた分、こちらを短くして
+    画面反映までの体感を取り戻す(ローカルへのアクセスでクォータを消費しない)。
+    """
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/overlay/dive-time")
+
+    assert response.status_code == 200
+    assert str(server_module._DIVE_TIME_REFRESH_INTERVAL_MS) in response.text
+    assert server_module._DIVE_TIME_REFRESH_INTERVAL_MS < server_module._OVERLAY_REFRESH_INTERVAL_MS

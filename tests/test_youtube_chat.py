@@ -318,3 +318,169 @@ def test_run_logs_response_body_on_http_status_error(monkeypatch, caplog):
         watcher._run()
 
     assert "quotaExceeded" in caplog.text
+
+
+# --- Issue #419: ポーリング間隔の下限とクォータ超過の扱い ---
+
+
+def _error_response(status_code: int, reason: str) -> httpx.Response:
+    """YouTube Data APIのエラーレスポンス(実物と同じ構造)を組み立てる。"""
+    request = httpx.Request("GET", "https://www.googleapis.com/youtube/v3/liveChat/messages")
+    body = {
+        "error": {
+            "code": status_code,
+            "message": "dummy",
+            "errors": [{"message": "dummy", "domain": "youtube.quota", "reason": reason}],
+        }
+    }
+    return httpx.Response(status_code, json=body, request=request)
+
+
+def _status_error(status_code: int, reason: str) -> httpx.HTTPStatusError:
+    response = _error_response(status_code, reason)
+    return httpx.HTTPStatusError("dummy", request=response.request, response=response)
+
+
+def _poll_and_capture_wait(monkeypatch, watcher, payload: dict) -> float:
+    """_poll_chat_messages()が最後に待った秒数を返す。"""
+    waited = []
+    monkeypatch.setattr(watcher._stopped, "wait", lambda seconds: waited.append(seconds))
+    monkeypatch.setattr(youtube_chat.httpx, "get", lambda *args, **kwargs: _FakeResponse(payload))
+    watcher._live_chat_id = "chat123"
+    watcher._skip_next_result = False
+    watcher._poll_chat_messages()
+    assert waited, "待機が行われていません"
+    return waited[-1]
+
+
+def test_poll_interval_is_floored_when_api_returns_short_value(monkeypatch):
+    """Issue #419: APIが1.4秒等の短い間隔を返しても、下限まで引き上げる。
+
+    そのまま使うとデイリークォータを47分で使い切っていた(実測)。
+    """
+    watcher = _make_watcher_with_fake_credentials(monkeypatch)
+
+    waited = _poll_and_capture_wait(monkeypatch, watcher, {"items": [], "pollingIntervalMillis": 1410})
+
+    assert waited == youtube_chat._MIN_POLL_INTERVAL_SECONDS
+
+
+def test_poll_interval_respects_api_value_when_longer_than_floor(monkeypatch):
+    """下限より長い値をAPIが返した場合は、APIの値を尊重する。"""
+    watcher = _make_watcher_with_fake_credentials(monkeypatch)
+    longer_millis = int((youtube_chat._MIN_POLL_INTERVAL_SECONDS + 5) * 1000)
+
+    waited = _poll_and_capture_wait(monkeypatch, watcher, {"items": [], "pollingIntervalMillis": longer_millis})
+
+    assert waited == youtube_chat._MIN_POLL_INTERVAL_SECONDS + 5
+
+
+def test_poll_interval_falls_back_when_api_omits_value(monkeypatch):
+    watcher = _make_watcher_with_fake_credentials(monkeypatch)
+
+    waited = _poll_and_capture_wait(monkeypatch, watcher, {"items": []})
+
+    assert waited == max(
+        youtube_chat._DEFAULT_POLL_INTERVAL_SECONDS, youtube_chat._MIN_POLL_INTERVAL_SECONDS
+    )
+
+
+def test_poll_interval_is_logged_once_per_broadcast(monkeypatch, caplog):
+    """Issue #419: 下限を何秒にすべきか実測で詰められるよう、APIの提示値を残す。"""
+    watcher = _make_watcher_with_fake_credentials(monkeypatch)
+    with caplog.at_level(logging.INFO, logger="nss_tracker.youtube_chat"):
+        _poll_and_capture_wait(monkeypatch, watcher, {"items": [], "pollingIntervalMillis": 1410})
+        _poll_and_capture_wait(monkeypatch, watcher, {"items": [], "pollingIntervalMillis": 1410})
+
+    logged = [r for r in caplog.records if "ポーリング間隔" in r.getMessage()]
+    assert len(logged) == 1
+    assert "1.41秒" in logged[0].getMessage()
+
+
+def test_error_reason_extracts_reason_from_body():
+    assert youtube_chat._error_reason(_status_error(403, "quotaExceeded")) == "quotaExceeded"
+    assert youtube_chat._error_reason(_status_error(403, "liveChatEnded")) == "liveChatEnded"
+
+
+def test_error_reason_returns_none_without_response():
+    """接続エラー等(レスポンス自体が無い)はNoneを返し、通常のバックオフに乗せる。"""
+    request = httpx.Request("GET", "https://example.com")
+    assert youtube_chat._error_reason(httpx.ConnectError("boom", request=request)) is None
+
+
+def test_live_chat_ended_returns_to_broadcast_search(monkeypatch, caplog):
+    """Issue #419: 403(liveChatEnded)でも放送の再検出に戻す。
+
+    従来は404のときだけ戻しており、チャット終了時の403では同じ死んだチャットIDへ
+    投げ続けていた(実配信のログにも出ている)。
+    """
+    watcher = _make_watcher_with_fake_credentials(monkeypatch)
+    watcher._live_chat_id = "chat123"
+    watcher._next_page_token = "page-token"
+
+    with caplog.at_level(logging.INFO, logger="nss_tracker.youtube_chat"):
+        watcher._handle_http_error(_status_error(403, "liveChatEnded"))
+
+    assert watcher._live_chat_id is None
+    assert watcher._next_page_token is None
+    assert any("ライブチャットが終了" in r.getMessage() for r in caplog.records)
+
+
+def test_quota_exceeded_backs_off_long_and_warns_once(monkeypatch, caplog):
+    """Issue #419: クォータ超過は日次リセットまで回復しないため、長く待ち、
+    WARNINGは復帰するまで1回だけにする(実配信では95〜121件並んでいた)。
+    """
+    watcher = _make_watcher_with_fake_credentials(monkeypatch)
+    watcher._live_chat_id = "chat123"
+    waited = []
+    monkeypatch.setattr(watcher._stopped, "wait", lambda seconds: waited.append(seconds))
+
+    with caplog.at_level(logging.WARNING, logger="nss_tracker.youtube_chat"):
+        watcher._handle_http_error(_status_error(403, "quotaExceeded"))
+        watcher._handle_http_error(_status_error(403, "quotaExceeded"))
+        watcher._handle_http_error(_status_error(403, "quotaExceeded"))
+
+    assert waited == [youtube_chat._QUOTA_EXCEEDED_BACKOFF_SECONDS] * 3
+    # チャットIDは保持したまま(放送は続いているため、リセット後にそのまま復帰できる)
+    assert watcher._live_chat_id == "chat123"
+    quota_warnings = [r for r in caplog.records if "デイリークォータ" in r.getMessage()]
+    assert len(quota_warnings) == 1
+
+
+def test_quota_exceeded_warning_is_reported_again_after_recovery(monkeypatch, caplog):
+    """日次リセットで復帰した後に再度使い切ったら、改めてWARNINGを出す。"""
+    watcher = _make_watcher_with_fake_credentials(monkeypatch)
+    monkeypatch.setattr(watcher._stopped, "wait", lambda seconds: None)
+    watcher._handle_http_error(_status_error(403, "quotaExceeded"))
+
+    _poll_and_capture_wait(monkeypatch, watcher, {"items": [], "pollingIntervalMillis": 1410})
+
+    with caplog.at_level(logging.WARNING, logger="nss_tracker.youtube_chat"):
+        watcher._handle_http_error(_status_error(403, "quotaExceeded"))
+
+    assert any("デイリークォータ" in r.getMessage() for r in caplog.records)
+
+
+def test_unknown_error_uses_normal_backoff(monkeypatch, caplog):
+    """理由が判別できないエラーは従来どおりのバックオフで再試行する。"""
+    watcher = _make_watcher_with_fake_credentials(monkeypatch)
+    watcher._live_chat_id = "chat123"
+    waited = []
+    monkeypatch.setattr(watcher._stopped, "wait", lambda seconds: waited.append(seconds))
+
+    with caplog.at_level(logging.WARNING, logger="nss_tracker.youtube_chat"):
+        watcher._handle_http_error(_status_error(500, "backendError"))
+
+    assert waited == [youtube_chat._ERROR_BACKOFF_SECONDS]
+    assert watcher._live_chat_id == "chat123"
+    assert any("呼び出しに失敗しました" in r.getMessage() for r in caplog.records)
+
+
+def test_min_poll_interval_covers_a_streaming_session():
+    """Issue #419: 下限の値が「1日分のクォータで配信1〜2回をカバーできる」ことを固定する。
+
+    liveChatMessages.listは1回5ユニット、デイリークォータは既定10,000ユニット。
+    """
+    calls_per_day = 10_000 / 5
+    hours = calls_per_day * youtube_chat._MIN_POLL_INTERVAL_SECONDS / 3600
+    assert hours >= 5.0
