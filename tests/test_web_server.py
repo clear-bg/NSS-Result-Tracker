@@ -43,6 +43,7 @@ from nss_tracker.web.server import (
     _fetch_rank_graph_summary,
     _fetch_winrate,
     _format_vs_rank_value,
+    _fetch_match_log,
     _normalize_team_color,
     _overlay_widget_links,
     _parse_hex_color,
@@ -1204,7 +1205,124 @@ def test_overlay_match_log_page_shows_win_lose_draw_badges(tmp_path: Path):
     assert "background: transparent" in css_response.text
 
 
-def test_overlay_match_log_page_shows_empty_message_when_no_matches(tmp_path: Path):
+def _save_unranked_match(conn, result: str, session_id=None) -> int:
+    """ランクを賭けない試合として保存する(room_typeが現在の設定どおりに入る)。
+
+    rank_before/rank_afterが非Noneだと、db.save_match_result()が安全装置として
+    room_typeを'random'に強制するため(Issue #358)、専用部屋の試合を作るには
+    ランク無しにする必要がある。
+    """
+    return _save_match_result(
+        conn,
+        MatchResult(result=result, rank_before=None, rank_after=None, league_changed=None, detected_at=now_jst()),
+        session_id=session_id,
+    )
+
+
+def test_match_log_shows_only_random_matches_when_room_type_is_random(tmp_path: Path, monkeypatch):
+    """Issue #422: 野良配信中は専用部屋の試合を混ぜない。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    _save_unranked_match(conn, "lose")
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    _save_unranked_match(conn, "win")
+    conn.close()
+
+    assert _fetch_match_log(db_path) == ["win"]
+
+
+def test_match_log_falls_back_to_random_when_room_type_is_unset(tmp_path: Path, monkeypatch):
+    """Issue #422: 起動確認ゲート(#379)を通る前・Webのみ起動した場合は野良として扱う。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    _save_unranked_match(conn, "lose")
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    _save_unranked_match(conn, "win")
+    conn.close()
+
+    monkeypatch.setattr("nss_tracker.config._current_room_type", None)
+
+    assert _fetch_match_log(db_path) == ["win"]
+
+
+def test_match_log_crosses_sessions_when_room_type_is_random(tmp_path: Path, monkeypatch):
+    """Issue #422: 野良は従来どおり配信セッションをまたいだ直近N件(Issue #99の方針)。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    old_session_id = db.create_session(conn)
+    _save_unranked_match(conn, "win", session_id=old_session_id)
+    current_session_id = db.create_session(conn)
+    _save_unranked_match(conn, "lose", session_id=current_session_id)
+    conn.close()
+
+    assert _fetch_match_log(db_path) == ["win", "lose"]
+
+
+def test_match_log_shows_only_current_session_when_room_type_is_private(tmp_path: Path, monkeypatch):
+    """Issue #422: 専用部屋は「その場の結果を見たい」のが目的なので今回の配信の分だけ。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    old_session_id = db.create_session(conn)
+    _save_unranked_match(conn, "win", session_id=old_session_id)
+    current_session_id = db.create_session(conn)
+    _save_unranked_match(conn, "lose", session_id=current_session_id)
+    conn.close()
+
+    assert _fetch_match_log(db_path) == ["lose"]
+
+
+def test_match_log_is_empty_when_current_private_session_has_no_matches(tmp_path: Path, monkeypatch):
+    """Issue #422: 専用部屋配信の開始直後は0件から始まる(パネルごと非表示になる)。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    old_session_id = db.create_session(conn)
+    _save_unranked_match(conn, "win", session_id=old_session_id)
+    db.create_session(conn)  # 今回の配信、まだ1試合も終わっていない
+    conn.close()
+
+    assert _fetch_match_log(db_path) == []
+
+
+def test_match_log_is_empty_when_private_and_no_session_exists(tmp_path: Path, monkeypatch):
+    """Issue #422: sessionsが1件も無い場合(main.py未起動でDBだけ見ている等)も空にする。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    _save_unranked_match(conn, "win")
+    conn.close()
+
+    assert _fetch_match_log(db_path) == []
+
+
+def test_overlay_match_log_page_reflects_room_type_filter(tmp_path: Path, monkeypatch):
+    """Issue #422: 絞り込みの結果がウィジェットの描画にも反映される。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    _save_unranked_match(conn, "lose")
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    _save_unranked_match(conn, "win")
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/match-log")
+
+    assert ">W</span>" in response.text
+    assert ">L</span>" not in response.text
+
+
+def test_overlay_match_log_page_hides_panel_when_no_matches(tmp_path: Path):
+    """Issue #422: バッジが1件も無い間はパネルごと描画しない。
+
+    以前は「データがありません」を表示していたが、専用部屋配信は必ず0件から始まる
+    ため、最初の試合が終わるまでこの文言が配信画面に映ってしまう。
+    """
     db_path = tmp_path / "test.db"
     db.connect(db_path).close()
 
@@ -1212,7 +1330,12 @@ def test_overlay_match_log_page_shows_empty_message_when_no_matches(tmp_path: Pa
 
     response = client.get("/overlay/match-log")
 
-    assert "データがありません" in response.text
+    assert response.status_code == 200
+    assert "データがありません" not in response.text
+    assert "match-log-panel" not in response.text
+    # 自動更新のscriptタグは必ず残す。bodyごと空にすると最初の試合が終わっても
+    # ウィジェットが復帰しなくなる(Issue #104のbody innerHTML差し替え方式のため)
+    assert '<script src="/static/overlay-refresh.js"' in response.text
 
 
 @pytest.mark.parametrize(

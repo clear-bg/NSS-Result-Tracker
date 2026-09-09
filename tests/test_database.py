@@ -1408,6 +1408,61 @@ def test_fetch_recent_matches_returns_empty_list_when_no_matches():
     assert fetch_recent_matches(conn, limit=10) == []
 
 
+def _save_unranked(conn, result: str, session_id=None) -> None:
+    """ランクを賭けない試合として保存する(room_typeが現在の設定どおりに入る)。
+
+    rank_before/rank_afterが非Noneだと安全装置でroom_typeが'random'に強制される
+    ため(Issue #358)、専用部屋の試合を作るにはランク無しにする必要がある。
+    """
+    save_match_result(
+        conn,
+        MatchResult(
+            result=result,
+            rank_before=None,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+        session_id=session_id,
+    )
+
+
+def test_fetch_recent_matches_filters_by_room_type(monkeypatch):
+    """Issue #422: 直近試合結果ログが野良と専用部屋を混ぜないための絞り込み。"""
+    conn = connect(":memory:")
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    _save_unranked(conn, "lose")
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    _save_unranked(conn, "win")
+
+    assert [row["result"] for row in fetch_recent_matches(conn, limit=10, room_type="random")] == ["win"]
+    assert [row["result"] for row in fetch_recent_matches(conn, limit=10, room_type="private")] == ["lose"]
+
+
+def test_fetch_recent_matches_filters_by_session_id(monkeypatch):
+    conn = connect(":memory:")
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    old_session_id = create_session(conn)
+    _save_unranked(conn, "win", session_id=old_session_id)
+    current_session_id = create_session(conn)
+    _save_unranked(conn, "lose", session_id=current_session_id)
+
+    rows = fetch_recent_matches(conn, limit=10, session_id=current_session_id)
+
+    assert [row["result"] for row in rows] == ["lose"]
+
+
+def test_fetch_recent_matches_without_filters_returns_everything(monkeypatch):
+    """Issue #422: 省略時は従来どおり絞り込まない(ランク推移グラフ側の呼び出し)。"""
+    conn = connect(":memory:")
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    _save_unranked(conn, "lose")
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    _save_unranked(conn, "win")
+
+    assert [row["result"] for row in fetch_recent_matches(conn, limit=10)] == ["lose", "win"]
+
+
 def test_fetch_goals_for_session_only_returns_goals_from_that_session(monkeypatch):
     monkeypatch.setenv("ALLOWED_PLAYERS", "Alice,Bob")
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
