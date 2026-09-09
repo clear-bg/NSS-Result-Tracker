@@ -1,8 +1,9 @@
 import cv2
+import numpy as np
 import pytest
 
 from conftest import requires_fixtures
-from nss_tracker.detection.banner import classify_banner
+from nss_tracker.detection.banner import banner_roi_stats, classify_banner
 
 EXPECTED = {
     "72_matching_hdr_off_1.png": None,
@@ -96,3 +97,16 @@ def test_classify_banner(fixtures_dir, filename, expected):
     frame = cv2.imread(str(fixtures_dir / filename))
     assert frame is not None, f"failed to load {filename}"
     assert classify_banner(frame) == expected
+
+
+def test_banner_roi_stats_returns_none_for_undersized_frame():
+    """Issue #423: 想定解像度より小さいフレームでは例外にせずNoneを返す。
+
+    切り出しが空のままcv2.cvtColorを呼ぶと例外で検知ループごと落ちるため
+    (team_color._average_hex()と同じ考え方)。
+    """
+    assert banner_roi_stats(np.zeros((10, 10, 3), dtype=np.uint8)) is None
+
+
+def test_classify_banner_returns_none_for_undersized_frame():
+    assert classify_banner(np.zeros((10, 10, 3), dtype=np.uint8)) is None

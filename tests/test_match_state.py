@@ -235,6 +235,132 @@ def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     assert result.goals[0].assist_name is None
 
 
+def _stub_all_detections(monkeypatch) -> None:
+    """検知系をすべて「何も見えていない」状態に倒す。個別のテストが必要な分だけ上書きする。"""
+    for name in (
+        "is_goal_event",
+        "is_league_change_screen",
+        "is_demotion_label_candidate",
+        "is_vs_screen",
+        "is_match_end_screen",
+        "is_full_blackout",
+    ):
+        monkeypatch.setattr(match_state_module, name, lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+
+
+def test_dropped_match_after_match_end_confirmation_logs_warning(monkeypatch, caplog):
+    """Issue #423: 「試合終了」確認済みなのに結果バナーを確定できないまま次の試合が
+    始まった場合、WARNINGで気づけるようにする。
+
+    2026-09-08の専用部屋配信では、この経路で18試合中8試合(すべて負け)が何の警告も
+    出ないまま消えており、配信録画と突き合わせるまで気づけなかった。
+    """
+    screen = {"vs": False, "match_end": False}
+    _stub_all_detections(monkeypatch)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: screen["vs"])
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: screen["match_end"])
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+
+    machine = MatchStateMachine(
+        now_fn=FakeClock(),
+        vs_screen_confirm_seconds=1,
+        match_end_confirm_seconds=1,
+        # ロックアウトを無効にし、1回目のVS画面の直後に2回目を検知させる
+        vs_screen_lockout_seconds=0,
+    )
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        screen["vs"] = True  # 1試合目開始
+        for _ in range(2):
+            machine.process_frame(frame)
+        screen["vs"] = False
+        screen["match_end"] = True  # 「試合終了」を確認
+        for _ in range(2):
+            machine.process_frame(frame)
+        assert machine.match_end_seen, "「試合終了」確認後はmatch_end_seenがTrueになるはず"
+        screen["match_end"] = False
+        screen["vs"] = True  # 結果バナーを確定できないまま次の試合が始まる
+        for _ in range(2):
+            machine.process_frame(frame)
+
+    assert "「試合終了」を確認済みなのに結果バナーを確定できないまま" in caplog.text
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    assert warnings, "消失はWARNINGで報告されるはず(INFOのままだと一覧して見ても気づけない)"
+
+
+def test_dropped_match_without_match_end_confirmation_stays_info(monkeypatch, caplog):
+    """Issue #423: 「試合終了」を確認できていない場合は従来どおりINFOのままにする。
+
+    通信切断等によるゲーム強制終了でも起こりうる正常な状態遷移のため(Issue #243)。
+    """
+    screen = {"vs": False}
+    _stub_all_detections(monkeypatch)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: screen["vs"])
+    monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+
+    machine = MatchStateMachine(
+        now_fn=FakeClock(), vs_screen_confirm_seconds=1, vs_screen_lockout_seconds=0
+    )
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        screen["vs"] = True  # 1試合目開始
+        for _ in range(2):
+            machine.process_frame(frame)
+        screen["vs"] = False
+        for _ in range(2):
+            machine.process_frame(frame)
+        screen["vs"] = True  # 結果バナーを確定できないまま次の試合が始まる
+        for _ in range(2):
+            machine.process_frame(frame)
+
+    assert "前の試合が結果画面確定前に次のVS画面を検知しました" in caplog.text
+    assert "「試合終了」を確認済みなのに" not in caplog.text
+    assert [record for record in caplog.records if record.levelname == "WARNING"] == []
+
+
+def test_banner_roi_stats_logged_only_after_match_end_confirmation(monkeypatch, caplog):
+    """Issue #423: 閾値の再較正に使う実測値を「試合終了」確認後の区間だけDEBUGに残す。"""
+    screen = {"match_end": False}
+    _stub_all_detections(monkeypatch)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: screen["match_end"])
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+
+    machine = MatchStateMachine(now_fn=FakeClock(), match_end_confirm_seconds=1)
+    # BANNER_ROISが収まる実解像度のフレームでないと実測値を採れない
+    frame = np.full((1080, 1920, 3), 40, dtype=np.uint8)
+
+    with caplog.at_level("DEBUG", logger="nss_tracker.state"):
+        machine.process_frame(frame)
+        assert "試合終了後のバナーROI実測" not in caplog.text, "確認前は出さない"
+        screen["match_end"] = True
+        for _ in range(2):
+            machine.process_frame(frame)
+
+    assert "試合終了後のバナーROI実測" in caplog.text
+    assert "H=" in caplog.text and "hue_std=" in caplog.text
+
+
+def test_banner_roi_stats_log_is_throttled_while_value_is_unchanged(monkeypatch, caplog):
+    """Issue #423: 値が動かない間は出し続けない(Issue #384のゲージログと同じ考え方)。"""
+    _stub_all_detections(monkeypatch)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: True)
+    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+
+    machine = MatchStateMachine(now_fn=FakeClock(), match_end_confirm_seconds=1)
+    frame = np.full((1080, 1920, 3), 40, dtype=np.uint8)
+
+    with caplog.at_level("DEBUG", logger="nss_tracker.state"):
+        for _ in range(10):
+            machine.process_frame(frame)
+
+    logged = [record for record in caplog.records if "試合終了後のバナーROI実測" in record.message]
+    assert len(logged) == 1, f"同じ値が続く間は1回だけのはず(実際は{len(logged)}回)"
+
+
 def test_goal_detection_logs_scorer_and_assist_at_info_level(monkeypatch, caplog):
     """Issue #86: ゴール検知した瞬間に、許可リストの判定結果によらず得点者・
     アシスト名と記録対象かどうかの見込みをINFOレベルで出すことを確認する。
