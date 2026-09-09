@@ -3563,6 +3563,77 @@ def test_rank_entry_number_clip_file_404_when_missing(tmp_path: Path, monkeypatc
     assert response.status_code == 404
 
 
+# --- Issue #428: ランク数値拡大クリップを既定で非表示にし、ボタンで切り替える ---
+
+
+def _rank_entry_page(tmp_path: Path, monkeypatch) -> str:
+    """クリップが1件ある状態で/rank-entryを開き、HTMLを返す。"""
+    clips_dir = tmp_path / "clips"
+    number_dir = tmp_path / "number_clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    monkeypatch.setattr(server_module, "RANK_NUMBER_CLIPS_DIR", number_dir)
+    clips_dir.mkdir()
+    number_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = _save_confirmed_match(conn, _warning_match("win", 42.20), 42.40)
+    conn.close()
+    (clips_dir / f"{match_id}.mp4").write_bytes(b"dummy")
+    (number_dir / f"{match_id}.mp4").write_bytes(b"dummy")
+
+    return TestClient(create_app(db_path)).get("/rank-entry").text
+
+
+def test_rank_entry_page_has_number_clip_toggle_button(tmp_path: Path, monkeypatch):
+    """Issue #428: 常時表示をやめ、ボタンで出し入れする。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert 'id="rank-entry-number-toggle"' in html
+    assert "ランク数値拡大を表示" in html
+
+
+def test_rank_entry_number_column_is_hidden_by_default(tmp_path: Path, monkeypatch):
+    """Issue #428: 既定は非表示(=全画面クリップが全幅に広がり、バッジが読める)。
+
+    トグルの状態を保持する変数がfalseで始まり、applyNumberColumn()がそれを見て
+    列の表示とsrcの設定を決めることをHTML(インラインJS)側で確認する。
+    """
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "let numberColumnShown = false;" in html
+    assert "if (clip.has_number_clip && numberColumnShown) {" in html
+
+
+def test_rank_entry_number_column_state_survives_clip_switching(tmp_path: Path, monkeypatch):
+    """Issue #428: クリップを切り替えても表示状態を維持する。
+
+    selectClip()が試合を切り替えるたびにapplyNumberColumn()を呼び、その中で
+    numberColumnShownを参照するため、トグルの状態が引き継がれる。
+    """
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "function applyNumberColumn(clip)" in html
+    assert "applyNumberColumn(clip);" in html
+    # 旧実装(トグルを見ずにクリップの有無だけで常時表示していた分岐)が残っていないこと
+    assert "if (clip.has_number_clip) {" not in html
+
+
+def test_rank_entry_number_toggle_is_hidden_when_clip_is_missing(tmp_path: Path, monkeypatch):
+    """Issue #428: この機能の導入前に録画された試合では、押しても何も起きないボタンを出さない。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert 'numberToggle.style.display = hasNumberClip ? "" : "none";' in html
+
+
+def test_rank_entry_css_defines_number_toggle_style(tmp_path: Path):
+    """Issue #428: ボタンのスタイルが静的ファイル側に用意されていること。"""
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    css = client.get("/static/rank_entry.css").text
+
+    assert ".rank-entry-number-toggle {" in css
+
+
 def test_overlay_dive_time_polls_faster_than_other_widgets(tmp_path: Path):
     """Issue #419: YouTube側のポーリングを10秒へ広げた分、こちらを短くして
     画面反映までの体感を取り戻す(ローカルへのアクセスでクォータを消費しない)。
