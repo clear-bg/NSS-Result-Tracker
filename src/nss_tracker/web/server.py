@@ -212,6 +212,13 @@ _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS = 1000
 # ため、ポーリング頻度を上げること自体のコストは無視できる)
 _RANK_GRAPH_REFRESH_INTERVAL_MS = 500
 
+# Issue #419: 「次に潜る時間」だけ他ウィジェット(既定5秒)より短くする。
+# YouTube Data APIのクォータ対策でチャットのポーリング間隔を10秒へ広げた分
+# (youtube_chat._MIN_POLL_INTERVAL_SECONDS)、画面反映までの体感が遅くなる。
+# こちらはローカルの自分のサーバーへのポーリングでクォータを消費しないため、
+# 短くして遅くなった分を取り戻す(ランク推移グラフの0.5秒と同じ考え方)
+_DIVE_TIME_REFRESH_INTERVAL_MS = 1000
+
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
@@ -1864,7 +1871,7 @@ def create_app(db_path: Path) -> FastAPI:
             "dive_time_mode": state.mode if state is not None else None,
             "dive_time": state.time if state is not None else None,
             "snipe_target": state.snipe_target if state is not None else None,
-            "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
+            "refresh_interval_ms": _DIVE_TIME_REFRESH_INTERVAL_MS,
             "debug_bg_style": _overlay_debug_bg_style(request),
         }
         return _TEMPLATES.TemplateResponse(request, "overlay_dive_time.html", context)
