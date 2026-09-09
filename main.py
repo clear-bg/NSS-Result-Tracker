@@ -70,6 +70,7 @@ from nss_tracker.detection.rank_ocr import (
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
 from nss_tracker import match_transition, startup_gate
 from nss_tracker.obs_control import ObsSceneController
+from nss_tracker.banner_debug_frames import BANNER_DEBUG_FRAMES_DIR, BannerDebugFrameSaver
 from nss_tracker.rank_entry_clips import (
     DEFAULT_CLIPS_DIR,
     GAUGE_CLIPS_DIR,
@@ -378,10 +379,15 @@ def run(
     clip_recorder: RankEntryClipRecorder,
     gauge_clip_recorder: RankEntryClipRecorder,
     rank_number_clip_recorder: RankEntryClipRecorder,
+    banner_debug_frame_saver: Optional[BannerDebugFrameSaver] = None,
     blackout_watcher: Optional[BlackoutWatcher] = None,
 ) -> None:
     prev_state = machine.current_state
     prev_in_match = machine.in_match
+    # Issue #423: 「試合終了」確認〜結果バナー確定の区間だけ静止画を残すため、
+    # 区間の出入りを検知する(banner_debug_frames.py参照)。blackout_watcherと同じく
+    # 省略可能にしてあるのは、この配線を必要としないテストを簡潔に保つため
+    prev_match_end_seen = banner_debug_frame_saver is not None and machine.match_end_seen
     frame_read_timeout_seconds = get_frame_read_timeout_seconds()
     # Issue #71: Ctrl+C受信時にセッションサマリを出すための内訳カウンタ
     session_results = {"win": 0, "lose": 0, "draw": 0}
@@ -449,6 +455,19 @@ def run(
             vs_screen_event = machine.pop_vs_screen_event()
             if vs_screen_event is not None:
                 _record_vs_screen_event(conn, session_id, vs_screen_event)
+
+            # Issue #423: 専用部屋の負けバナーが検知できず試合が丸ごと消える不具合の
+            # 調査用。「試合終了」をOCR確認できた区間のフレームを静止画で残す。
+            # 保存の間隔・枚数の上限はsaver側が持つため、ここでは区間の出入りだけを見る
+            if banner_debug_frame_saver is not None:
+                if machine.match_end_seen != prev_match_end_seen:
+                    if machine.match_end_seen:
+                        banner_debug_frame_saver.start(machine.session_match_no, now)
+                    else:
+                        banner_debug_frame_saver.stop()
+                    prev_match_end_seen = machine.match_end_seen
+                if banner_debug_frame_saver.is_active:
+                    banner_debug_frame_saver.observe(frame, now)
 
             if machine.current_state != prev_state:
                 # Issue #307: ランクを賭けた試合の結果バナー確定〜GRACEフェーズ突入の
@@ -668,6 +687,9 @@ def main() -> None:
         target_sample_fps=GAUGE_SAMPLE_FPS,
         resize_on_encode=True,
     )
+    # Issue #423: 「試合終了」確認〜結果バナー確定の区間の静止画。閾値の再較正が
+    # 済むまでの調査用(banner_debug_frames.pyのモジュールdocstring参照)
+    banner_debug_frame_saver = BannerDebugFrameSaver(output_dir=BANNER_DEBUG_FRAMES_DIR)
     try:
         run(
             reader,
@@ -679,6 +701,7 @@ def main() -> None:
             clip_recorder,
             gauge_clip_recorder,
             rank_number_clip_recorder,
+            banner_debug_frame_saver,
             blackout_watcher,
         )
     finally:

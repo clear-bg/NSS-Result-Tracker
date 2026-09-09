@@ -200,9 +200,40 @@ clips/rank_entry_clips由来の実測フレーム(負けバナー側、match_id=
 判明した。他の色閾値も同様のズレを抱えている可能性はあるが、大半は
 マージンが広く実運用で問題化していない。今回のDRAW_TEXT_VAL_MINのように
 閾値が際どいケースで顕在化しうる点は留意すること。
+
+Issue #423(専用部屋の負けバナーが検知されず試合が丸ごと消える、2026-09-08):
+実配信で18試合中8試合(すべて負け)が記録されなかった。「試合終了」のOCR確認
+(match_end.py)は8試合すべてで成功しているのにclassify_banner()が一度も
+win/lose/drawを返さず、結果バナーが確定しないまま次のVS画面が来て破棄されていた。
+
+OBSローカル録画(mkv)から同じ区間をclassify_banner()に食わせると、8試合すべてで
+5.0〜6.5秒間ちゃんと"lose"を返す(banner_confirm_secondsの2秒には余裕で足りる)。
+しかも8試合とも実測値がほぼ同一だった:
+
+    H=101.50  S=40.73  V=84.31  hue_std=1.93
+
+問題は、3条件のうち2つが境界のすぐ内側にいること:
+
+    Hue: 実測101.50 / LOSE_HUE_RANGE=(87, 103) → 上限まで1.5
+    Sat: 実測 40.73 / LOSE_SAT_RANGE=(35, 65)  → 下限まで5.7
+    Val: 実測 84.31 / LOSE_VAL_RANGE=(50, 130) → 十分
+
+較正時の実測(野良試合、この節の冒頭参照)はH89〜99 / S42.7〜45.3なので、この
+専用部屋の負けバナーは較正データより色相が上・彩度が下にずれており、両側で
+ぎりぎりの位置にいる。上記「Issue #373」の節のとおりOBS Virtual Camera経由の
+映像はローカル録画と色味が異なるため、「ローカル録画ではぎりぎり内側 → Virtual
+Camera では外側に出てNone」という筋書きが症状を最もよく説明する。勝ちバナー側は
+WIN_SAT_MIN=120 / WIN_VAL_MIN=165に対して実測が大きく離れており余裕があるため、
+勝ちだけが安定して記録されるという非対称も説明がつく。
+
+**閾値はまだ動かしていない。** Virtual Camera経由の実測値が1件も残っていない
+状態で単一サンプル決め打ちの再較正はしないため、まず計測を仕込む対応だけを
+入れた(banner_roi_stats()の切り出し、state/match_state.pyの_log_banner_stats()、
+banner_debug_frames.py)。次の専用部屋配信で実測を集めてからLOSE_HUE_RANGE/
+LOSE_SAT_RANGEを「範囲+マージン」で再較正する。
 """
 
-from typing import Literal, Optional
+from typing import Literal, NamedTuple, Optional
 
 import cv2
 import numpy as np
@@ -290,19 +321,51 @@ def _is_draw_text(frame: np.ndarray, roi: tuple[int, int, int, int] = DRAW_TEXT_
     return bool(mask.mean() >= DRAW_TEXT_TEAL_FRACTION_MIN)
 
 
-def classify_banner(
+class BannerRoiStats(NamedTuple):
+    """BANNER_ROISから採ったHSVの統計量(classify_bannerの判定に使う値そのもの)。
+
+    Issue #423: 判定結果(win/lose/draw/None)だけでは、閾値のどれをどれだけ外して
+    いたのかが分からず、検知できなかった際の原因究明ができない。閾値の較正に
+    使っている値をそのまま外から観測できるよう切り出した(state/match_state.pyが
+    「試合終了」確認後の区間でこの値をDEBUGログに残す)。
+    """
+
+    hue: float
+    saturation: float
+    value: float
+    hue_std: float
+
+
+def banner_roi_stats(
     frame: np.ndarray, rois: tuple[tuple[int, int, int, int], ...] = BANNER_ROIS
-) -> BannerResult:
-    """勝敗結果バナーの色を判定する。バナーが写っていなければNoneを返す。
+) -> Optional[BannerRoiStats]:
+    """複数のROIをまとめて1つのサンプルとして扱い、HSVの平均と色相の標準偏差を返す。
 
     複数矩形(Issue #159)はgoal.pyのis_goal_event()と同様、まとめて1つの
     サンプルとして平均・標準偏差を取る(矩形ごとの個別判定はしない)。
+
+    想定解像度(1920x1080)より小さいフレーム(テスト用のダミーフレーム等)が渡されて
+    ROIが範囲外になった場合はNoneを返す。実運用では起こらない想定だが、切り出しが
+    空のままcv2.cvtColorを呼ぶと例外で検知ループごと落ちるため、team_color.pyの
+    _average_hex()と同じ考え方でガードしている。
     """
     crops = [frame[y1:y2, x1:x2].reshape(-1, 3) for x1, y1, x2, y2 in rois]
     combined = np.concatenate(crops, axis=0)
+    if combined.size == 0:
+        return None
     hsv = cv2.cvtColor(combined.reshape(1, -1, 3), cv2.COLOR_BGR2HSV).reshape(-1, 3)
     h, s, v = hsv.mean(axis=0)
-    hue_std = hsv[:, 0].std()
+    return BannerRoiStats(float(h), float(s), float(v), float(hsv[:, 0].std()))
+
+
+def classify_banner(
+    frame: np.ndarray, rois: tuple[tuple[int, int, int, int], ...] = BANNER_ROIS
+) -> BannerResult:
+    """勝敗結果バナーの色を判定する。バナーが写っていなければNoneを返す。"""
+    stats = banner_roi_stats(frame, rois)
+    if stats is None:
+        return None
+    h, s, v, hue_std = stats
 
     if hue_std > BANNER_HUE_STD_MAX:
         return None

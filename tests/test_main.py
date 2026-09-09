@@ -63,7 +63,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     呼び、finallyでweb_handle.stop()を呼ぶこと)だけを軽量に検証する。
     """
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, rank_number_clip_recorder, blackout_watcher=None: None)
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, rank_number_clip_recorder, banner_debug_frame_saver=None, blackout_watcher=None: None)
     # Issue #379: main()は/admin側の「確認完了」ボタンが押されるまでOBS/YouTube接続の
     # 手前でブロックする。ここでは実際のブラウザ操作を伴わないよう待ち自体は無効化しつつ、
     # 呼ばれたこと自体(配線が壊れていないこと)はspyで確認する
@@ -119,7 +119,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
 def test_main_continues_when_browser_cannot_be_opened(monkeypatch, tmp_path):
     """Issue #129: ブラウザが無い環境等で設定画面の自動起動に失敗しても、アプリ全体は止めない。"""
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, rank_number_clip_recorder, blackout_watcher=None: None)
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, rank_number_clip_recorder, banner_debug_frame_saver=None, blackout_watcher=None: None)
     # Issue #379: main()は/admin側の「確認完了」ボタンが押されるまでOBS/YouTube接続の
     # 手前でブロックするため、ここではその待ち自体を検証対象外として無効化する
     monkeypatch.setattr(main.startup_gate, "wait_for_confirmation", lambda: None)

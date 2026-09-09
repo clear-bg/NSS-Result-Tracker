@@ -265,6 +265,16 @@ frame 958、表示が消える直前の縮小アニメーションでOCRが失�
 「確認が遅すぎて表示終了直前の不安定なフレームに当たった」方向のリスクのため、
 デバウンスを縮めて可能な限り早いフレームで1回きりのOCRを実行する方が安全。
 
+Issue #423: 「試合終了」をOCR確認できた区間(_match_end_seenがTrueの間)は、
+BANNER_ROISの実測値(H/S/V/hue_std)をDEBUGログに残す(_log_banner_stats参照)。
+2026-09-08の専用部屋配信で負けバナーが1度も検知されず8試合が丸ごと消えた際、
+「classify_banner()が何を見てNoneを返したのか」を示すデータがどこにも無く原因を
+特定できなかったため。あわせて、この区間のまま次のVS画面が確定した場合
+(=結果バナーを確定できずに試合を取りこぼした場合)はWARNINGを出す。従来は
+Issue #243のINFOログしか出ておらず、8試合ぶんのデータが無言で消えていた。
+main.pyはmatch_end_seenプロパティを見て、同じ区間のフレームを静止画として
+保存する(banner_debug_frames.py参照)。いずれも閾値の再較正が済むまでの調査用
+
 Issue #176: 降格(帯番号-1)は、昇格(is_league_change_screen()の全画面
 オーバーレイ)と違って独立した確認手段が無く、_infer_tier_after()(当時の
 _infer_tier_from_gauge_continuity())の
@@ -607,7 +617,7 @@ from typing import Callable, NamedTuple, Optional
 import numpy as np
 
 from nss_tracker.config import get_goal_record_mode, is_allowed_player
-from nss_tracker.detection.banner import BannerResult, classify_banner
+from nss_tracker.detection.banner import BannerResult, banner_roi_stats, classify_banner
 from nss_tracker.detection.goal import (
     confirm_goal_text,
     is_goal_event,
@@ -687,6 +697,11 @@ DEFAULT_RANK_RECHECK_INTERVAL_SECONDS = get_detection_value("match_state", "RANK
 # (tests/test_rank_ocr.pyでabs=0.02を許容)より大きく取り、ノイズで
 # 猶予期間を無駄に延長し続けないようにする
 RANK_RECHECK_CHANGE_TOLERANCE = get_detection_value("match_state", "RANK_RECHECK_CHANGE_TOLERANCE", 0.05)
+# Issue #423: 「試合終了」確認後のバナーROI実測値ログ(_log_banner_stats)の間引き幅。
+# H/S/Vのいずれかがこの値を超えて動いたときだけログに出す。本物のバナーが出ている間の
+# 実測はフレーム間でほぼ完全に一定(実測でH/S/Vとも小数第2位まで変化しない)なため、
+# 1.0でも「バナーが出た/消えた」等の意味のある変化は取りこぼさない
+_BANNER_STATS_LOG_TOLERANCE = 1.0
 
 # Issue #136: 試合前後で帯番号(整数)が2以上急変した場合の再スキャンまでの
 # 待機秒数。同一フレームへの再OCRは同じ誤読を繰り返すだけのため、少し時間を
@@ -1029,6 +1044,10 @@ class MatchStateMachine:
         # Issue #384: ランクゲージDEBUGログを値変化時のみ出力するための、
         # 直近ログ出力時の生値(_pending_gauge_fillとは別に保持する)
         self._last_logged_gauge_fill: Optional[float] = None
+        # Issue #423: 「試合終了」確認後のBANNER_ROIS実測値ログ(_log_banner_stats参照)を
+        # 間引くため、前回ログに出した値を保持する。60fpsのまま毎フレーム出すと
+        # DEBUGログ全体のノイズになるため、Issue #384のゲージログと同じ考え方にした
+        self._last_logged_banner_stats: Optional[tuple[float, float, float]] = None
         # Issue #327: ゴール検知のOCR一式(_run_goal_ocr)を_goal_ocr_executorで
         # 非同期実行するための状態。_goal_ocr_futureが非Noneの間は多重に投げない
         self._goal_ocr_future: Optional["concurrent.futures.Future"] = None
@@ -1110,6 +1129,24 @@ class MatchStateMachine:
         Issue #83: OBSシーン自動切り替えのトリガーに使う(モジュールdocstring参照)。
         """
         return self._in_match
+
+    @property
+    def session_match_no(self) -> int:
+        """この配信セッションで何試合目か(ログ表記と同じ番号、Issue #423)。
+
+        ログ・保存ファイル名を突き合わせられるようにするための観測用。
+        """
+        return self._session_match_no
+
+    @property
+    def match_end_seen(self) -> bool:
+        """「試合終了」をOCR確認済みで、まだ結果バナーが確定していない間True(Issue #423)。
+
+        専用部屋の負けバナーが検知できず試合が丸ごと記録されない不具合の調査用。
+        main.pyがこの区間のフレームを静止画として保存する(banner_debug_frames参照)。
+        結果バナーの確定・誤検知としての破棄のどちらでもFalseに戻る。
+        """
+        return self._match_end_seen
 
     def pop_vs_screen_event(self) -> Optional[VsScreenEvent]:
         """VS画面を確定した直後の1フレームだけVsScreenEventを返す(Issue #145)。
@@ -1305,6 +1342,20 @@ class MatchStateMachine:
             # 気づけるようにログだけ出す。通信切断等によるゲーム強制終了でも
             # 起こりうる正常な状態遷移のため、必ずしも不具合とは限らない
             if self._vs_confirmed_this_match:
+                # Issue #423: 「試合終了」をOCR確認できていた場合は、通信切断等の
+                # 正常な状態遷移ではなく「結果バナーを検知できずに試合を丸ごと
+                # 取りこぼした」ことがほぼ確定するため、INFOではなくWARNINGにする。
+                # 2026-09-08の専用部屋配信では18試合中8試合(すべて負け)がこの経路で
+                # 何の警告も出ないまま消えており、配信録画と突き合わせるまで
+                # 気づけなかった(モジュールdocstring参照)
+                if self._match_end_seen:
+                    logger.warning(
+                        "%d試合目: 「試合終了」を確認済みなのに結果バナーを確定できないまま"
+                        "次のVS画面を検知しました。この試合は記録されません"
+                        "(バナーの色が閾値を外している可能性。直前の「試合終了後のバナーROI実測」の"
+                        "DEBUGログとclips/banner_debug_frames/の静止画を確認してください)",
+                        self._session_match_no,
+                    )
                 logger.info(
                     "%d試合目: 前の試合が結果画面確定前に次のVS画面を検知しました。"
                     "前の試合のゴール(%d件)は今回の試合の記録に持ち越されます"
@@ -1587,6 +1638,8 @@ class MatchStateMachine:
 
     def _watch_for_banner(self, frame: np.ndarray, now: float) -> Optional[MatchResult]:
         result = classify_banner(frame)
+        if self._match_end_seen:
+            self._log_banner_stats(frame, result)
         if result != self._banner_candidate:
             self._banner_debounce.reset()
             self._banner_debounce_after_match_end.reset()
@@ -1686,6 +1739,41 @@ class MatchStateMachine:
             self._rank_monitor.update(frame)
             self._state = _State.TRACKING_RANK
         return None
+
+    def _log_banner_stats(self, frame: np.ndarray, result: BannerResult) -> None:
+        """「試合終了」確認後のBANNER_ROIS実測値をDEBUGログに残す(Issue #423)。
+
+        専用部屋の負けバナーが1件も検知されず8試合が丸ごと記録されなかった際、
+        「classify_banner()が何を見てNoneを返したのか」を示すデータがログにもDBにも
+        残っておらず、原因を特定できなかった(OBSローカル録画では同じ区間が"lose"と
+        判定できるため、Virtual Camera経由の映像との色味の差が疑わしいが実測値が無い。
+        Issue #373も同種の問題)。閾値の再較正に必要な値をこの区間に限って残す。
+
+        結果バナーが出るのは「試合終了」確認から実測5〜8秒後のため、この区間だけで
+        判定に必要な値は揃う。常時出すとDEBUGログのノイズになるので、前回出力時から
+        H/S/Vのいずれかが_BANNER_STATS_LOG_TOLERANCEを超えて動いたときだけ出す
+        (Issue #384のランクゲージログと同じ考え方)。
+        """
+        stats = banner_roi_stats(frame)
+        if stats is None:
+            return
+        current = (stats.hue, stats.saturation, stats.value)
+        previous = self._last_logged_banner_stats
+        if previous is not None and all(
+            abs(latest - last_logged) <= _BANNER_STATS_LOG_TOLERANCE
+            for latest, last_logged in zip(current, previous)
+        ):
+            return
+        self._last_logged_banner_stats = current
+        logger.debug(
+            "%d試合目 試合終了後のバナーROI実測: H=%.2f S=%.2f V=%.2f hue_std=%.2f -> %s",
+            self._session_match_no,
+            stats.hue,
+            stats.saturation,
+            stats.value,
+            stats.hue_std,
+            result if result is not None else "判定なし",
+        )
 
     def _track_rank(
         self, frame: np.ndarray, now: float, blackout: Optional[BlackoutObservation] = None
