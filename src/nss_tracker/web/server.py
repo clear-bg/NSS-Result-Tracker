@@ -141,8 +141,19 @@ Issue #410: `/admin`のフォームは1つだけで、送信先も`POST /admin`�
 弾く方式は採らない」という判断は、この統合にあたり意図的に覆した(ユーザーとの
 相談で決定)。未選択のまま接続が始まらない点は`confirm_start()`側の
 `can_confirm_start()`チェックで従来どおり担保される。
+
+Issue #424: `/overlay/vs-rank-comparison`のピルの背景色は、`detection/team_color.py`が
+VS画面から実測した色をそのまま使うのではなく、`_normalize_team_color()`で「青系」
+「ピンク系」の2つの固定色に分類してから使う。どちらにも分類できない値は
+`_DEFAULT_TEAM_COLOR`(灰色)にする。実測値をそのまま使う方式(Issue #113)は、ROIが
+名前タグから外れた瞬間に芝生の緑がそのまま配信画面に出てしまう弱点があったため
+(詳細は`_normalize_team_color()`と`detection/team_color.py`のdocstring参照)。
+分類は表示側でのみ行い、`detection/team_color.py`とDBには実測値をそのまま残す
+(後から帯を見直したくなったときに保存済みの値から再判定できるようにするため。
+「検知層はポリシーを持たず見えたものをそのまま報告する」という既存方針とも揃う)。
 """
 
+import colorsys
 import logging
 import math
 import sqlite3
@@ -846,7 +857,74 @@ def _summarize_vs_slot_ranks(rows: list[sqlite3.Row]) -> dict:
     }
 
 
-_DEFAULT_TEAM_COLOR = "#666666"  # チームカラーが未検知の場合のフォールバック(ニュートラルな灰色)
+_DEFAULT_TEAM_COLOR = "#666666"  # チームカラーが未検知・分類できない場合のフォールバック(ニュートラルな灰色)
+
+# Issue #424: detection/team_color.pyがVS画面から実測した色をそのまま表示するのではなく、
+# 「青系」「ピンク系」の2つの固定色に分類してから表示する。実測値をそのまま使う方式
+# (Issue #113)は、ROIが名前タグから外れた瞬間に芝生の緑がそのまま配信画面に出てしまう
+# 弱点があった(ランクバッジの有無で名前タグの位置が42pxずれ、バッジの無い試合では
+# ROIが完全に芝生へ落ちる。detection/team_color.py参照)。
+#
+# 表示に使う固定色は、正しくサンプリングできている試合でDBに最も多く入っている値
+# (青系22件・ピンク系25件)をそのまま採用しているため、正常な試合では見た目が変わらない。
+_TEAM_COLOR_BLUE = "#20d0f6"
+_TEAM_COLOR_PINK = "#f059cb"
+
+# (色相の下限, 色相の上限, 表示に使う固定色)。色相は度(0〜360)。
+# fixture 5枚と専用部屋配信の実フレーム8枚から、名前タグバーを正しく捉えた位置の色を
+# 採取した実測は以下のとおり(OpenCVの0〜179スケール。度に直すと2倍):
+#   青系  : 色相 94〜101(=188〜202度)、彩度 194〜255、明度 247〜253
+#   ピンク系: 色相 156〜167(=312〜334度)、彩度 142〜173、明度 242〜254
+#   芝生(誤検知): 色相 31〜67(=62〜134度)、彩度 78〜121、明度 145〜220
+# 青とピンクの間は色相で55(=110度)空いており、芝生も最も近い青の下端から27(=54度)
+# 離れている。上下に約9〜11(=18〜22度)のマージンを取ってこの帯にした。
+_TEAM_COLOR_HUE_BANDS = (
+    (170.0, 220.0, _TEAM_COLOR_BLUE),
+    (290.0, 350.0, _TEAM_COLOR_PINK),
+)
+# 色相が意味を持たないほぼ無彩色の値を弾くための下限(OpenCVスケールの60/255・100/255)。
+# 芝生は色相だけで弾けるため、この下限自体は緩くてよい。逆に、ROIが名前タグの端に
+# 半分だけかかって色が混ざった値(実データではid=3/15/16の#a66a97、彩度92)は、
+# 色相がピンクの帯に十分入っているため、この下限で落とさず救えるようにしてある
+_TEAM_COLOR_MIN_SATURATION = 60 / 255
+_TEAM_COLOR_MIN_VALUE = 100 / 255
+
+
+def _parse_hex_color(value: str) -> Optional[tuple[int, int, int]]:
+    """hex文字列("#rrggbb"形式)を(R, G, B)に変換する。解釈できなければNoneを返す。"""
+    text = value.strip()
+    if len(text) != 7 or not text.startswith("#"):
+        return None
+    try:
+        return int(text[1:3], 16), int(text[3:5], 16), int(text[5:7], 16)
+    except ValueError:
+        return None
+
+
+def _normalize_team_color(sampled: Optional[str]) -> str:
+    """VS画面から実測したチームカラーを、表示に使う固定色に分類する(Issue #424)。
+
+    色相が_TEAM_COLOR_HUE_BANDSのいずれかに入っていればその固定色を、入っていない
+    (芝生等を拾った)場合や彩度・明度が低すぎて色相が意味を持たない場合、そもそも
+    実測値が無い場合は_DEFAULT_TEAM_COLOR(灰色)を返す。
+
+    ROIが名前タグの端に半分だけかかった場合でも、バーの色が半分以上乗っていれば
+    色相は保たれて正しく分類され、それ未満なら彩度・色相が崩れて灰色側に落ちる。
+    青とピンクを取り違える混合比が存在しないことは実測色での検証で確認済み
+    (Issue #424のコメント参照)。そのためROIの位置ずれは「たまに灰色になる」という
+    劣化にしかならず、配信画面に誤った色が出ることはない。
+    """
+    rgb = _parse_hex_color(sampled) if sampled else None
+    if rgb is None:
+        return _DEFAULT_TEAM_COLOR
+    hue, saturation, value = colorsys.rgb_to_hsv(*(channel / 255 for channel in rgb))
+    if saturation < _TEAM_COLOR_MIN_SATURATION or value < _TEAM_COLOR_MIN_VALUE:
+        return _DEFAULT_TEAM_COLOR
+    degrees = hue * 360
+    for lower, upper, color in _TEAM_COLOR_HUE_BANDS:
+        if lower <= degrees <= upper:
+            return color
+    return _DEFAULT_TEAM_COLOR
 
 
 def _fetch_vs_rank_comparison(db_path: Path) -> Optional[dict]:
@@ -858,7 +936,8 @@ def _fetch_vs_rank_comparison(db_path: Path) -> Optional[dict]:
     見る。スナップショットが1件も無い、またはスロット行が無い場合(直近の試合で
     VS画面を見逃した場合等、main.py._record_match_resultが空スナップショットを
     書き込む)はNoneを返す。チームカラー(Issue #113)もスナップショットに含まれる
-    ため、あわせてここで返す。
+    ため、あわせてここで返す。ただし実測値をそのまま返すのではなく、
+    _normalize_team_color()で青系/ピンク系の固定色に分類してから返す(Issue #424)。
 
     Issue #359: 現在の配信セッション(db.fetch_current_session_id、_fetch_winrateと
     同じパターン)のスナップショットのみを対象にする。配信セッション開始直後、
@@ -882,8 +961,8 @@ def _fetch_vs_rank_comparison(db_path: Path) -> Optional[dict]:
     return {
         "mine": _summarize_vs_slot_ranks(mine_rows),
         "opponent": _summarize_vs_slot_ranks(opponent_rows),
-        "mine_team_color": snapshot["mine_team_color"] or _DEFAULT_TEAM_COLOR,
-        "opponent_team_color": snapshot["opponent_team_color"] or _DEFAULT_TEAM_COLOR,
+        "mine_team_color": _normalize_team_color(snapshot["mine_team_color"]),
+        "opponent_team_color": _normalize_team_color(snapshot["opponent_team_color"]),
     }
 
 
@@ -1827,7 +1906,8 @@ def create_app(db_path: Path) -> FastAPI:
         comparison = _fetch_vs_rank_comparison(db_path)
         # スナップショットが1件も無い・直近の試合でVS画面を見逃した場合も表示形式
         # 自体は崩さず、値を"-"にするだけにする(ユーザーとの相談で決定、Issue #276で
-        # "none"から変更)。チームカラーも同様に検知できていない場合は_DEFAULT_TEAM_COLORにする
+        # "none"から変更)。チームカラーも同様に、検知できていない場合・青系/ピンク系の
+        # どちらにも分類できなかった場合(Issue #424)は_DEFAULT_TEAM_COLORにする
         context = (
             {
                 "mine_value": _format_vs_rank_value(comparison["mine"]),
