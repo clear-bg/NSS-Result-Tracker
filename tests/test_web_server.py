@@ -31,6 +31,9 @@ from nss_tracker.web.server import (
     _RANK_GRAPH_VIEWBOX_HEIGHT,
     _RANK_GRAPH_Y_HALF_STEP_LABEL_MAX_RANGE,
     _RANK_GRAPH_VIEWBOX_WIDTH,
+    _DEFAULT_TEAM_COLOR,
+    _TEAM_COLOR_BLUE,
+    _TEAM_COLOR_PINK,
     _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS,
     _aggregate_goal_stats,
     _build_match_log_badges,
@@ -40,7 +43,9 @@ from nss_tracker.web.server import (
     _fetch_rank_graph_summary,
     _fetch_winrate,
     _format_vs_rank_value,
+    _normalize_team_color,
     _overlay_widget_links,
+    _parse_hex_color,
     _percentile,
     _rank_delta_axis_max,
     _rank_graph_x_axis_max,
@@ -1268,6 +1273,106 @@ def test_format_vs_rank_value_returns_dash_when_total_missing():
     assert _format_vs_rank_value({"total": None, "known_count": 0, "unknown_count": 4}) == "-"
 
 
+# Issue #424: チームカラーの分類。入力値はいずれも実測から採った値
+# (fixtures/screenshots・専用部屋配信の実フレーム・DBの保存値)で、根拠は
+# web/server.pyの_TEAM_COLOR_HUE_BANDSのコメントとIssue #424を参照
+@pytest.mark.parametrize(
+    "sampled",
+    [
+        "#20d0f6",  # DBに最も多い値(自チーム側)
+        "#1fd0f6",  # 同上、1ずれた別試合の実測
+        "#11d7f9",  # 72/73_matching_hdr_off(ランクバッジ無し)
+        "#00c6fc",  # 82_matching_with_rank_4v3_hdr_off
+        "#01c8fd",  # 86_matching_with_rank_4v4_hdr_off
+        "#0fc1f7",  # 専用部屋配信の実フレーム
+        "#3cb7fa",  # 専用部屋配信の実フレーム(相手側、最も色相が高い実測値)
+    ],
+)
+def test_normalize_team_color_classifies_blue_samples(sampled: str):
+    assert _normalize_team_color(sampled) == _TEAM_COLOR_BLUE
+
+
+@pytest.mark.parametrize(
+    "sampled",
+    [
+        "#f059cb",  # DBに最も多い値
+        "#f250cf",  # 73_matching_hdr_off_2
+        "#f24ec0",  # 72_matching_hdr_off_1(最も色相が低い実測値)
+        "#fd64c2",  # 82_matching_with_rank_4v3_hdr_off
+        "#fe65b9",  # 86_matching_with_rank_4v4_hdr_off
+        "#fa6dcb",  # 専用部屋配信の実フレーム
+        "#fa67a8",  # 専用部屋配信の実フレーム(最も色相が高い実測値)
+    ],
+)
+def test_normalize_team_color_classifies_pink_samples(sampled: str):
+    assert _normalize_team_color(sampled) == _TEAM_COLOR_PINK
+
+
+def test_normalize_team_color_recovers_pink_from_partially_offset_roi():
+    """Issue #424: ROIが名前タグの端に半分だけかかった値も、色相からピンクに復元する。
+
+    #a66a97はmatches id=3/15/16に実際に保存されている値。彩度92と本来(142〜173)より
+    大幅に低いが、色相158はピンクの帯に十分入っているため救える(_TEAM_COLOR_MIN_SATURATION
+    をこれより上げると落ちてしまうため、下限を緩くしてある)。
+    """
+    assert _normalize_team_color("#a66a97") == _TEAM_COLOR_PINK
+
+
+@pytest.mark.parametrize(
+    "sampled",
+    [
+        "#a6b868",  # 専用部屋配信でROIが芝生に落ちた際の実測値(以下同じ)
+        "#76c681",
+        "#619247",
+        "#bec588",
+        "#63a672",
+        "#c3dc84",
+    ],
+)
+def test_normalize_team_color_rejects_grass_samples(sampled: str):
+    """Issue #424: ランクバッジが無い試合でROIが芝生に落ちた場合は灰色にする。"""
+    assert _normalize_team_color(sampled) == _DEFAULT_TEAM_COLOR
+
+
+@pytest.mark.parametrize(
+    "sampled",
+    [
+        None,  # VS画面を検知できなかった試合(DB上はNULL)
+        "",
+        "#111111",  # 彩度・明度が低く色相が意味を持たない
+        "#222222",
+        "#ffffff",  # 彩度が0
+        "20d0f6",  # 先頭の#が無い
+        "#zzzzzz",  # 16進として解釈できない
+        "#20d0f",  # 桁数が足りない
+    ],
+)
+def test_normalize_team_color_falls_back_to_gray(sampled: Optional[str]):
+    assert _normalize_team_color(sampled) == _DEFAULT_TEAM_COLOR
+
+
+def test_normalize_team_color_never_confuses_blue_and_pink_when_roi_is_partially_off():
+    """Issue #424: ROIが部分的にずれても、青とピンクを取り違えることはない。
+
+    実測色同士を混合し、分類結果が「正しい色」か「灰色」のどちらかにしかならない
+    ことを確認する。これが成り立つため、ROI自体の修正(名前タグの位置に追従させる)は
+    行わず、ずれた場合は灰色に倒れるだけで済ませる判断にしている(Issue #424参照)。
+    """
+    grass_samples = ("#a6b868", "#619247", "#76c681")
+    for bar, expected in (("#20d0f6", _TEAM_COLOR_BLUE), ("#f059cb", _TEAM_COLOR_PINK)):
+        bar_rgb = _parse_hex_color(bar)
+        for grass in grass_samples:
+            grass_rgb = _parse_hex_color(grass)
+            for percent in range(0, 101, 5):
+                ratio = percent / 100
+                mixed = "#" + "".join(
+                    f"{round(bar_rgb[i] * ratio + grass_rgb[i] * (1 - ratio)):02x}" for i in range(3)
+                )
+                assert _normalize_team_color(mixed) in (expected, _DEFAULT_TEAM_COLOR), (
+                    f"{bar}を{percent}%混ぜた{mixed}が誤った色に分類された"
+                )
+
+
 def test_vs_rank_comparison_endpoint_uses_latest_snapshot(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
@@ -1287,11 +1392,13 @@ def test_vs_rank_comparison_endpoint_uses_latest_snapshot(tmp_path: Path):
     response = client.get("/api/vs-rank-comparison")
 
     assert response.status_code == 200
+    # Issue #424: DBには実測値(#64bde2/#f87abe)がそのまま入るが、表示に使う色は
+    # 青系/ピンク系の固定色に分類されたものになる
     assert response.json() == {
         "mine": {"total": 39, "known_count": 2, "unknown_count": 2},
         "opponent": {"total": -51, "known_count": 2, "unknown_count": 2},
-        "mine_team_color": "#64bde2",
-        "opponent_team_color": "#f87abe",
+        "mine_team_color": _TEAM_COLOR_BLUE,
+        "opponent_team_color": _TEAM_COLOR_PINK,
     }
 
 
@@ -1324,7 +1431,9 @@ def test_vs_rank_comparison_endpoint_uses_newer_snapshot_over_older_one(tmp_path
     response = client.get("/api/vs-rank-comparison")
 
     assert response.json()["mine"]["total"] == 160
-    assert response.json()["mine_team_color"] == "#64bde2"
+    # Issue #424: 古い側の#111111は無彩色で灰色に分類されるため、固定色の青が
+    # 返ることで新しい側のスナップショットが使われたことを確認できる
+    assert response.json()["mine_team_color"] == _TEAM_COLOR_BLUE
 
 
 def test_vs_rank_comparison_endpoint_none_when_no_snapshots(tmp_path: Path):
@@ -1393,7 +1502,9 @@ def test_vs_rank_comparison_endpoint_uses_snapshot_from_current_session(tmp_path
     response = client.get("/api/vs-rank-comparison")
 
     assert response.json()["mine"]["total"] == 160
-    assert response.json()["mine_team_color"] == "#64bde2"
+    # Issue #424: 古い側の#111111は無彩色で灰色に分類されるため、固定色の青が
+    # 返ることで新しい側のスナップショットが使われたことを確認できる
+    assert response.json()["mine_team_color"] == _TEAM_COLOR_BLUE
 
 
 def test_vs_rank_comparison_endpoint_none_when_latest_snapshot_has_no_vs_data(tmp_path: Path):
@@ -1441,11 +1552,11 @@ def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
     assert '<link rel="stylesheet" href="/static/vs_rank_comparison.css">' in response.text
     assert (
         '<span id="vs-rank-value-mine" class="vs-rank-pill" data-animate-on-change="count" '
-        'style="background-color: #64bde2;">160</span>' in response.text
+        f'style="background-color: {_TEAM_COLOR_BLUE};">160</span>' in response.text
     )
     assert (
         '<span id="vs-rank-value-opponent" class="vs-rank-pill" data-animate-on-change="count" '
-        'style="background-color: #f87abe;">40</span>' in response.text
+        f'style="background-color: {_TEAM_COLOR_PINK};">40</span>' in response.text
     )
     assert '<div class="vs-rank-caption">Rank Total</div>' in response.text
     assert "160</span><span class=\"vs-rank-vs\">VS</span><span" in response.text
@@ -1488,11 +1599,11 @@ def test_overlay_vs_rank_comparison_page_shows_dash_for_side_with_only_unknown_m
 
     assert (
         '<span id="vs-rank-value-mine" class="vs-rank-pill" data-animate-on-change="count" '
-        'style="background-color: #64bde2;">160</span>' in response.text
+        f'style="background-color: {_TEAM_COLOR_BLUE};">160</span>' in response.text
     )
     assert (
         '<span id="vs-rank-value-opponent" class="vs-rank-pill" data-animate-on-change="count" '
-        'style="background-color: #f87abe;">-</span>' in response.text
+        f'style="background-color: {_TEAM_COLOR_PINK};">-</span>' in response.text
     )
 
 
