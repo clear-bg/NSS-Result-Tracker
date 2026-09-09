@@ -237,7 +237,14 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 - 認証: OAuth 2.0(installed app flow、スコープ`https://www.googleapis.com/auth/youtube.readonly`)。初回のみ`scripts/youtube_oauth_setup.py`を手動実行してリポジトリルートに`token.json`を生成する(以後は自動更新)。本体アプリ(`main.py`)の起動経路にはブラウザ同意フローを組み込まない(常時起動するアプリがブロックしないようにするため)。`client_secret.json`(OAuthクライアントID)・`token.json`ともにリポジトリルートの固定パスとして扱い、`.env`と同様の理由で`.gitignore`対象にした。セットアップ手順は`docs/youtube_dive_time_setup.md`参照
 - `YOUTUBE_CHAT_DIVE_TIME_ENABLED`(`.env`、`config.py`)で検知スレッド自体の起動有無を切り替える。`OBS_SCENE_SWITCHING_ENABLED`と異なり、無効時に接続だけ維持する理由が無いため(OBSブラウザソースの再読み込みのような「接続だけは維持したい」副作用が無い)、スレッドそのものを起動しない、というよりシンプルな設計にした。配信ごとに調整する値ではなくセットアップ時に一度決める値のため、`/admin`の編集対象(`_EDITABLE_ENV_KEYS`)には含めない
 - チャットメッセージの`authorDetails.isChatOwner`が配信者本人かどうかの判定に使う。視聴者のコメントでは絶対に発火しない(`tests/test_youtube_chat.py`で検証済み)。放送を新規に検出した直後の最初の1ページは、状態更新に使わず`nextPageToken`の取得のみに使う(アプリ起動時点で既にチャット欄に溜まっている過去コメントを「今打たれたコメント」として誤って拾わないため)
-- チャットポーリングの待機秒数はAPI応答の`pollingIntervalMillis`をそのまま使う(ハードコードしない。fps自動検出(Issue #255)等、既存コードの「プラットフォーム側の値を尊重する」方針と一貫)
+- チャットポーリングの待機秒数はAPI応答の`pollingIntervalMillis`を使うが、**下限(`_MIN_POLL_INTERVAL_SECONDS`=10秒)を設ける**(Issue #419)。Issue #265時点では「そのまま使う(ハードコードしない)」方針だったが、実測でこの値が約1.41秒と短く、YouTube Data APIのデイリークォータ(既定10,000ユニット/日、`liveChatMessages.list`は1回5ユニット=1日2,000回)を**47分**で使い切っていたため、実測を根拠に意図的に覆した(ユーザーとの相談で決定)
+  - 実配信4セッションすべてで、放送検出の47〜48分後に403(`reason: quotaExceeded`)が始まり、そのセッション中は二度と復帰しないことをログとGoogle Cloudコンソールの実測(直近30日で`liveChatMessages.list`が20,511リクエスト、配信した日は毎回上限に張り付き)で確認済み。10秒なら1日あたり約5時間33分もち、配信1〜2回分をカバーできる
+  - 用途が「配信者が自分で打った時刻コメントの検知」であり、数秒〜十数秒の遅れに実害が無いという判断による。遅くなった分は`/overlay/dive-time`側のポーリングを5秒→1秒に短縮して取り戻している(`_DIVE_TIME_REFRESH_INTERVAL_MS`。ローカルの自分のサーバーへのアクセスでクォータを消費しないため、ランク推移グラフの0.5秒(Issue #361)と同じ考え方)
+- APIエラーは`error.errors[].reason`で分岐する(`_error_reason`、Issue #419)。同じ403でも取るべき対処が正反対のため、ステータスコードだけでは判断できない
+  - `liveChatEnded`(ライブチャット終了): `_live_chat_id`をNoneに戻して放送の再検出へ戻る。従来は404のときだけ戻しており、この403では同じ死んだチャットIDへ投げ続けていた(実配信のログにも出ている)
+  - `quotaExceeded`(クォータ超過): 日次リセットまで回復しないため30秒ごとの再試行は無意味。長めに待ち(`_QUOTA_EXCEEDED_BACKOFF_SECONDS`)、WARNINGは復帰するまで1回だけ出す(従来は1セッションで95〜121件並んでいた)
+  - それ以外: 従来どおり`_ERROR_BACKOFF_SECONDS`で再試行する
+- OAuth同意画面の公開ステータスは**「本番環境」にしておくこと**(Issue #419)。「テスト」のままだとリフレッシュトークンが7日で失効し、`scripts/youtube_oauth_setup.py`の再実行が毎週必要になる。手順は`docs/youtube_dive_time_setup.md`参照
 - 検知結果はDBを経由せず、`youtube_chat.py`のモジュールレベルのインメモリ状態として保持する(`DiveTimeState`、`get_dive_time_state()`)。他のWebダッシュボードの値はSQLiteを介した疎結合(前掲「配信画面向けWebダッシュボード」節)を原則としているが、この値は配信セッションをまたいで参照する意味が無い一過性の値であり、DBに永続化する価値が無いための意図的な逸脱
 - トークン読み込み・更新に失敗した場合(`token.json`が無い・壊れている・失効している等)は`obs_control.ObsSceneController`の接続失敗時と同じ考え方で、WARNINGログを出したうえで検知を無効化したまま動作を継続する(本体の試合検知・DB記録とは独立した付加機能のため)
 - 見た目・機能は初期実装では最小構成(`HH:MM`表示のみ)にとどめた。表示スタイルの切替・配置指定・手動での時刻操作ボタン・localStorageでの復元・自動クリアは対象外(必要になった時点で別途検討する、ユーザーとの相談で決定)
