@@ -90,6 +90,13 @@ Issue #358: `/admin`には上記5項目とは別に野良/専用部屋の切り�
 常にroom_type='random'として保存される(`database.db.save_match_result`参照)ため、
 いずれも対象外(自然と野良のみになる)。
 
+Issue #422: 上記のうち直近試合結果ログ(`/overlay/match-log`、`_fetch_match_log`)は
+room_typeを問わない扱いをやめ、**現在の`config.get_room_type()`と同じroom_typeの
+試合だけ**を表示するようにした(専用部屋で配信した翌回に野良へ切り替えると前回の
+勝敗バッジが残る問題への対応)。野良・未選択は従来どおり配信セッションをまたいだ
+直近N件、専用部屋は今回の配信セッションの試合のみ、と対象期間が異なる。
+バッジが0件のときはパネルごと描画しない(詳細は`_fetch_match_log`のdocstring参照)。
+
 Issue #361: 試合間シーンへ切り替わった瞬間、ランク推移グラフ(`/overlay/rank-graph`)に
 控えめな登場アニメーション(折れ線が左から伸びる)を再生する。OBSのブラウザソースは
 シーン切り替わり自体をページへ通知しない(`window.obsstudio`が実機で`undefined`だった
@@ -994,11 +1001,43 @@ _MATCH_RESULT_BADGE_COLORS = {"win": "#0ca30c", "lose": "#d03b3b", "draw": "#898
 _MATCH_LOG_OLDEST_OPACITY = 0.5
 
 
+# Issue #422: 現在の野良/専用部屋設定(config.get_room_type)が未選択(None)の場合に
+# 野良として扱うための既定値。起動確認ゲート(Issue #379)を通る前や、
+# scripts/run_web_dashboard.pyでWebだけ起動した場合に該当する。検知ループは
+# ゲートを通るまで始まらないため、実際に試合が記録される時点では必ず選択済みになる
+_DEFAULT_MATCH_LOG_ROOM_TYPE = "random"
+_PRIVATE_ROOM_TYPE = "private"
+
+
 def _fetch_match_log(db_path: Path, limit: int = MATCH_LOG_LIMIT) -> list[str]:
-    """直近limit件の試合結果('win'/'lose'/'draw')を古い順で返す。"""
+    """直近limit件の試合結果('win'/'lose'/'draw')を古い順で返す。
+
+    Issue #422: 現在の野良/専用部屋設定(config.get_room_type)と同じroom_typeの試合
+    だけを対象にする。以前は絞り込みを一切しておらず、専用部屋で配信した翌回に野良へ
+    切り替えると前回の専用部屋の勝敗バッジが残ったまま表示されていた(Issue #358では
+    「その場の結果を見たい」という理由でこのウィジェットを対象外にしていたが、
+    配信をまたいだ混入までは想定できていなかった)。
+
+    野良と専用部屋で対象期間が異なる(ユーザーとの相談で決定):
+
+    - 野良('random')・未選択(None): 配信セッションをまたいだ直近limit件
+      (Issue #99の当初方針をそのまま維持する)
+    - 専用部屋('private'): 今回の配信セッションの試合のみ。「その場の結果を見たい」のが
+      目的のため、前回以前の専用部屋配信の結果まで混ざると意味が薄れる
+
+    専用部屋で、今回の配信セッションがまだ無い(sessionsテーブルが空)場合は空リストを
+    返す。呼び出し元(/overlay/match-log)はバッジ0件のときパネルごと描画しないため、
+    専用部屋配信の開始直後は何も表示されない状態から始まる。
+    """
+    room_type = get_room_type() or _DEFAULT_MATCH_LOG_ROOM_TYPE
     conn = _connect(db_path)
     try:
-        rows = fetch_recent_matches(conn, limit)
+        session_id = None
+        if room_type == _PRIVATE_ROOM_TYPE:
+            session_id = fetch_current_session_id(conn)
+            if session_id is None:
+                return []
+        rows = fetch_recent_matches(conn, limit, room_type=room_type, session_id=session_id)
     finally:
         conn.close()
     return [row["result"] for row in rows]
