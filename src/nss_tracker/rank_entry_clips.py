@@ -8,12 +8,21 @@
 
 ## 録画区間の決め方
 
-録画開始のタイミングは`MatchStateMachine.current_state`が"watching"から
-"tracking_rank"へ遷移した瞬間(ランクを賭けた試合の結果バナー確定〜GRACE
-フェーズ突入)。ランクを賭けない試合はこの遷移自体が起こらない
-(state/match_state.pyのIssue #235参照、結果バナー確定時点で直ちに確定し
-TRACKING_RANKを経由しない)ため、自然に録画対象外になる(#307のIssue本文にあった
-未確定事項の1つ)。
+録画開始のタイミングは、ランクを賭けた試合(VS画面で自分のランクバッジを
+読めた試合、`MatchStateMachine.current_match_has_rank`)で「試合終了」を
+OCR確認した瞬間(`MatchStateMachine.match_end_seen`がTrueになった瞬間)。
+ランクを賭けない試合は録画対象外(#307のIssue本文にあった未確定事項の1つ)。
+
+Issue #430: 以前は`current_state`が"watching"から"tracking_rank"へ遷移した瞬間
+(結果バナー確定〜GRACEフェーズ突入)に始めていたが、この遷移は試合前ランクの
+読み取り完了を待った後にしか起こらず、その間(実測2.4〜4.0秒)にランク変動
+アニメーションが終わってしまうため、クリップが0.1〜6.8秒しか残らず値を
+読み取れなかった。「試合終了」の確認は結果画面より約3秒前で、そこから始めれば
+変動前のコンパクト表示〜変動後の値までが入る(試合終了→暗転は実測6.3〜13.9秒で
+`MAX_DURATION_SECONDS`の18秒に収まる)。「試合終了」を確認できなかった試合のため、
+従来の"tracking_rank"遷移も予備のきっかけとして残している。結果バナーを確定
+できないまま次の試合が始まった場合は、その録画を`discard()`で捨てる
+(別の試合の結果に誤って紐付けないため)。
 
 録画終了のタイミングは、Issue本文どおり`detection.motion.is_full_blackout()`が
 真になった瞬間。これは`state/match_state.py`内部でOBSシーン切替のトリガーに
@@ -333,9 +342,10 @@ class RankEntryClipRecorder:
     """試合終了区間のフレームをバッファし、区間終了時にmp4クリップを生成する。
 
     呼び出し側(main.py)の想定する使い方:
-        recorder.start(source_fps)          # "watching" -> "tracking_rank"遷移時
+        recorder.start(source_fps)          # 「試合終了」確認時(Issue #430)
         recorder.add_frame(frame)            # 録画中は毎フレーム呼ぶ(内部で間引く)
-        recorder.finish(match_id)            # is_full_blackout(frame)がTrueになった時点
+        recorder.finish(match_id)            # 試合結果確定後、暗転を検知した時点
+        recorder.discard()                   # 結果が確定しないまま次の試合が始まった時
 
     `crop_roi`/`overlay_fn`(Issue #312)を指定すると、画面全体ではなく指定した
     ROIを切り出し、必要な拡大・縮小と任意のオーバーレイ合成を行ってから
@@ -470,6 +480,19 @@ class RankEntryClipRecorder:
         target_height = round(height * self._target_width / width)
         interpolation = cv2.INTER_AREA if width > self._target_width else cv2.INTER_CUBIC
         return cv2.resize(frame, (self._target_width, target_height), interpolation=interpolation)
+
+    def discard(self) -> None:
+        """録画を取りやめ、バッファを捨てる(Issue #430)。
+
+        「試合終了」確認の時点で録画を始めるようになったため、結果バナーを確定
+        できないまま次の試合が始まる(Issue #423の取りこぼし等)と、どの試合にも
+        紐付かない録画が残る。そのまま録画を続けると次の試合の結果に誤って
+        紐付いてしまうため、呼び出し側(main.py)がこれで捨てる。
+        """
+        self._recording = False
+        self._frames = []
+        self._frame_counter = 0
+        self._duration_exceeded = False
 
     def finish(self, match_id: int) -> None:
         """録画を終え、バックグラウンドスレッドでエンコード・保持数管理を行う。"""
