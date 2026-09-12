@@ -331,7 +331,7 @@ PaddleOCRの推論中はGILが解放されない(Issue #303で判明済みの制
 念のための安全策)。結果の取り込みがメインスレッドに集約されたため、
 `_vs_screen_event`の並行アクセス保護(旧`_vs_screen_event_lock`)は不要になった。
 
-結果バナー確定時のランクバッジ読み取り(`_read_rank_before()`、コンパクト/拡大の
+結果バナー確定時のランクバッジ読み取り(`_run_rank_before_ocr()`/`_apply_rank_before_ocr()`、コンパクト/拡大の
 2回で実測約2.3秒)も同じ理由で`_run_rank_before_ocr()`にまとめ、同じExecutorへ
 投げるようにした。こちらは`rank_before`が決まらないとTRACKING_RANKへ進めないため
 投入直後に完了を待つが、待っている間はGILが解放されるので`FfmpegFrameReader`の
@@ -339,6 +339,19 @@ PaddleOCRの推論中はGILが解放されない(Issue #303で判明済みの制
 移すと、この区間の暗転も取りこぼさなくなる)。VS画面OCRとrank_before OCRは
 同じ試合の中で「試合開始時」「試合終了時」に分かれて走り決して同時には走らない
 ため、ワーカープロセスを1つ共有している。
+
+Issue #430: 上記の「投入直後に完了を待つ」をやめ、投げたらすぐTRACKING_RANKへ
+進むようにした。待っている間(実測2.4〜4.0秒、#397時点の2.3秒より長い)は
+読み取りスレッドこそ止まらないものの、メインループはフレームを1枚も評価しない。
+2026-09-11の配信では、この間にランク変動アニメーション(約3秒)が丸ごと終わって
+いたため、ゲージ追跡(`rank_after_ocr`が出ない/ワイプ中の値を拾う)・降格ラベル
+検知・手動入力用クリップ(0.1〜6.8秒しか残らない)のすべてがアニメーションを
+取りこぼしていた。結果は`_poll_rank_before_ocr()`が毎フレーム非ブロッキングに
+取り込み、帯番号の起点(`_grace_candidate_rank_tier`)もその時点で埋める。
+結果が無いと先へ進めない場面(ランクを賭けない試合の即時確定・暗転での確定・
+`_finalize()`)でだけ`wait=True`で完了を待つ。暗転での確定時に待つのは、暗転が
+既に過ぎているため待っても取りこぼすものが無いから(待たずに素通りすると帯番号の
+起点が無いままGRACE満了まで確定が延びる)。
 
 Issue #303 → #396: TRACKING_RANK(GRACEフェーズ)中の帯番号定期再チェックは
 **廃止した**。経緯は以下のとおり。
@@ -558,7 +571,7 @@ Issue #222: 結果バナー確定直後の`rank_before`読み取り(`_watch_for_
 競合を引き起こしていると考えられるが、根本的な原因(ゲーム側の演出タイミングの
 性質)はライブキャプチャのフレーム抜け等のノイズもあり完全には特定できていない。
 
-原因の完全特定を待たず、`_read_rank_before()`で対策した: `GAUGE_ROI_COMPACT`/
+原因の完全特定を待たず、`_run_rank_before_ocr()`/`_apply_rank_before_ocr()`で対策した: `GAUGE_ROI_COMPACT`/
 `RANK_NUMBER_ROI_COMPACT`と`GAUGE_ROI_ENLARGED`/`RANK_NUMBER_ROI_ENLARGED`の
 両方で`read_precise_rank()`を試し、読み取れた方(`None`でない方)を採用する。
 間違ったROI(コンパクト表示にENLARGED、拡大表示にCOMPACT)を当てた場合は常に
@@ -864,7 +877,7 @@ def _run_vs_screen_ocr(frame: np.ndarray) -> VsScreenOcrResult:
 
 class RankBeforeOcrResult(NamedTuple):
     """`_run_rank_before_ocr()`(Issue #397)の戻り値。どちらのROIで読めたかを
-    呼び出し側(_read_rank_before)が判断できるよう、両方をそのまま返す。
+    呼び出し側(_apply_rank_before_ocr)が判断できるよう、両方をそのまま返す。
     """
 
     compact: Optional[tuple[int, float]]
@@ -1051,6 +1064,11 @@ class MatchStateMachine:
         # Issue #327: ゴール検知のOCR一式(_run_goal_ocr)を_goal_ocr_executorで
         # 非同期実行するための状態。_goal_ocr_futureが非Noneの間は多重に投げない
         self._goal_ocr_future: Optional["concurrent.futures.Future"] = None
+        # Issue #430: 結果バナー確定時の試合前ランク読み取り(_run_rank_before_ocr)を
+        # 待たずにTRACKING_RANKへ進むための状態。非Noneの間は結果待ち
+        # (_poll_rank_before_ocr参照)
+        self._rank_before_future: Optional["concurrent.futures.Future"] = None
+        self._rank_before_match_no: int = 0
         # Issue #136: 昇格演出(is_league_change_screen)がこの試合中に一度でも
         # 観測されたか。帯番号の急変を検証する際、昇格側はこの独立信号で
         # 確認できていない限り認めない
@@ -1148,6 +1166,16 @@ class MatchStateMachine:
         """
         return self._match_end_seen
 
+    @property
+    def current_match_has_rank(self) -> bool:
+        """現在の試合がランクを賭けた試合か(VS画面で自分のランクバッジを読めたか、Issue #430)。
+
+        結果バナー確定時にTRACKING_RANKへ進むかどうか(Issue #235)と同じ判定。
+        main.pyが「試合終了」確認の時点でランク手動入力用クリップの録画を
+        始めるかどうかを決めるのに使う(結果バナー確定より前に分かる必要があるため)。
+        """
+        return bool(self._pending_vs_mine_ranks and self._pending_vs_mine_ranks[0].tier is not None)
+
     def pop_vs_screen_event(self) -> Optional[VsScreenEvent]:
         """VS画面を確定した直後の1フレームだけVsScreenEventを返す(Issue #145)。
 
@@ -1174,6 +1202,9 @@ class MatchStateMachine:
         # Issue #388: このフレームの処理全体を通して同じ時刻を使う
         # (デバウンス判定の途中で時刻がずれないよう、1回だけ取得する)
         now = self._now_fn()
+        # Issue #430: 試合前ランクの読み取り結果が届いていれば、状態の振り分けより
+        # 前に取り込む(_track_rank()が帯番号の起点として使うため)
+        self._poll_rank_before_ocr()
         if self._state is _State.WATCHING:
             self._check_for_vs_screen(frame, now)
             self._check_for_goal(frame, now)
@@ -1567,8 +1598,50 @@ class MatchStateMachine:
             )
         )
 
-    def _read_rank_before(self, frame: np.ndarray) -> Optional[tuple[int, float]]:
-        """結果バナー確定時点でランクバッジを読み取る(Issue #222)。
+    def _poll_rank_before_ocr(self, wait: bool = False) -> None:
+        """_watch_for_banner()が投げた試合前ランク読み取り(Issue #430)の結果を取り込む。
+
+        通常(wait=False)はブロックせず、まだ実行中の間は何もしない。wait=Trueは
+        結果が無いと先へ進めない場面(ランクを賭けない試合の即時確定・暗転での確定・
+        _finalize())で使う。_poll_vs_ocr()/_poll_goal_ocr()と同じ設計。
+
+        取り込んだ時点で試合前ランクを確定させ、「n試合目の結果」ログを出す
+        (以前は結果バナー確定と同じフレームで出していたが、Issue #430で読み取りを
+        待たなくなったため、値が揃うこの時点へ移した)。TRACKING_RANK中の帯番号の
+        起点(_grace_candidate_rank_tier)もここで埋める。
+        """
+        if self._rank_before_future is None:
+            return
+        if not wait and not self._rank_before_future.done():
+            return
+        ocr = self._rank_before_future.result()
+        self._rank_before_future = None
+        match_no = self._rank_before_match_no
+
+        precise_result = self._apply_rank_before_ocr(ocr)
+        if precise_result is not None:
+            self._pending_rank_before_tier, self._pending_rank_before = precise_result
+        else:
+            self._pending_rank_before_tier = None
+            self._pending_rank_before = None
+            logger.info(
+                "%d試合目: 結果バナー確定時点でランクバッジを読み取れませんでした"
+                "(バッジ非表示、または読み取り失敗の可能性)",
+                match_no,
+            )
+        logger.info(
+            "%d試合目の結果: %s (ランク(試合前): %s)",
+            match_no,
+            _BANNER_RESULT_LABELS[self._pending_result],
+            self._pending_rank_before if self._pending_rank_before is not None else "なし",
+        )
+        # Issue #396: GRACE中は帯番号OCRを行わないため、帯番号の起点は
+        # 結果バナー確定時に読み取った試合前の帯番号にする(モジュール
+        # docstring参照)。昇格/降格による±1は_infer_tier_after()が確定時に適用する
+        self._grace_candidate_rank_tier = self._pending_rank_before_tier
+
+    def _apply_rank_before_ocr(self, ocr: RankBeforeOcrResult) -> Optional[tuple[int, float]]:
+        """結果バナー確定時点のランクバッジ読み取り結果から試合前ランクを決める(Issue #222)。
 
         バナー確定直後は「まだコンパクト表示のはず」という前提が大半のケースで
         成り立つが、「試合終了」バナー消灯からバナー色判定の確定までにかかる
@@ -1603,12 +1676,8 @@ class MatchStateMachine:
         ゲージ連続性フォールバックは、VS画面側も100%ではないため二段構えの
         保険としてそのまま残す。
         """
-        # Issue #397: 2回のread_precise_rank()で実測約2.3秒メインループが
-        # 止まっていたため、_rank_ocr_executor(本番はProcessPoolExecutor)へ
-        # まとめて投げる。rank_beforeが決まらないとTRACKING_RANKへ進めないので
-        # 結果はここで待つが、待っている間はGILが解放されるため
-        # FfmpegFrameReaderの読み取りスレッドはフレームを取り込み続けられる
-        ocr = self._rank_ocr_executor.submit(_run_rank_before_ocr, frame).result()
+        # Issue #397/#430: OCR自体は_watch_for_banner()が_rank_ocr_executorへ投げ、
+        # 結果は_poll_rank_before_ocr()が受け取ってここへ渡す
         compact_result = ocr.compact
         enlarged_result = ocr.enlarged
         if compact_result is not None and enlarged_result is not None and compact_result != enlarged_result:
@@ -1679,24 +1748,15 @@ class MatchStateMachine:
             self._pending_result = self._banner_candidate
             # Issue #222: バナー確定直後は本来コンパクト表示のはずだが、確定までの
             # 時間が長引くとバッジが既に拡大表示へ遷移していることがあるため、
-            # 両方のROIで試す(_read_rank_before参照)
-            precise_result = self._read_rank_before(frame)
-            if precise_result is not None:
-                self._pending_rank_before_tier, self._pending_rank_before = precise_result
-            else:
-                self._pending_rank_before_tier = None
-                self._pending_rank_before = None
-                logger.info(
-                    "%d試合目: 結果バナー確定時点でランクバッジを読み取れませんでした"
-                    "(バッジ非表示、または読み取り失敗の可能性)",
-                    self._session_match_no,
-                )
-            logger.info(
-                "%d試合目の結果: %s (ランク(試合前): %s)",
-                self._session_match_no,
-                _BANNER_RESULT_LABELS[self._pending_result],
-                self._pending_rank_before if self._pending_rank_before is not None else "なし",
-            )
+            # 両方のROIで試す(_run_rank_before_ocr/_apply_rank_before_ocr参照)。
+            # Issue #430: 以前はここで読み取りの完了を待っていた(実測2.4〜4.0秒)が、
+            # その間にランク変動アニメーションが丸ごと終わってしまい、ゲージ追跡・
+            # 降格ラベル検知・手動入力用クリップのどれもアニメーションを取りこぼして
+            # いた。投げるだけにして結果は_poll_rank_before_ocr()で受け取る
+            self._pending_rank_before_tier = None
+            self._pending_rank_before = None
+            self._rank_before_match_no = self._session_match_no
+            self._rank_before_future = self._rank_ocr_executor.submit(_run_rank_before_ocr, frame)
             self._banner_candidate = None
             self._banner_debounce.reset()
             self._banner_debounce_after_match_end.reset()
@@ -1712,7 +1772,10 @@ class MatchStateMachine:
             # 前提を先に切り分ける対応(B/C/D/E帯は現状tier=None(未識別)になり
             # 区別できないため、この判定でもランク無しと扱われる。実プレイでは
             # 常に∞帯のためユーザー確認の上、許容する既知の制限)
-            if not (self._pending_vs_mine_ranks and self._pending_vs_mine_ranks[0].tier is not None):
+            if not self.current_match_has_rank:
+                # この場合はランク変動の追跡が無くその場で確定するため、
+                # 従来どおり読み取りの完了を待つ(待っても取りこぼすものが無い)
+                self._poll_rank_before_ocr(wait=True)
                 logger.info(
                     "%d試合目: VS画面で自分のランクを検知できなかったため、"
                     "ランクを賭けない試合とみなし結果バナー確定時点で確定します",
@@ -1722,11 +1785,9 @@ class MatchStateMachine:
 
             self._rank_phase = _RankPhase.WAITING_STABLE
             self._grace_started_at = None
-            # Issue #396: GRACE中は帯番号OCRを行わないため、帯番号の起点は
-            # 結果バナー確定時に読み取った試合前の帯番号にする(モジュール
-            # docstring参照)。昇格/降格による±1は_infer_tier_after()が確定時に
-            # 適用する
-            self._grace_candidate_rank_tier = self._pending_rank_before_tier
+            # Issue #396/#430: 帯番号の起点(試合前の帯番号)は、読み取り結果が
+            # 届いた時点で_poll_rank_before_ocr()が埋める
+            self._grace_candidate_rank_tier = None
             self._latest_gauge_fill = None
             self._pending_gauge_fill = None
             self._pending_gauge_debounce.reset()
@@ -1738,6 +1799,8 @@ class MatchStateMachine:
             self._rank_monitor.reset()
             self._rank_monitor.update(frame)
             self._state = _State.TRACKING_RANK
+            # 同期的に完了するExecutor(テスト等)ならこの時点で取り込める
+            self._poll_rank_before_ocr()
         return None
 
     def _log_banner_stats(self, frame: np.ndarray, result: BannerResult) -> None:
@@ -1803,10 +1866,16 @@ class MatchStateMachine:
         # チェックする必要がある: 暗転自体が直前フレームとの急激な変化になり
         # StabilityMonitorを不安定化させてしまい、素通りするとWAITING_STABLEへ
         # 戻ってこの確定に到達できなくなるため
-        if self._grace_candidate_rank_tier is not None and (
+        # Issue #430: 試合前ランクの読み取りがまだ届いていない間に暗転が来た場合は、
+        # ここで完了を待ってから判定する(暗転は既に過ぎているため、待っても
+        # 取りこぼすものが無い。待たずに素通りすると帯番号の起点が無いまま
+        # GRACE満了まで確定が延びてしまう)
+        if (self._grace_candidate_rank_tier is not None or self._rank_before_future is not None) and (
             blackout.blackout if blackout is not None else is_full_blackout(frame)
         ):
-            return self._finalize_from_gauge()
+            self._poll_rank_before_ocr(wait=True)
+            if self._grace_candidate_rank_tier is not None:
+                return self._finalize_from_gauge()
 
         was_stable = self._rank_monitor.is_stable
         is_stable = self._rank_monitor.update(frame)
@@ -1935,6 +2004,8 @@ class MatchStateMachine:
         という帯番号OCRとは独立した信号でのみ±1する(_infer_tier_after参照)。
         小数部はHSVベースの`read_rank_gauge_fill`をデバウンスした`_latest_gauge_fill`。
         """
+        # Issue #430: 試合前の帯番号が無いと推測できないため、読み取りの完了を待つ
+        self._poll_rank_before_ocr(wait=True)
         tier_after, rank_after = self._infer_tier_after()
         return self._finalize(tier_after, rank_after)
 
@@ -1990,6 +2061,9 @@ class MatchStateMachine:
         # Issue #327: ゴール検知OCR(_run_goal_ocr)も同じ理由で完了を待ってから
         # _pending_goalsを読み取る(_poll_goal_ocr()のdocstring参照)
         self._poll_goal_ocr(wait=True)
+        # Issue #430: 試合前ランクも同じ理由で完了を待つ(GRACE満了での確定など、
+        # 暗転を経由しない経路でも取りこぼさないため)
+        self._poll_rank_before_ocr(wait=True)
         if rank_after is None:
             logger.info(
                 "%d試合目: 試合終了時点でもランクバッジを読み取れませんでした"

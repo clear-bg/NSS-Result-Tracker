@@ -313,6 +313,9 @@ def test_run_notifies_match_transition_only_on_true_to_false(monkeypatch, tmp_pa
         def __init__(self):
             self.current_state = "watching"
             self.in_match = False
+            self.match_end_seen = False
+            self.session_match_no = 0
+            self.current_match_has_rank = False
             self._sequence = iter(in_match_sequence)
 
         def process_frame(self, frame, blackout=None):
@@ -411,6 +414,9 @@ def test_run_writes_clip_even_when_match_id_arrives_after_max_duration(monkeypat
         def __init__(self):
             self.current_state = "watching"
             self.in_match = True
+            self.match_end_seen = False
+            self.session_match_no = 0
+            self.current_match_has_rank = False
             self._n = 0
 
         def process_frame(self, frame, blackout=None):
@@ -492,3 +498,175 @@ def test_run_writes_clip_even_when_match_id_arrives_after_max_duration(monkeypat
         assert list(clip_dir.glob("*.mp4")), "上限到達後にmatch_idが判明した場合もクリップが残るはず"
     finally:
         conn.close()
+
+
+class _ScriptedMachine:
+    """フレームごとの状態を台本どおりに返すフェイク(Issue #430)。
+
+    台本の各要素はそのフレームの処理後に変化する値だけを持つdict
+    (state / match_end_seen / match_no / has_rank / result)。
+    """
+
+    def __init__(self, script):
+        self._script = iter(script)
+        self.current_state = "watching"
+        self.in_match = True
+        self.match_end_seen = False
+        self.session_match_no = 1
+        self.current_match_has_rank = True
+
+    def process_frame(self, frame, blackout=None):
+        step = next(self._script)
+        self.current_state = step.get("state", self.current_state)
+        self.match_end_seen = step.get("match_end_seen", self.match_end_seen)
+        self.session_match_no = step.get("match_no", self.session_match_no)
+        self.current_match_has_rank = step.get("has_rank", self.current_match_has_rank)
+        return step.get("result")
+
+    def pop_vs_screen_event(self):
+        return None
+
+
+class _ListReader:
+    def __init__(self, frames):
+        self._frames = list(frames)
+        self.is_running = True
+        self.error = None
+        self.frames_produced = 0
+        self.frames_consumed = 0
+
+    def start(self):
+        pass
+
+    def read(self, timeout):
+        if not self._frames:
+            self.is_running = False
+            return None
+        self.frames_produced += 1
+        self.frames_consumed += 1
+        return self._frames.pop(0)
+
+    def stop(self):
+        pass
+
+
+_BRIGHT_FRAME = np.full((4, 4, 3), 255, dtype=np.uint8)
+_BLACK_FRAME = np.zeros((4, 4, 3), dtype=np.uint8)
+
+
+def _match_result(session_match_no):
+    return MatchResult(
+        result="lose",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=now_jst(),
+        session_match_no=session_match_no,
+    )
+
+
+def _run_scripted(monkeypatch, tmp_path, script, frames):
+    """台本どおりに動くフェイクでmain.run()を回し、(画面全体の録画, 書き出し時のフレーム数)を返す。
+
+    test_run_notifies_match_transition_only_on_true_to_falseと同じく、実画像・OCRに
+    依存しないmain.pyのループ配線そのものだけを検証する。fps=10・サンプリング10fpsのため、
+    録画中は全フレームがバッファに積まれる。
+    """
+    monkeypatch.setattr(main, "_warmup_ocr_engines", lambda: None)
+    config.set_room_type("random")
+
+    class _NoOpObs:
+        def set_in_match(self, in_match):
+            pass
+
+    recorders = [
+        RankEntryClipRecorder(output_dir=tmp_path / name, target_sample_fps=10.0)
+        for name in ("rank_entry_clips", "rank_gauge_clips", "rank_number_clips")
+    ]
+    clip_recorder = recorders[0]
+    finished = {}
+    original_finish = clip_recorder.finish
+
+    def spy_finish(match_id):
+        finished["frames"] = len(clip_recorder._frames)
+        original_finish(match_id)
+
+    clip_recorder.finish = spy_finish
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db._SCHEMA)
+        conn.commit()
+        session_id = db.create_session(conn)
+        main.run(_ListReader(frames), _ScriptedMachine(script), conn, session_id, _NoOpObs(), 10.0, *recorders)
+    finally:
+        conn.close()
+    if clip_recorder._last_encode_thread is not None:
+        clip_recorder._last_encode_thread.join(timeout=10)
+    return clip_recorder, finished.get("frames")
+
+
+def test_run_starts_clip_at_match_end_for_ranked_match(monkeypatch, tmp_path):
+    """Issue #430: ランクを賭けた試合では、「試合終了」を確認した時点から録画を始め、
+    結果バナー確定(watching -> tracking_rank)で録画をやり直さないことを確認する。
+
+    以前は結果バナー確定の遷移で録画を始めており、その遷移は試合前ランクの読み取り
+    完了を待った後にしか起こらないため、ランク変動アニメーションを取りこぼしていた。
+    """
+    script = [
+        {},
+        {"match_end_seen": True},  # 「試合終了」確認 → ここから録画
+        {},
+        {"match_end_seen": False, "state": "tracking_rank"},  # 結果バナー確定
+        {},
+        {"state": "cooldown", "result": _match_result(1)},
+        {},  # 暗転 → 書き出し
+    ]
+    frames = [_BRIGHT_FRAME] * 6 + [_BLACK_FRAME]
+
+    clip_recorder, finished_frames = _run_scripted(monkeypatch, tmp_path, script, frames)
+
+    assert finished_frames == 6, (
+        f"「試合終了」確認(2フレーム目)〜暗転(7フレーム目)の6フレームが入るはず(実際: {finished_frames})"
+    )
+    assert list((tmp_path / "rank_entry_clips").glob("*.mp4")), "クリップが書き出されるはず"
+    assert not clip_recorder.is_recording
+
+
+def test_run_discards_clip_when_next_match_starts_without_result(monkeypatch, tmp_path):
+    """Issue #430: 「試合終了」確認から録画を始めたのに結果バナーを確定できないまま
+    次の試合が始まった場合、その録画を捨て、次の試合の結果に紐付けないことを確認する。
+    """
+    script = [
+        {},
+        {"match_end_seen": True},  # 1試合目の「試合終了」確認 → 録画開始
+        {},
+        {"match_end_seen": False, "match_no": 2, "has_rank": False},  # 結果が無いまま2試合目へ
+        {"state": "cooldown", "result": _match_result(2)},  # 2試合目(ランク無し)の結果
+        {},
+    ]
+    frames = [_BRIGHT_FRAME] * 5 + [_BLACK_FRAME]
+
+    clip_recorder, finished_frames = _run_scripted(monkeypatch, tmp_path, script, frames)
+
+    assert finished_frames is None, "どの試合にも紐付かない録画は書き出さないはず"
+    assert not list((tmp_path / "rank_entry_clips").glob("*.mp4"))
+    assert not clip_recorder.is_recording
+
+
+def test_run_does_not_record_clip_for_unranked_match(monkeypatch, tmp_path):
+    """Issue #430: ランクを賭けない試合は、「試合終了」を確認しても録画しないことを確認する。"""
+    script = [
+        {"has_rank": False},
+        {"match_end_seen": True},
+        {"state": "cooldown", "result": _match_result(1)},
+        {},
+    ]
+    frames = [_BRIGHT_FRAME] * 3 + [_BLACK_FRAME]
+
+    clip_recorder, finished_frames = _run_scripted(monkeypatch, tmp_path, script, frames)
+
+    assert finished_frames is None
+    assert not list((tmp_path / "rank_entry_clips").glob("*.mp4"))
+    assert not clip_recorder.is_recording

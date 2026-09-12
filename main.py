@@ -397,9 +397,14 @@ def run(
     # 1変数で管理する
     clip_recorders = [clip_recorder, gauge_clip_recorder, rank_number_clip_recorder]
     # 録画中の区間に対応する試合のID。試合結果確定(_record_match_result)
-    # の時点で判明するまではNone(録画自体はそれより前、tracking_rank突入時点で
+    # の時点で判明するまではNone(録画自体はそれより前、「試合終了」確認の時点で
     # 始まっているため)。clip_recorder.is_recordingがFalseの間は常にNone
     pending_clip_match_id: Optional[int] = None
+    # Issue #430: 録画中のクリップがどの試合(セッション内の試合番号)のものか。
+    # 結果が確定しないまま次の試合が始まった録画を捨てる判定と、試合結果との
+    # 紐付けの確認に使う
+    clip_match_no: Optional[int] = None
+    prev_match_end_seen_for_clip = machine.match_end_seen
     # Issue #383: watching状態に入り直すたびにリセットし、その状態に留まって
     # いる間だけWATCHING_HEARTBEAT_INTERVAL_SECONDSごとにハートビートを出す
     last_watching_heartbeat = time.monotonic()
@@ -469,14 +474,53 @@ def run(
                 if banner_debug_frame_saver.is_active:
                     banner_debug_frame_saver.observe(frame, now)
 
+            # Issue #430: 結果バナーを確定できないまま次の試合が始まった場合、
+            # その録画はどの試合にも紐付かないため捨てる(そのまま続けると次の試合の
+            # 結果に誤って紐付いてしまう)
+            if clip_recorder.is_recording and pending_clip_match_id is None and clip_match_no != machine.session_match_no:
+                for recorder in clip_recorders:
+                    recorder.discard()
+                logger.info(
+                    "%s試合目の動画クリップは試合結果が確定しないまま次の試合が始まったため破棄しました",
+                    clip_match_no,
+                )
+                clip_match_no = None
+
+            # Issue #430: ランク手動入力用クリップは「試合終了」を確認した時点から録画する
+            # (rank_entry_clips.pyのモジュールdocstring参照)。以前の開始点
+            # (watching -> tracking_rank)は試合前ランクの読み取り完了を待った後で、
+            # その間にランク変動アニメーションが終わってしまっていた
+            match_end_seen = machine.match_end_seen
+            clip_started_for_this_match = clip_recorder.is_recording and clip_match_no == machine.session_match_no
+            if (
+                match_end_seen
+                and not prev_match_end_seen_for_clip
+                and machine.current_match_has_rank
+                and not clip_started_for_this_match
+            ):
+                for recorder in clip_recorders:
+                    recorder.start(fps)
+                pending_clip_match_id = None
+                clip_match_no = machine.session_match_no
+                clip_started_for_this_match = True
+                logger.info("%d試合目 動画クリップの録画を開始しました(「試合終了」を確認)", clip_match_no)
+            prev_match_end_seen_for_clip = match_end_seen
+
             if machine.current_state != prev_state:
                 # Issue #307: ランクを賭けた試合の結果バナー確定〜GRACEフェーズ突入の
-                # 瞬間(モジュールdocstring参照、ランクを賭けない試合はこの遷移自体が
-                # 起こらないため自然に録画対象外になる)
-                if prev_state == "watching" and machine.current_state == "tracking_rank":
+                # 瞬間(ランクを賭けない試合はこの遷移自体が起こらない)。Issue #430で
+                # 開始点を「試合終了」確認へ前倒ししたため、ここは「試合終了」を
+                # 確認できなかった試合のための予備のきっかけ
+                if (
+                    prev_state == "watching"
+                    and machine.current_state == "tracking_rank"
+                    and not clip_started_for_this_match
+                ):
                     for recorder in clip_recorders:
                         recorder.start(fps)
                     pending_clip_match_id = None
+                    clip_match_no = machine.session_match_no
+                    logger.info("%d試合目 動画クリップの録画を開始しました(結果バナー確定)", clip_match_no)
                 # 処理落ち(フレーム抜け)の実測用。この累計値を状態遷移のたびに出すことで、
                 # 例えばtracking_rank突入〜離脱の間の差分から、ランク確定処理中に
                 # どれだけフレームを読み捨てたかを事後に追えるようにする
@@ -517,7 +561,8 @@ def run(
             if result is not None:
                 match_id = _record_match_result(conn, session_id, result)
                 session_results[result.result] += 1
-                if clip_recorder.is_recording:
+                # Issue #430: 録画中のクリップがこの試合のものである場合だけ紐付ける
+                if clip_recorder.is_recording and clip_match_no == result.session_match_no:
                     pending_clip_match_id = match_id
 
             if clip_recorder.is_recording:
