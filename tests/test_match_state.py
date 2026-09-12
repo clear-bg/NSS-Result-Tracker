@@ -1028,7 +1028,7 @@ def test_win_without_promotion_keeps_tier_and_takes_gauge_fraction_only(monkeypa
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         raw_calls["n"] += 1
         if raw_calls["n"] == 2:
-            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # Issue #222: _apply_rank_before_ocr()の拡大ROI側フォールバック呼び出し。
             # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
             return None
         read_calls["n"] += 1
@@ -1086,7 +1086,7 @@ def test_lose_with_gauge_wraparound_infers_demotion(monkeypatch):
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         raw_calls["n"] += 1
         if raw_calls["n"] == 2:
-            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # Issue #222: _apply_rank_before_ocr()の拡大ROI側フォールバック呼び出し。
             # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
             return None
         read_calls["n"] += 1
@@ -1142,7 +1142,7 @@ def test_draw_always_keeps_tier_unchanged(monkeypatch):
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         raw_calls["n"] += 1
         if raw_calls["n"] == 2:
-            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # Issue #222: _apply_rank_before_ocr()の拡大ROI側フォールバック呼び出し。
             # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
             return None
         read_calls["n"] += 1
@@ -1199,7 +1199,7 @@ def test_demotion_label_wins_over_small_gauge_magnitude(monkeypatch):
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         raw_calls["n"] += 1
         if raw_calls["n"] == 2:
-            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # Issue #222: _apply_rank_before_ocr()の拡大ROI側フォールバック呼び出し。
             # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
             return None
         read_calls["n"] += 1
@@ -1376,7 +1376,7 @@ def test_grace_never_calls_tier_ocr_and_seeds_tier_from_rank_before(monkeypatch)
     """Issue #396: TRACKING_RANK(GRACE)中は帯番号OCRを一切呼ばず、帯番号は
     結果バナー確定時に読み取った試合前の値を起点にすることを確認する。
 
-    read_precise_rank()が呼ばれるのは_read_rank_before()(結果バナー確定時、
+    read_precise_rank()が呼ばれるのは_apply_rank_before_ocr()(結果バナー確定時、
     コンパクト/拡大の2回)だけで、GRACE中は軽量なread_rank_gauge_fill()しか
     呼ばれない。この2つが#383の「検知ループの盲区」の主因(1回1.5〜1.7秒の
     ブロック)だったため、呼ばれないこと自体が本Issueの成果物になる。
@@ -1386,7 +1386,7 @@ def test_grace_never_calls_tier_ocr_and_seeds_tier_from_rank_before(monkeypatch)
 
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         precise_rois.append(rank_number_roi)
-        # コンパクト側だけ成功させる(拡大側は_read_rank_before()のフォールバック)
+        # コンパクト側だけ成功させる(拡大側は_apply_rank_before_ocr()のフォールバック)
         return (38, 38.2) if rank_number_roi == RANK_NUMBER_ROI_COMPACT else None
 
     def fake_read_rank_gauge_fill(frame, roi):
@@ -1447,7 +1447,7 @@ def test_demotion_confirmed_but_tier_ocr_reads_unchanged_still_records_demotion(
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         raw_calls["n"] += 1
         if raw_calls["n"] == 2:
-            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # Issue #222: _apply_rank_before_ocr()の拡大ROI側フォールバック呼び出し。
             # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
             return None
         read_calls["n"] += 1
@@ -1507,7 +1507,7 @@ def test_unchanged_tier_stays_plausible_without_demotion_confirmation(monkeypatc
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         raw_calls["n"] += 1
         if raw_calls["n"] == 2:
-            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # Issue #222: _apply_rank_before_ocr()の拡大ROI側フォールバック呼び出し。
             # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
             return None
         read_calls["n"] += 1
@@ -1562,7 +1562,7 @@ def test_demotion_label_not_confirmed_falls_back_to_gauge_magnitude_heuristic(mo
     def fake_read_precise_rank(frame, gauge_roi, rank_number_roi):
         raw_calls["n"] += 1
         if raw_calls["n"] == 2:
-            # Issue #222: _read_rank_before()の拡大ROI側フォールバック呼び出し。
+            # Issue #222: _apply_rank_before_ocr()の拡大ROI側フォールバック呼び出し。
             # このテストは結果バナー確定時点をコンパクト表示想定にしているため失敗させる
             return None
         read_calls["n"] += 1
@@ -3024,3 +3024,137 @@ def test_banner_confirm_survives_severely_degraded_effective_fps(monkeypatch):
         f"確定までに{confirmed_at}サンプルかかった(期待は実経過2.0秒分=9サンプル)。"
         "フレーム数ベースの挙動に逆行していないか確認すること"
     )
+
+
+class _ManualExecutor:
+    """submitされた関数を保留し、テスト側がresolve()を呼ぶまで完了させないフェイク(Issue #430)。"""
+
+    def __init__(self) -> None:
+        self.pending: list = []
+
+    def submit(self, fn, *args, **kwargs):
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        self.pending.append((future, fn, args, kwargs))
+        return future
+
+    def resolve(self) -> None:
+        for future, fn, args, kwargs in self.pending:
+            future.set_result(fn(*args, **kwargs))
+        self.pending = []
+
+
+class _LazyFuture(concurrent.futures.Future):
+    """result()で待たれた時点で初めて完了するFuture(Issue #430)。
+
+    done()は待たれるまでFalseを返すため、「非ブロッキングの取り込みでは
+    まだ届いていない」「完了を待つ経路でだけ値が揃う」状況をスレッド無しで
+    決定的に作れる。
+    """
+
+    def __init__(self, fn, args) -> None:
+        super().__init__()
+        self._fn = fn
+        self._args = args
+
+    def result(self, timeout=None):
+        if not super().done():
+            self.set_result(self._fn(*self._args))
+        return super().result(timeout)
+
+
+class _LazyExecutor:
+    def submit(self, fn, *args, **kwargs):
+        return _LazyFuture(fn, args)
+
+
+def _patch_for_rank_before_pending_tests(monkeypatch, gauge_fill_fn):
+    monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_full_blackout", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
+    monkeypatch.setattr(
+        match_state_module,
+        "read_precise_rank",
+        lambda frame, gauge_roi, rank_number_roi: (41, 41.2) if rank_number_roi == RANK_NUMBER_ROI_COMPACT else None,
+    )
+    monkeypatch.setattr(match_state_module, "read_rank_gauge_fill", gauge_fill_fn)
+    monkeypatch.setattr(match_state_module, "is_league_change_screen", lambda frame: False)
+    monkeypatch.setattr(match_state_module, "is_demotion_label_candidate", lambda frame: False)
+
+
+def _ranked_machine_waiting_for_banner(executor) -> MatchStateMachine:
+    machine = MatchStateMachine(
+        now_fn=FakeClock(),
+        banner_confirm_seconds=2,
+        # GRACE満了では確定させない(暗転・読み取りの取り込みだけを見るため)
+        league_change_grace_seconds=100,
+        rank_ocr_executor=executor,
+        rank_stability_monitor=StabilityMonitor(roi=(0, 0, 5, 5), stable_frames_required=1),
+    )
+    machine._vs_confirmed_this_match = True
+    machine._pending_vs_mine_ranks = [SlotRank("∞", 41)]
+    return machine
+
+
+def test_ranked_match_tracks_gauge_while_rank_before_ocr_is_pending(monkeypatch):
+    """Issue #430: ランクを賭けた試合では、結果バナー確定時の試合前ランク読み取りの
+    完了を待たずにTRACKING_RANKへ進み、待っている間もゲージを追跡することを確認する。
+
+    以前はここで完了を待っており(実測2.4〜4.0秒)、その間にランク変動アニメーションが
+    終わってしまうため、ゲージ追跡・手動入力用クリップのどちらも取りこぼしていた。
+    """
+    gauge_calls = {"n": 0}
+
+    def fake_gauge_fill(frame, roi):
+        gauge_calls["n"] += 1
+        return 0.4
+
+    _patch_for_rank_before_pending_tests(monkeypatch, fake_gauge_fill)
+    executor = _ManualExecutor()
+    machine = _ranked_machine_waiting_for_banner(executor)
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    for _ in range(5):
+        machine.process_frame(frame)
+        if machine.current_state == "tracking_rank":
+            break
+    assert machine.current_state == "tracking_rank", "読み取りの完了を待たずにTRACKING_RANKへ進むはず"
+    assert len(executor.pending) == 1, "試合前ランクの読み取りは投げたまま(未完了)のはず"
+    assert machine._pending_rank_before is None
+
+    for _ in range(5):
+        assert machine.process_frame(frame) is None
+    assert gauge_calls["n"] > 0, "読み取りを待っている間もゲージを追跡するはず"
+    assert machine._pending_rank_before is None, "完了していない間は試合前ランクは空のまま"
+
+    executor.resolve()
+    machine.process_frame(frame)
+    assert machine._pending_rank_before_tier == 41
+    assert machine._pending_rank_before == pytest.approx(41.2)
+    assert machine._grace_candidate_rank_tier == 41, "取り込んだ時点で帯番号の起点も埋まるはず"
+
+
+def test_blackout_while_rank_before_ocr_is_pending_waits_and_finalizes(monkeypatch):
+    """Issue #430: 試合前ランクの読み取りが届く前に暗転が来た場合、その場で完了を
+    待ってから確定することを確認する(待たずに素通りすると帯番号の起点が無いまま
+    GRACE満了まで確定が延びる)。
+    """
+    _patch_for_rank_before_pending_tests(monkeypatch, lambda frame, roi: 0.4)
+    machine = _ranked_machine_waiting_for_banner(_LazyExecutor())
+
+    frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    not_black = BlackoutObservation(blackout=False, min_mean=120.0, min_std=40.0)
+    for _ in range(5):
+        machine.process_frame(frame, not_black)
+        if machine.current_state == "tracking_rank":
+            break
+    assert machine.current_state == "tracking_rank"
+
+    for _ in range(3):
+        assert machine.process_frame(frame, not_black) is None
+    assert machine._rank_before_future is not None, "暗転が来るまでは読み取りの完了を待たないはず"
+
+    result = machine.process_frame(frame, BlackoutObservation(blackout=True, min_mean=0.0, min_std=0.5))
+    assert result is not None, "暗転の時点で読み取りの完了を待って確定するはず"
+    assert result.rank_before == pytest.approx(41.2)
