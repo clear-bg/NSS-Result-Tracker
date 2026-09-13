@@ -269,7 +269,7 @@ h1 {
 
 .rank-entry-clip-row {
     display: grid;
-    grid-template-columns: 16px 84px 32px 1fr auto;
+    grid-template-columns: 16px 104px 32px 1fr auto;
     align-items: center;
     gap: 6px;
     width: 100%;
