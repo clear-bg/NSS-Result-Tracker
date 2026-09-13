@@ -293,9 +293,9 @@ def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path, monkey
     assert response.status_code == 200
     assert response.json() == {
         "matches": [
-            {"rank_after": 1.0, "league_changed": None},
-            {"rank_after": 2.0, "league_changed": "up"},
-            {"rank_after": 3.0, "league_changed": None},
+            {"match_number": 1, "rank_after": 1.0, "league_changed": None},
+            {"match_number": 2, "rank_after": 2.0, "league_changed": "up"},
+            {"match_number": 3, "rank_after": 3.0, "league_changed": None},
         ]
     }
 
@@ -398,11 +398,53 @@ def test_rank_history_respects_limit_env_value(tmp_path: Path, monkeypatch):
     assert [m["rank_after"] for m in matches] == [3.0, 4.0, 5.0]
 
 
-def _continuous_history(values: list[float], league_changed: list = None) -> list[dict]:
+def test_rank_history_counts_only_confirmed_ranked_matches(tmp_path: Path, monkeypatch):
+    """Issue #436: 直近N試合と通算の試合番号は、ランクが確定した試合だけで数える。
+    ランクを賭けない試合・確定待ちの試合は、件数にも番号にも入らない。
+    """
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "2")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+
+    def confirmed(rank_before: float, rank_after: float) -> None:
+        _save_match_result(
+            conn,
+            MatchResult(
+                result="win", rank_before=rank_before, rank_after=rank_after, league_changed=None, detected_at=now_jst()
+            ),
+        )
+
+    def unranked() -> None:
+        _save_match_result(
+            conn,
+            MatchResult(result="win", rank_before=None, rank_after=None, league_changed=None, detected_at=now_jst()),
+        )
+
+    confirmed(40.0, 40.1)
+    unranked()
+    confirmed(40.1, 40.2)
+    unranked()
+    unranked()
+    confirmed(40.2, 40.3)
+    # 確定待ち(rank_afterが未入力)の最新の試合
+    db.save_match_result(
+        conn, MatchResult(result="win", rank_before=40.3, rank_after=None, league_changed=None, detected_at=now_jst())
+    )
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    matches = client.get("/api/rank-history").json()["matches"]
+
+    assert [(m["match_number"], m["rank_after"]) for m in matches] == [(2, 40.2), (3, 40.3)]
+
+
+def _continuous_history(values: list[float], league_changed: list = None, first_match_number: int = 1) -> list[dict]:
     """_render_rank_graph_svgに渡す単純なhistoryのテストデータ。"""
     league_changed_values = league_changed if league_changed is not None else [None] * len(values)
     return [
         {
+            "match_number": first_match_number + i,
             "rank_after": value,
             "league_changed": league_changed_values[i],
         }
@@ -823,15 +865,48 @@ def test_rank_graph_x_tick_step_widens_to_ten_at_threshold():
 
 
 def test_rank_graph_x_tick_values_always_includes_one_and_steps_of_five():
-    assert _rank_graph_x_tick_values(25, 5) == [1, 5, 10, 15, 20, 25]
+    assert _rank_graph_x_tick_values(1, 25, 5) == [1, 5, 10, 15, 20, 25]
 
 
 def test_rank_graph_x_tick_values_small_axis_max():
-    assert _rank_graph_x_tick_values(5, 5) == [1, 5]
+    assert _rank_graph_x_tick_values(1, 5, 5) == [1, 5]
 
 
 def test_rank_graph_x_tick_values_steps_of_ten():
-    assert _rank_graph_x_tick_values(30, 10) == [1, 10, 20, 30]
+    assert _rank_graph_x_tick_values(1, 30, 10) == [1, 10, 20, 30]
+
+
+def test_rank_graph_x_tick_values_starts_from_first_shown_match():
+    """Issue #436: 通算114試合目・直近100試合なら、15〜120の範囲で目盛りを置く。"""
+    assert _rank_graph_x_tick_values(15, 120, 10) == [15, *range(20, 121, 10)]
+
+
+def test_rank_graph_x_tick_values_skips_multiple_too_close_to_first_shown_match():
+    """Issue #436: 左端が倍数のすぐ手前(17)のとき、次の倍数(20)はラベルが重なるため省く。"""
+    assert _rank_graph_x_tick_values(17, 120, 10) == [17, *range(30, 121, 10)]
+
+
+def test_rank_graph_x_tick_values_first_shown_match_on_a_multiple():
+    assert _rank_graph_x_tick_values(20, 120, 10) == [20, *range(30, 121, 10)]
+
+
+def test_render_rank_graph_svg_uses_cumulative_match_numbers_on_x_axis():
+    """Issue #436: 通算15〜114試合目の100点を描くと、横軸は15〜120になり、
+    一番左の点は枠の左端寄り(余白分)、一番右の点は120より手前に来る。
+    """
+    history = _continuous_history([40 + (i % 3) for i in range(100)], first_match_number=15)
+
+    svg = _render_rank_graph_svg(history)
+
+    labels = re.findall(r'class="rank-graph-tick-label">(\d+)<', svg)
+    assert ">15<" in svg and ">120<" in svg
+    assert "1" not in labels and "10" not in labels
+    assert svg.count('class="rank-graph-point"') == 100
+    points_left = _RANK_GRAPH_MARGIN_LEFT + _RANK_GRAPH_LEFT_PADDING
+    plot_right = _RANK_GRAPH_VIEWBOX_WIDTH - _RANK_GRAPH_MARGIN_RIGHT
+    expected_last_x = points_left + (plot_right - points_left) * (114 - 15) / (120 - 15)
+    assert f'cx="{points_left:.1f}"' in svg
+    assert f'cx="{expected_last_x:.1f}"' in svg
 
 
 def test_render_rank_graph_svg_flat_values_widens_y_axis_around_the_value():
@@ -850,12 +925,7 @@ def test_render_rank_graph_svg_always_draws_single_solid_line():
     相談で廃止した(2026-08-04)。試合間の値の差が大きくても、常に1本の
     実線(rank-graph-line)のみで描画する。
     """
-    history = [
-        {"rank_after": 38.1, "league_changed": None},
-        {"rank_after": 39.0, "league_changed": None},
-        {"rank_after": 37.6, "league_changed": None},
-        {"rank_after": 37.9, "league_changed": None},
-    ]
+    history = _continuous_history([38.1, 39.0, 37.6, 37.9])
 
     svg = _render_rank_graph_svg(history)
 

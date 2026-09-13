@@ -191,6 +191,7 @@ from nss_tracker.database.db import (
     delete_rank_warning_ack,
     fetch_all_matches,
     fetch_all_sessions,
+    fetch_confirmed_rank_matches,
     fetch_current_session_id,
     fetch_goals_for_session,
     fetch_latest_rank_after,
@@ -337,27 +338,33 @@ def _diverging_bar_fill_percents(counts: dict) -> dict:
 # Issue #95: ランク推移グラフの対象範囲は「直近N試合」(配信セッションをまたぐ)。
 # #94(勝率)・#96/#98(ゴール/アシスト・連勝連敗)は配信セッション単位に絞ったが、
 # ランクは長期的な推移を見たい用途のため別の集計単位にした(ユーザーとの相談で決定)。
-# 具体的な件数は.envのRANK_GRAPH_MATCH_LIMITで指定する(未設定/空欄なら全期間)
+# 具体的な件数は.envのRANK_GRAPH_MATCH_LIMITで指定する(allなら全期間)。
+# Issue #436で、件数はランクが確定した試合だけで数えるようにした(_fetch_rank_history参照)
 
 
 def _fetch_rank_history(db_path: Path) -> list[dict]:
     """ランク推移グラフ描画に必要な値だけを古い順で返す。
 
     対象範囲はconfig.get_rank_graph_match_limit()に従う(Noneなら全期間、
-    数値ならその件数分の直近の試合のみ)。rank_afterがNULL(ランク読み取り失敗)の
-    試合はグラフに描画しようがないため除外する。
+    数値ならその件数分の直近の試合のみ)。
+
+    Issue #436: 「直近N試合」はランクが確定した試合(rank_afterが非NULLの野良の試合)
+    だけで数える。以前は専用部屋・ランクを賭けない試合も含めた直近N試合を取ってから
+    rank_afterがNULLの試合を除いていたため、実際に描く点がNより少なくなっていた。
+    各点のmatch_numberは、ランク確定済みの試合を最初の試合から通算で数えた番号
+    (1始まり)で、横軸の目盛りにそのまま使う(Nを超えても左端が「1」に戻らない)。
     """
     limit = get_rank_graph_match_limit()
     conn = _connect(db_path)
     try:
-        rows = fetch_all_matches(conn) if limit is None else fetch_recent_matches(conn, limit)
+        rows = fetch_confirmed_rank_matches(conn)
     finally:
         conn.close()
-    return [
-        {"rank_after": row["rank_after"], "league_changed": row["league_changed"]}
-        for row in rows
-        if row["rank_after"] is not None
+    history = [
+        {"match_number": number, "rank_after": row["rank_after"], "league_changed": row["league_changed"]}
+        for number, row in enumerate(rows, start=1)
     ]
+    return history if limit is None else history[-limit:]
 
 
 def _fetch_rank_graph_summary(db_path: Path) -> Optional[dict]:
@@ -511,11 +518,12 @@ def _rank_graph_x_tick_step(point_count: int) -> int:
     return _RANK_GRAPH_X_TICK_STEP
 
 
-def _rank_graph_x_axis_max(point_count: int, tick_step: int) -> int:
+def _rank_graph_x_axis_max(last_match_number: int, tick_step: int) -> int:
     """横軸(試合番号)の右端の値を返す(ユーザーとの相談で決定、縦軸のbounds拡張と同じ考え方)。
 
-    実際の試合数(point_count)を上回る、tick_stepの倍数に切り上げる
-    (例: tick_step=5で23試合なら25)。
+    最新の試合番号(last_match_number)を上回る、tick_stepの倍数に切り上げる
+    (例: tick_step=5で23試合なら25)。Issue #436で試合番号が通算になったため、
+    表示している点の数ではなく最新の試合番号を渡す(例: 通算114試合目なら120)。
 
     Issue #331: 以前はちょうど倍数の試合数(例: tick_step=5で20試合)でも
     一番右の点が軸の端に接してしまうことを避けるため、その場合さらに1段
@@ -524,18 +532,24 @@ def _rank_graph_x_axis_max(point_count: int, tick_step: int) -> int:
     枠の右端に接することを許容する。倍数でない試合数(例: 22試合)は、
     ceil()により従来通り次の倍数まで拡張されるため挙動は変わらない。
     """
-    return math.ceil(point_count / tick_step) * tick_step
+    return math.ceil(last_match_number / tick_step) * tick_step
 
 
-def _rank_graph_x_tick_values(axis_max: int, tick_step: int) -> list[int]:
-    """横軸(試合番号)の目盛りとして表示する試合番号(1始まり)を返す。
+def _rank_graph_x_tick_values(axis_min: int, axis_max: int, tick_step: int) -> list[int]:
+    """横軸(試合番号)の目盛りとして表示する試合番号を返す。
 
-    最初の試合(1)を必ず含み(ユーザーとの相談で決定)、そこにtick_step刻みの値を
-    axis_max(_rank_graph_x_axis_max参照)まで加える。
+    表示している最初の試合(axis_min)を必ず含み(ユーザーとの相談で決定。Issue #436
+    以前は常に1だった)、そこにtick_step刻みの値をaxis_max(_rank_graph_x_axis_max
+    参照)まで加える。
+
+    Issue #436: axis_minは通算の試合番号のため、tick_stepの倍数のすぐ手前になることが
+    ある(例: 17)。そのまま次の倍数(20)も並べるとラベル同士が重なるため、axis_minから
+    半目盛り未満しか離れていない倍数は省く(例: 17, 30, 40, ...)。
     """
-    values = {1}
-    values.update(range(tick_step, axis_max + 1, tick_step))
-    return sorted(values)
+    first_multiple = (axis_min // tick_step + 1) * tick_step
+    if first_multiple - axis_min < tick_step / 2:
+        first_multiple += tick_step
+    return [axis_min, *range(first_multiple, axis_max + 1, tick_step)]
 
 
 def _rank_graph_summary_svg(summary: dict, width: int) -> str:
@@ -655,12 +669,16 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None, 
     # (枠・グリッド線自体はplot_leftのまま、軸自体の見た目は変えない)
     points_left = plot_left + _RANK_GRAPH_LEFT_PADDING
 
+    # Issue #436: 横軸は通算の試合番号。左端は表示している最初の試合、右端は最新の
+    # 試合番号を目盛り間隔の倍数に切り上げた値(例: 15〜114試合目を表示中なら15〜120)
     x_tick_step = _rank_graph_x_tick_step(len(history))
-    x_axis_max = _rank_graph_x_axis_max(len(history), x_tick_step)
-    x_axis_max_index = x_axis_max - 1  # 試合番号(1始まり)を0始まりのインデックスに変換
+    x_axis_min = history[0]["match_number"]
+    x_axis_max = _rank_graph_x_axis_max(history[-1]["match_number"], x_tick_step)
+    # 点が1つだけで、その試合番号がちょうど目盛り間隔の倍数のときは幅が0になるため
+    x_axis_span = max(x_axis_max - x_axis_min, 1)
 
-    def x_at(index: int) -> float:
-        return points_left + (plot_right - points_left) * index / x_axis_max_index
+    def x_at(match_number: int) -> float:
+        return points_left + (plot_right - points_left) * (match_number - x_axis_min) / x_axis_span
 
     def y_at(value: float) -> float:
         return plot_top + plot_height * (1 - (value - axis_min) / axis_range)
@@ -727,8 +745,8 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None, 
     # 試合番号のラベル。1試合目を必ず含み、実際の試合数を上回る位置(x_axis_max)まで
     # x_tick_step(通常5、試合数が多い場合は10、Issue #330)刻みで表示する
     x_axis_svg = []
-    for match_number in _rank_graph_x_tick_values(x_axis_max, x_tick_step):
-        x = x_at(match_number - 1)
+    for match_number in _rank_graph_x_tick_values(x_axis_min, x_axis_max, x_tick_step):
+        x = x_at(match_number)
         x_axis_svg.append(
             f'<line x1="{x:.1f}" y1="{plot_top}" x2="{x:.1f}" y2="{plot_bottom}" class="rank-graph-gridline" />'
         )
@@ -740,7 +758,7 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None, 
             f"{match_number}</text>"
         )
 
-    coords = [(x_at(i), y_at(point["rank_after"])) for i, point in enumerate(history)]
+    coords = [(x_at(point["match_number"]), y_at(point["rank_after"])) for point in history]
 
     polyline_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
     # Issue #313: エリアチャート化。折れ線と同じ座標列を使い、右端・左端からプロット
