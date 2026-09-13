@@ -850,14 +850,14 @@ def fetch_recent_matches(
 ) -> list[sqlite3.Row]:
     """直近limit件の試合を、古い順(id昇順)で返す。
 
-    配信セッションをまたいで「直近N試合」を時系列グラフ・一覧表示したい
-    ウィジェット向け(Issue #95のランク推移グラフ等)。該当件数がlimit未満の
-    場合はある分だけ返す。
+    配信セッションをまたいで「直近N試合」を一覧表示したいウィジェット向け
+    (直近試合結果ログ等)。該当件数がlimit未満の場合はある分だけ返す。
+    ランク推移グラフは Issue #436 以降 fetch_confirmed_rank_matches を使う。
 
     Issue #422: room_type / session_idを指定するとその条件で絞り込む。直近試合結果
     ログ(/overlay/match-log)が、配信をまたいで野良と専用部屋の結果を混ぜて表示して
     しまうのを防ぐために使う(絞り込み方の詳細はweb/server.pyの_fetch_match_log参照)。
-    いずれも省略時は絞り込まない(ランク推移グラフ側の従来どおりの呼び出し)。
+    いずれも省略時は絞り込まない。
     """
     query = "SELECT * FROM matches"
     conditions = []
@@ -874,6 +874,19 @@ def fetch_recent_matches(
     params.append(limit)
     rows = conn.execute(query, tuple(params)).fetchall()
     return list(reversed(rows))
+
+
+def fetch_confirmed_rank_matches(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """rank_afterが確定済みの野良の試合を記録順(id昇順)ですべて返す(Issue #436)。
+
+    ランク推移グラフ用。専用部屋・ランクを賭けない試合・確定待ちの試合は含めない。
+    ランクを賭けた試合は必ず'random'で保存される(save_match_result参照)ため、
+    room_typeの条件は実質的には重複だが、専用部屋を数に含めないという意図を
+    明示するために残している。
+    """
+    return conn.execute(
+        "SELECT * FROM matches WHERE rank_after IS NOT NULL AND room_type = 'random' ORDER BY id"
+    ).fetchall()
 
 
 def fetch_latest_rank_after(conn: sqlite3.Connection) -> Optional[float]:
