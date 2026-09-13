@@ -3505,6 +3505,37 @@ def test_health_check_shows_empty_message_without_matches(tmp_path: Path, monkey
     assert "記録された試合がありません。" in response.text
 
 
+def _match_recorded_at_seconds() -> MatchResult:
+    """Issue #432: 記録時刻の秒まで表示を検証するため、秒が0でないdetected_atを持つ試合。"""
+    return MatchResult(
+        result="win",
+        rank_before=42.20,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime(2026, 9, 11, 16, 10, 13, tzinfo=timezone.utc),
+    )
+
+
+def test_rank_entry_shows_recorded_at_with_seconds(tmp_path: Path, monkeypatch):
+    client, _ = _setup_warning_client(tmp_path, monkeypatch, _match_recorded_at_seconds(), None)
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+
+    assert clips[0]["detected_at_text"] == "09/11 16:10:13"
+
+
+def test_health_check_shows_recorded_at_with_seconds(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _match_recorded_at_seconds())
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert matches[match_id]["detected_at_text"] == "09/11 16:10:13"
+    assert "記録時刻" in client.get("/health-check").text
+
+
 def test_admin_links_to_health_check(tmp_path: Path):
     client = TestClient(create_app(tmp_path / "test.db"))
 
