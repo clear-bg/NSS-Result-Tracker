@@ -1451,6 +1451,17 @@ def _build_rank_warnings(
     ]
 
 
+def _format_recorded_at(detected_at: str) -> str:
+    """試合の記録時刻(matches.detected_at)を秒まで表示用に整形する(Issue #432)。
+
+    OBSのローカル録画(左上に時計を焼き込み)と突き合わせて試合を探すために秒まで出す。
+    detected_atは結果をDBに保存した時刻(_finalize()の時点)で、画面に「試合終了」が
+    出た時刻より約8〜17秒遅い(ランク確定を暗転まで待つため試合ごとにばらつく)。
+    そのため表示ラベルは「試合終了」ではなく「記録時刻」にしている。
+    """
+    return datetime.fromisoformat(detected_at).strftime("%m/%d %H:%M:%S")
+
+
 def _build_rank_entry_clip_info(
     row: sqlite3.Row,
     index: int,
@@ -1459,11 +1470,10 @@ def _build_rank_entry_clip_info(
     has_number_clip: bool = False,
     warnings: Optional[list[dict]] = None,
 ) -> dict:
-    detected_at = datetime.fromisoformat(row["detected_at"])
     return {
         "match_id": row["id"],
         "recency_label": _rank_entry_recency_label(index),
-        "detected_at_text": detected_at.strftime("%m/%d %H:%M"),
+        "detected_at_text": _format_recorded_at(row["detected_at"]),
         "result_text": _MATCH_RESULT_LABELS.get(row["result"], row["result"]),
         "rank_before": row["rank_before"],
         "rank_after_ocr": row["rank_after_ocr"],
@@ -1565,14 +1575,13 @@ def _build_health_check_context(db_path: Path) -> dict:
             warnings = _build_rank_warnings(conn, row, include_next_badge=True)
             if any(not warning["acknowledged"] for warning in warnings):
                 warned_count += 1
-            detected_at = datetime.fromisoformat(row["detected_at"])
             rank_before = row["rank_before"]
             rank_after = row["rank_after"]
             matches.append(
                 {
                     "match_id": row["id"],
                     "session_label": session_labels.get(row["session_id"], "配信セッション不明"),
-                    "detected_at_text": detected_at.strftime("%m/%d %H:%M"),
+                    "detected_at_text": _format_recorded_at(row["detected_at"]),
                     "result_text": _MATCH_RESULT_LABELS.get(row["result"], row["result"]),
                     "rank_before": rank_before,
                     "rank_after": rank_after,

@@ -260,7 +260,7 @@
 
     const info = document.createElement("div");
     info.className = "rank-entry-match-info";
-    addRow(info, "試合終了", clip.detected_at_text);
+    addRow(info, "記録時刻", clip.detected_at_text);
     addRow(info, "結果", clip.result_text);
     addRow(info, "試合前ランク", formatRank(clip.rank_before));
     if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
@@ -381,7 +381,7 @@
   }
 
   // Issue #409: 保持件数を50件に増やしたため、横一列のボタン(「49つ前」等)では
-  // 目的の試合を探せない。試合終了時刻・勝敗・確定状態・警告の有無を並べた
+  // 目的の試合を探せない。記録時刻・勝敗・確定状態・警告の有無を並べた
   // 縦のスクロールリストにする(ユーザーとの相談で決定)。
   function appendCell(row, className, text) {
     const cell = document.createElement("span");
