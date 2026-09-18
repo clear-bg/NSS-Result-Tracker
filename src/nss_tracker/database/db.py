@@ -195,7 +195,8 @@ CREATE TABLE IF NOT EXISTS vs_slot_ranks (
 CREATE TABLE IF NOT EXISTS match_rank_warning_acks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id INTEGER NOT NULL REFERENCES matches(id),
-    rule_code TEXT NOT NULL,        -- rank_warnings.RULE_CODESのいずれか('A'/'C'/'D'/'E'/'I'/'J')
+    rule_code TEXT NOT NULL,        -- rank_warnings.RULE_CODESのいずれか('A'/'C'/'D'/'E'/'H'/'I'/'J')、
+                                     -- またはmatch_warnings.RULE_CODES('K'、Issue #441)
     acknowledged_at TEXT NOT NULL,  -- 確認済みにした時刻(ISO8601, JST)
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,

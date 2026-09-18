@@ -174,7 +174,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from nss_tracker import detection_pause, match_transition, rank_warnings, startup_gate, youtube_chat
+from nss_tracker import detection_pause, match_transition, match_warnings, rank_warnings, startup_gate, youtube_chat
 from nss_tracker.config import (
     ConfigError,
     get_allowed_players,
@@ -1469,6 +1469,26 @@ def _build_rank_warnings(
     ]
 
 
+def _build_match_warnings(conn: sqlite3.Connection, row: sqlite3.Row) -> list[dict]:
+    """1試合分の、ランク以外の異常値警告をテンプレートが扱える形(dictのリスト)で返す(Issue #441)。
+
+    判定自体は`match_warnings.evaluate()`(DBに依存しない純粋関数)が行う。
+    `rank_before`/`rank_after`がNoneの試合(ランクを賭けない試合)でも判定できる
+    必要があるため(Issue #433自体がそうだった)、`_build_rank_warnings()`とは
+    独立に呼ぶ。確認済み(ack)は同じ`match_rank_warning_acks`テーブルを共有する。
+    """
+    match_id = row["id"]
+    slot_rows = fetch_vs_slot_ranks(conn, match_id)
+    mine = _summarize_vs_slot_ranks([r for r in slot_rows if r["side"] == "mine"])
+    opponent = _summarize_vs_slot_ranks([r for r in slot_rows if r["side"] == "opponent"])
+    warnings = match_warnings.evaluate(
+        mine_known_count=mine["known_count"],
+        opponent_known_count=opponent["known_count"],
+        acknowledged_rule_codes=fetch_rank_warning_acks(conn, match_id),
+    )
+    return [{"rule_code": w.rule_code, "message": w.message, "acknowledged": w.acknowledged} for w in warnings]
+
+
 def _format_recorded_at(detected_at: str) -> str:
     """試合の記録時刻(matches.detected_at)を秒まで表示用に整形する(Issue #432)。
 
@@ -1576,6 +1596,13 @@ def _build_health_check_context(db_path: Path) -> dict:
     `include_next_badge=True`でルールH(次の試合のバッジ読み取り値との乖離)も有効に
     する(次の試合が記録されて初めて判定できるため、入力直後ではなくこちらに置く)。
 
+    Issue #441: あわせて`_build_match_warnings()`(ランク以外の異常値、ルールK)も
+    呼ぶ。Issue #433(テニスの誤検知)への対応で、`rank_before`/`rank_after`が
+    Noneの試合(ランクを賭けない試合)でも判定できる必要があるため
+    `_build_rank_warnings()`とは独立させている。`/rank-entry`側には追加していない
+    (クリップが残っている試合のみが対象のため、DB全体を見る本ページに統合する
+    方針、ユーザーとの相談で決定)。
+
     各試合に`has_clip`(クリップが残っているか)を持たせ、テンプレート側で
     「クリップを見る」リンクを出すか、直接の修正フォームを出すかを分ける。
     """
@@ -1590,7 +1617,11 @@ def _build_health_check_context(db_path: Path) -> dict:
         matches = []
         warned_count = 0
         for row in fetch_all_matches(conn):
-            warnings = _build_rank_warnings(conn, row, include_next_badge=True)
+            # Issue #441: ランクの矛盾(rank_warnings)とは別に、VS画面のランク未読数から
+            # サッカー以外の試合を誤って記録した可能性を検出する(match_warnings)。
+            # rank_before/rank_afterがNoneの試合(ランクを賭けない試合)でも判定する
+            # 必要があるため、_build_rank_warningsの早期returnとは独立して呼ぶ
+            warnings = _build_rank_warnings(conn, row, include_next_badge=True) + _build_match_warnings(conn, row)
             if any(not warning["acknowledged"] for warning in warnings):
                 warned_count += 1
             rank_before = row["rank_before"]
@@ -1852,9 +1883,10 @@ def create_app(db_path: Path) -> FastAPI:
         """一覧から警告を「確認済み」にする/取り消す(Issue #408)。
 
         `/rank-entry`側(#407)と同じ`match_rank_warning_acks`テーブルを共有するため、
-        どちらで確認済みにしても両方の画面に反映される。
+        どちらで確認済みにしても両方の画面に反映される。Issue #441:
+        `match_warnings.RULE_CODES`(ルールK)もこのページ限定で確認済みにできる。
         """
-        if rule_code not in rank_warnings.RULE_CODES:
+        if rule_code not in rank_warnings.RULE_CODES and rule_code not in match_warnings.RULE_CODES:
             _logger.warning("不明なルールコードのため警告の更新を拒否しました: %s", rule_code)
             return RedirectResponse(f"/health-check?error={quote('不明なルールコードです')}", status_code=303)
         conn = _connect(db_path)
