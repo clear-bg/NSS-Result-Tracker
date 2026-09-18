@@ -309,6 +309,10 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
   - JS側は`nss-animate-count`という汎用クラスを付け外しするだけで、発光などの見た目自体は各ウィジェット固有のCSS(`vs_rank_comparison.css`の`.vs-rank-pill.nss-animate-count`)に委ねている
   - セッション開始直後、[#359](https://github.com/clear-bg/NSS-Result-Tracker/issues/359)により初期表示が「-」になってから最初のVS画面を検知して実際の数値が入る瞬間(「-」→数値)は、このアニメーションを再生しない。`parseInt("-", 10)`が`NaN`になることを利用しており、初回だけを除外する特別な分岐は書いていない(新旧いずれかが数値としてパースできない場合は無演出のまま最終値を表示する)
   - `prefers-reduced-motion: reduce`の場合はアニメーションを再生せず即座に最終値を表示する
+- 試合間シーンへの切替と同時に表示をリセットする(Issue #438): 上記の仕組みだけでは、1試合が終わってから次のVS画面が確定するまでの間(結果バナー→ランク変動→暗転→試合間シーン→マッチング画面)、ウィジェットには**直前に終わった試合の合計ランク**が表示され続けてしまう。暗転検知によって試合中シーン→試合間シーンへOBSの画面が切り替わるのと同時に、表示を初期状態(自チーム・相手チームとも「-」)へリセットするようにした
+  - トリガーは`main.py`の`machine.in_match`がTrue→Falseになった瞬間(`obs_controller.set_in_match()`・`match_transition.notify_between_matches()`と全く同じ検知箇所)。`OBS_SCENE_SWITCHING_ENABLED`の値には関わらず常に発火する(OBS側のシーン切替そのものではなく、試合状態の遷移自体に紐付けるという、Issue #361の登場アニメーションと同じ整理。ユーザーとの相談で決定)
+  - リセットの実装は、VS画面を見逃した試合の`_record_match_result`が行っているのと全く同じ`db.save_vs_rank_snapshot(conn, session_id, [], [], None, None, now_jst())`(空スナップショット書き込み)を再利用する。インメモリのエポック信号(`match_transition.py`)を新設する案もあったが、その場合「直近のVS画面確定書き込み」と「直近のリセット書き込み」のどちらが後に起きたかをweb/server.py側でスレッドをまたいで突き合わせる必要が生じる。空スナップショット方式なら`fetch_latest_vs_rank_snapshot()`がid順(=時系列順)に最新1件を返す既存の仕組みにそのまま乗るため、追加の同期ロジックが不要になる(ユーザーとの相談で決定)
+  - リセット後、次のVS画面確定で実際の値が入る「-」→数値の変化には、上記Issue #360のカウントアップアニメーションを**再生する**(セッション開始直後の初回表示「-」→数値は従来通り無演出のまま、という決定は変更していない)。この2つを区別するため、`overlay_vs_rank_comparison.html`のピル要素に`data-epoch`属性(`match_transition.get_between_matches_epoch()`の現在値、ランク推移グラフのsignalモードと同じエポックを流用)を追加した。`overlay-refresh.js`の`count`モードは、`fromValue`が`NaN`(=「-」だった)でも`data-epoch`が0より大きければ「セッション開始直後ではなく、少なくとも1試合終了済み=試合間リセットによる「-」だった」と判定し、0起点でカウントアップする(`data-epoch`が無い要素は従来通りNaNガードのみで判定する)
 
 ### 直近試合結果ログウィジェットの見た目(Issue #262)
 
