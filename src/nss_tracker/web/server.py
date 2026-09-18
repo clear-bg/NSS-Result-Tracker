@@ -174,7 +174,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from nss_tracker import match_transition, rank_warnings, startup_gate, youtube_chat
+from nss_tracker import detection_pause, match_transition, match_warnings, rank_warnings, startup_gate, youtube_chat
 from nss_tracker.config import (
     ConfigError,
     get_allowed_players,
@@ -188,6 +188,7 @@ from nss_tracker.config import (
 )
 from nss_tracker.database.db import (
     connect as _connect_and_migrate,
+    delete_match,
     delete_rank_warning_ack,
     fetch_all_matches,
     fetch_all_sessions,
@@ -208,6 +209,7 @@ from nss_tracker.database.db import (
     fetch_vs_slot_ranks,
     save_manual_rank_after,
     save_rank_warning_ack,
+    update_match_fields,
 )
 from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR, RANK_NUMBER_CLIPS_DIR
 
@@ -1469,6 +1471,26 @@ def _build_rank_warnings(
     ]
 
 
+def _build_match_warnings(conn: sqlite3.Connection, row: sqlite3.Row) -> list[dict]:
+    """1試合分の、ランク以外の異常値警告をテンプレートが扱える形(dictのリスト)で返す(Issue #441)。
+
+    判定自体は`match_warnings.evaluate()`(DBに依存しない純粋関数)が行う。
+    `rank_before`/`rank_after`がNoneの試合(ランクを賭けない試合)でも判定できる
+    必要があるため(Issue #433自体がそうだった)、`_build_rank_warnings()`とは
+    独立に呼ぶ。確認済み(ack)は同じ`match_rank_warning_acks`テーブルを共有する。
+    """
+    match_id = row["id"]
+    slot_rows = fetch_vs_slot_ranks(conn, match_id)
+    mine = _summarize_vs_slot_ranks([r for r in slot_rows if r["side"] == "mine"])
+    opponent = _summarize_vs_slot_ranks([r for r in slot_rows if r["side"] == "opponent"])
+    warnings = match_warnings.evaluate(
+        mine_known_count=mine["known_count"],
+        opponent_known_count=opponent["known_count"],
+        acknowledged_rule_codes=fetch_rank_warning_acks(conn, match_id),
+    )
+    return [{"rule_code": w.rule_code, "message": w.message, "acknowledged": w.acknowledged} for w in warnings]
+
+
 def _format_recorded_at(detected_at: str) -> str:
     """試合の記録時刻(matches.detected_at)を秒まで表示用に整形する(Issue #432)。
 
@@ -1576,6 +1598,13 @@ def _build_health_check_context(db_path: Path) -> dict:
     `include_next_badge=True`でルールH(次の試合のバッジ読み取り値との乖離)も有効に
     する(次の試合が記録されて初めて判定できるため、入力直後ではなくこちらに置く)。
 
+    Issue #441: あわせて`_build_match_warnings()`(ランク以外の異常値、ルールK)も
+    呼ぶ。Issue #433(テニスの誤検知)への対応で、`rank_before`/`rank_after`が
+    Noneの試合(ランクを賭けない試合)でも判定できる必要があるため
+    `_build_rank_warnings()`とは独立させている。`/rank-entry`側には追加していない
+    (クリップが残っている試合のみが対象のため、DB全体を見る本ページに統合する
+    方針、ユーザーとの相談で決定)。
+
     各試合に`has_clip`(クリップが残っているか)を持たせ、テンプレート側で
     「クリップを見る」リンクを出すか、直接の修正フォームを出すかを分ける。
     """
@@ -1590,7 +1619,11 @@ def _build_health_check_context(db_path: Path) -> dict:
         matches = []
         warned_count = 0
         for row in fetch_all_matches(conn):
-            warnings = _build_rank_warnings(conn, row, include_next_badge=True)
+            # Issue #441: ランクの矛盾(rank_warnings)とは別に、VS画面のランク未読数から
+            # サッカー以外の試合を誤って記録した可能性を検出する(match_warnings)。
+            # rank_before/rank_afterがNoneの試合(ランクを賭けない試合)でも判定する
+            # 必要があるため、_build_rank_warningsの早期returnとは独立して呼ぶ
+            warnings = _build_rank_warnings(conn, row, include_next_badge=True) + _build_match_warnings(conn, row)
             if any(not warning["acknowledged"] for warning in warnings):
                 warned_count += 1
             rank_before = row["rank_before"]
@@ -1601,6 +1634,10 @@ def _build_health_check_context(db_path: Path) -> dict:
                     "session_label": session_labels.get(row["session_id"], "配信セッション不明"),
                     "detected_at_text": _format_recorded_at(row["detected_at"]),
                     "result_text": _MATCH_RESULT_LABELS.get(row["result"], row["result"]),
+                    # Issue #442: result/room_typeの直接編集フォーム用の生値
+                    # (rank_before/afterと異なり、ランクを賭けていない試合も含め常に編集可能)
+                    "result": row["result"],
+                    "room_type": row["room_type"],
                     "rank_before": rank_before,
                     "rank_after": rank_after,
                     "delta": (
@@ -1671,6 +1708,9 @@ def create_app(db_path: Path) -> FastAPI:
         context = {
             "settings": get_editable_settings(),
             "room_type": get_room_type(),
+            # Issue #440: startup_gateの対象外の常時操作可能なトグルのため、
+            # 起動確認済みかどうかに関わらずそのまま現在値を出す
+            "detection_paused": detection_pause.is_paused(),
             "obs_scene_switching_confirmed": startup_gate.is_obs_scene_switching_confirmed(),
             "startup_confirmed": startup_gate.is_confirmed(),
             "status": status,
@@ -1686,6 +1726,7 @@ def create_app(db_path: Path) -> FastAPI:
     @app.post("/admin")
     def admin_update(
         room_type: str = Form(""),
+        detection_paused: str = Form("false"),
         allowed_players: str = Form(""),
         goal_record_mode: str = Form(...),
         rank_graph_match_limit: str = Form(...),
@@ -1699,7 +1740,20 @@ def create_app(db_path: Path) -> FastAPI:
         片方だけ選んで送信した場合に、選んだ方をやり直さずに済むようにするため。
         両方選択済みなら、設定を反映したうえで起動確認(startup_gate.confirm_start())まで
         行い、main.py側のwait_for_confirmation()のブロックを解除する。
+
+        Issue #440: detection_pausedは起動確認ゲートの対象外(常に選択済みの値を持ち、
+        エラー・保留の対象にならない)ため、他のフィールドと独立してこの時点で即反映する。
         """
+        new_detection_paused = detection_paused == "true"
+        old_detection_paused = detection_pause.is_paused()
+        if new_detection_paused != old_detection_paused:
+            detection_pause.set_paused(new_detection_paused)
+            _logger.info(
+                "設定画面(/admin)から検知一時停止を切り替えました: %s -> %s",
+                old_detection_paused,
+                new_detection_paused,
+            )
+
         field_errors: dict[str, str] = {}
         if not room_type:
             field_errors["error_room_type"] = "野良/専用部屋を選択してください。"
@@ -1724,7 +1778,12 @@ def create_app(db_path: Path) -> FastAPI:
         if obs_scene_switching_enabled:
             # Issue #379: 空欄のプレースホルダーから明示的に選び直された場合のみ確認済みとみなす
             startup_gate.mark_obs_scene_switching_confirmed()
-        _logger.info("設定画面(/admin)から設定を更新しました: %s -> %s", old_values, new_values)
+        if new_values != old_values:
+            # Issue #440: detection_pausedがこのフォームに加わったことで、他の値を
+            # 変えないまま送信する(一時停止だけ切り替える)頻度が上がった。値が
+            # 実際に変わった場合だけログを出すようにし、無関係な再送信のたびに
+            # 5項目分の値がそのまま出力されるノイズを避ける
+            _logger.info("設定画面(/admin)から設定を更新しました: %s -> %s", old_values, new_values)
 
         if room_type:
             old_room_type = get_room_type()
@@ -1733,7 +1792,8 @@ def create_app(db_path: Path) -> FastAPI:
             except ConfigError as exc:
                 _logger.warning("設定画面(/admin)からの野良/専用部屋切り替えが拒否されました: %s", exc)
                 return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
-            _logger.info("設定画面(/admin)から野良/専用部屋設定を更新しました: %s -> %s", old_room_type, room_type)
+            if room_type != old_room_type:
+                _logger.info("設定画面(/admin)から野良/専用部屋設定を更新しました: %s -> %s", old_room_type, room_type)
 
         if field_errors:
             _logger.warning("設定画面(/admin)の未選択項目のため起動確認を保留しました: %s", sorted(field_errors))
@@ -1835,9 +1895,10 @@ def create_app(db_path: Path) -> FastAPI:
         """一覧から警告を「確認済み」にする/取り消す(Issue #408)。
 
         `/rank-entry`側(#407)と同じ`match_rank_warning_acks`テーブルを共有するため、
-        どちらで確認済みにしても両方の画面に反映される。
+        どちらで確認済みにしても両方の画面に反映される。Issue #441:
+        `match_warnings.RULE_CODES`(ルールK)もこのページ限定で確認済みにできる。
         """
-        if rule_code not in rank_warnings.RULE_CODES:
+        if rule_code not in rank_warnings.RULE_CODES and rule_code not in match_warnings.RULE_CODES:
             _logger.warning("不明なルールコードのため警告の更新を拒否しました: %s", rule_code)
             return RedirectResponse(f"/health-check?error={quote('不明なルールコードです')}", status_code=303)
         conn = _connect(db_path)
@@ -1851,6 +1912,51 @@ def create_app(db_path: Path) -> FastAPI:
         finally:
             conn.close()
         return RedirectResponse("/health-check", status_code=303)
+
+    @app.post("/health-check/match")
+    def health_check_update_match(match_id: int = Form(...), result: str = Form(...), room_type: str = Form(...)):
+        """一覧から直接result/room_typeを修正する(Issue #442)。
+
+        Issue #433(テニスのVS画面をサッカーの試合開始と誤検知)のようなレコードを
+        その場で直せるようにする。rank_before/rank_afterは対象外(既存の入力
+        フォームと機能が重複するため)。
+        """
+        conn = _connect(db_path)
+        try:
+            update_match_fields(conn, match_id, result=result, room_type=room_type)
+        except ValueError as exc:
+            _logger.warning("健全性チェック(/health-check)からの試合修正が拒否されました: %s", exc)
+            return RedirectResponse(f"/health-check?error={quote(str(exc))}", status_code=303)
+        finally:
+            conn.close()
+        _logger.info(
+            "健全性チェック(/health-check)から試合を修正しました: match_id=%d result=%s room_type=%s",
+            match_id,
+            result,
+            room_type,
+        )
+        return RedirectResponse("/health-check?status=match-updated", status_code=303)
+
+    @app.post("/health-check/match/delete")
+    def health_check_delete_match(match_id: int = Form(...)):
+        """一覧から試合レコードを関連テーブル・クリップごと削除する(Issue #442)。
+
+        DB側の削除(goals/vs_slot_ranks/match_rank_warning_acksの連動削除)は
+        `db.delete_match()`が担う。クリップファイルの削除はDBに依存しない
+        web/server.py側の責務として、ここでまとめて行う。
+        """
+        conn = _connect(db_path)
+        try:
+            delete_match(conn, match_id)
+        except ValueError as exc:
+            _logger.warning("健全性チェック(/health-check)からの試合削除が拒否されました: %s", exc)
+            return RedirectResponse(f"/health-check?error={quote(str(exc))}", status_code=303)
+        finally:
+            conn.close()
+        for clips_dir in (DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR, RANK_NUMBER_CLIPS_DIR):
+            (clips_dir / f"{match_id}.mp4").unlink(missing_ok=True)
+        _logger.info("健全性チェック(/health-check)から試合を削除しました: match_id=%d", match_id)
+        return RedirectResponse("/health-check?status=match-deleted", status_code=303)
 
     @app.post("/rank-entry/warnings")
     def rank_entry_warning_ack(match_id: int = Form(...), rule_code: str = Form(...), action: str = Form(...)):

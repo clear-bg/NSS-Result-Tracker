@@ -14,6 +14,12 @@
 {% if status == "saved" %}
 <p class="hc-message hc-message-success">記録しました。</p>
 {% endif %}
+{% if status == "match-updated" %}
+<p class="hc-message hc-message-success">試合情報を修正しました。</p>
+{% endif %}
+{% if status == "match-deleted" %}
+<p class="hc-message hc-message-success">試合を削除しました。</p>
+{% endif %}
 {% if error %}
 <p class="hc-message hc-message-error">{{ error }}</p>
 {% endif %}
@@ -115,6 +121,64 @@
     return form;
   }
 
+  // Issue #442: result/room_typeはランクの検出有無に関わらずどの試合でも
+  // 修正できる(rank_before/afterは対象外、既存のeditForm()と機能を重ねない)。
+  function matchEditForm(match) {
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = "/health-check/match";
+    form.className = "hc-match-edit";
+    form.appendChild(hiddenInput("match_id", match.match_id));
+
+    const resultSelect = document.createElement("select");
+    resultSelect.name = "result";
+    resultSelect.setAttribute("aria-label", match.match_id + "試合目の勝敗");
+    [["win", "win"], ["lose", "lose"], ["draw", "draw"]].forEach(function (pair) {
+      const opt = document.createElement("option");
+      opt.value = pair[0];
+      opt.textContent = pair[1];
+      opt.selected = match.result === pair[0];
+      resultSelect.appendChild(opt);
+    });
+    form.appendChild(resultSelect);
+
+    const roomTypeSelect = document.createElement("select");
+    roomTypeSelect.name = "room_type";
+    roomTypeSelect.setAttribute("aria-label", match.match_id + "試合目の野良/専用部屋");
+    [["random", "random(野良)"], ["private", "private(専用部屋)"]].forEach(function (pair) {
+      const opt = document.createElement("option");
+      opt.value = pair[0];
+      opt.textContent = pair[1];
+      opt.selected = match.room_type === pair[0];
+      roomTypeSelect.appendChild(opt);
+    });
+    form.appendChild(roomTypeSelect);
+
+    const save = el("button", null, "保存");
+    save.type = "submit";
+    form.appendChild(save);
+    return form;
+  }
+
+  // Issue #442: Issue #433のような誤検知レコードを削除できるようにする。
+  // 取り消せない操作のため、送信前に確認ダイアログを挟む
+  function deleteForm(match) {
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = "/health-check/match/delete";
+    form.className = "hc-delete-form";
+    form.appendChild(hiddenInput("match_id", match.match_id));
+    const button = el("button", "hc-delete-button", "削除");
+    button.type = "submit";
+    form.appendChild(button);
+    form.addEventListener("submit", function (event) {
+      if (!window.confirm("試合#" + match.match_id + "を削除します。関連するゴール・VS画面ランク・クリップも削除され、取り消せません。よろしいですか?")) {
+        event.preventDefault();
+      }
+    });
+    return form;
+  }
+
   function renderActions(match) {
     const actions = el("div", "hc-actions");
     if (match.has_clip) {
@@ -129,6 +193,8 @@
     } else {
       actions.appendChild(el("span", "hc-noclip", "ランクなし"));
     }
+    actions.appendChild(matchEditForm(match));
+    actions.appendChild(deleteForm(match));
     return actions;
   }
 

@@ -195,7 +195,8 @@ CREATE TABLE IF NOT EXISTS vs_slot_ranks (
 CREATE TABLE IF NOT EXISTS match_rank_warning_acks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     match_id INTEGER NOT NULL REFERENCES matches(id),
-    rule_code TEXT NOT NULL,        -- rank_warnings.RULE_CODESのいずれか('A'/'C'/'D'/'E'/'I'/'J')
+    rule_code TEXT NOT NULL,        -- rank_warnings.RULE_CODESのいずれか('A'/'C'/'D'/'E'/'H'/'I'/'J')、
+                                     -- またはmatch_warnings.RULE_CODES('K'、Issue #441)
     acknowledged_at TEXT NOT NULL,  -- 確認済みにした時刻(ISO8601, JST)
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -796,6 +797,86 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
         _force_overwrite_next_rank_before(conn, match_id, rank_after)
     else:
         _backfill_next_rank_before(conn, match_id, rank_after)
+
+
+_VALID_MATCH_RESULTS = ("win", "lose", "draw")
+_VALID_MATCH_ROOM_TYPES = ("random", "private")
+
+
+def update_match_fields(
+    conn: sqlite3.Connection,
+    match_id: int,
+    *,
+    result: Optional[str] = None,
+    room_type: Optional[str] = None,
+) -> None:
+    """試合レコードのresult/room_typeを健全性チェック(/health-check)から直接修正する(Issue #442)。
+
+    Issue #433(テニスのVS画面をサッカーの試合開始と誤検知)のようなレコードを
+    その場で直せるようにする。編集対象はresult/room_typeのみに留める。
+    rank_before/rank_afterは既存の`/rank-entry`・`/health-check`の入力フォーム
+    (Issue #407/#408)と機能が重複するため対象外(ユーザーとの相談で決定)。
+    result/room_typeのどちらか一方だけを渡した場合、渡さなかった方は変更しない。
+    """
+    if result is None and room_type is None:
+        return
+    row = conn.execute("SELECT id FROM matches WHERE id = ?", (match_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"matches.id={match_id} が見つかりません")
+    if result is not None and result not in _VALID_MATCH_RESULTS:
+        raise ValueError(
+            f"resultの値が不正です: {result}({'/'.join(_VALID_MATCH_RESULTS)}のいずれかを指定してください)"
+        )
+    if room_type is not None and room_type not in _VALID_MATCH_ROOM_TYPES:
+        raise ValueError(
+            f"room_typeの値が不正です: {room_type}({'/'.join(_VALID_MATCH_ROOM_TYPES)}のいずれかを指定してください)"
+        )
+
+    updates = []
+    params: list = []
+    if result is not None:
+        updates.append("result = ?")
+        params.append(result)
+    if room_type is not None:
+        updates.append("room_type = ?")
+        params.append(room_type)
+    updates.append("updated_at = ?")
+    params.append(now_jst().isoformat())
+    params.append(match_id)
+    conn.execute(f"UPDATE matches SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    logger.info(
+        "matches.id=%d を健全性チェック(/health-check)から修正しました: result=%s room_type=%s",
+        match_id,
+        result,
+        room_type,
+    )
+
+
+def delete_match(conn: sqlite3.Connection, match_id: int) -> None:
+    """試合レコードを関連テーブルごと削除する(Issue #442)。
+
+    SQLiteの外部キー制約は現状有効化されていないため、matchesだけ消すと
+    goals/vs_slot_ranks/match_rank_warning_acksが孤立行として残ってしまう。
+    Issue #433でテニスの誤検知(matches id=45)を手動SQLで削除した際、この3テーブルを
+    個別に消す必要があったことを踏まえ、まとめて削除する。`vs_rank_snapshots`は
+    session単位でmatch_idと直接紐付いていないため対象外。
+
+    削除前の内容はログにINFOで残す(削除後に内容を追えるようにする、今回のように
+    「消してから聞かれても分からない」を防ぐため)。クリップファイル
+    (`clips/rank_entry_clips/`等)の削除は`web/server.py`側の責務とする
+    (db.pyはファイルシステムに依存しない、という既存方針を踏襲する)。
+    """
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"matches.id={match_id} が見つかりません")
+    logger.info("matches.id=%d を削除します(削除前の内容: %s)", match_id, dict(row))
+    conn.execute("DELETE FROM goals WHERE match_id = ?", (match_id,))
+    conn.execute("DELETE FROM vs_slot_ranks WHERE match_id = ?", (match_id,))
+    conn.execute("DELETE FROM match_rank_warning_acks WHERE match_id = ?", (match_id,))
+    conn.execute("DELETE FROM matches WHERE id = ?", (match_id,))
+    conn.commit()
+    logger.info("matches.id=%d を削除しました", match_id)
 
 
 def fetch_oldest_pending_manual_rank_match(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:

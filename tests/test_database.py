@@ -6,6 +6,7 @@ import pytest
 from nss_tracker.database.db import (
     connect,
     create_session,
+    delete_match,
     end_session,
     clear_rank_warning_acks,
     delete_rank_warning_ack,
@@ -14,6 +15,7 @@ from nss_tracker.database.db import (
     fetch_current_session_id,
     fetch_goals_for_session,
     fetch_latest_vs_rank_snapshot,
+    fetch_match,
     fetch_matches_for_session,
     fetch_next_match,
     fetch_oldest_pending_manual_rank_match,
@@ -28,6 +30,7 @@ from nss_tracker.database.db import (
     save_rank_warning_ack,
     save_vs_rank_snapshot,
     save_vs_slot_ranks,
+    update_match_fields,
 )
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchResult
@@ -2374,3 +2377,123 @@ def test_save_manual_rank_after_keeps_acks_on_first_confirmation():
     save_manual_rank_after(conn, second, 42.60)
 
     assert fetch_rank_warning_acks(conn, first) == frozenset({"A"})
+
+
+def _unranked_match(conn, result: str = "win") -> int:
+    return save_match_result(
+        conn,
+        MatchResult(
+            result=result,
+            rank_before=None,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+
+
+def test_update_match_fields_updates_result():
+    conn = connect(":memory:")
+    match_id = _unranked_match(conn, result="win")
+
+    update_match_fields(conn, match_id, result="lose")
+
+    assert fetch_match(conn, match_id)["result"] == "lose"
+
+
+def test_update_match_fields_updates_room_type():
+    conn = connect(":memory:")
+    match_id = _unranked_match(conn)
+
+    update_match_fields(conn, match_id, room_type="private")
+
+    assert fetch_match(conn, match_id)["room_type"] == "private"
+
+
+def test_update_match_fields_leaves_unspecified_field_unchanged():
+    conn = connect(":memory:")
+    match_id = _unranked_match(conn, result="win")
+
+    update_match_fields(conn, match_id, room_type="private")
+
+    row = fetch_match(conn, match_id)
+    assert row["result"] == "win"
+    assert row["room_type"] == "private"
+
+
+def test_update_match_fields_raises_for_missing_match():
+    conn = connect(":memory:")
+
+    with pytest.raises(ValueError):
+        update_match_fields(conn, 999, result="lose")
+
+
+def test_update_match_fields_raises_for_invalid_result():
+    conn = connect(":memory:")
+    match_id = _unranked_match(conn)
+
+    with pytest.raises(ValueError):
+        update_match_fields(conn, match_id, result="draw-ish")
+
+
+def test_update_match_fields_raises_for_invalid_room_type():
+    conn = connect(":memory:")
+    match_id = _unranked_match(conn)
+
+    with pytest.raises(ValueError):
+        update_match_fields(conn, match_id, room_type="lan")
+
+
+def test_update_match_fields_noop_when_nothing_specified_does_not_raise():
+    conn = connect(":memory:")
+    match_id = _unranked_match(conn)
+
+    update_match_fields(conn, match_id)  # should not raise, even for a real match id
+
+
+def test_delete_match_removes_match_row():
+    conn = connect(":memory:")
+    match_id = _unranked_match(conn)
+
+    delete_match(conn, match_id)
+
+    assert fetch_match(conn, match_id) is None
+
+
+def test_delete_match_cascades_goals_and_vs_slot_ranks_and_acks(monkeypatch):
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    conn = connect(":memory:")
+    match_id = _make_ranked_match(conn)
+    save_manual_rank_after(conn, match_id, 42.40)
+    save_goal(conn, match_id, "Alice", "Bob", datetime.now(timezone.utc))
+    save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank("∞", 40)] * 4,
+        opponent_ranks=[SlotRank("∞", 10)] * 4,
+    )
+    save_rank_warning_ack(conn, match_id, "A")
+
+    delete_match(conn, match_id)
+
+    assert fetch_match(conn, match_id) is None
+    assert fetch_all_goals(conn) == []
+    assert fetch_vs_slot_ranks(conn, match_id) == []
+    assert fetch_rank_warning_acks(conn, match_id) == frozenset()
+
+
+def test_delete_match_raises_for_missing_match():
+    conn = connect(":memory:")
+
+    with pytest.raises(ValueError):
+        delete_match(conn, 999)
+
+
+def test_delete_match_logs_content_before_deleting(caplog):
+    conn = connect(":memory:")
+    match_id = _unranked_match(conn, result="lose")
+
+    with caplog.at_level("INFO", logger="nss_tracker.database"):
+        delete_match(conn, match_id)
+
+    assert any(str(match_id) in message and "削除します" in message for message in caplog.messages)

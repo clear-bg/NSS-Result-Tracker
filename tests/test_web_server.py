@@ -2357,6 +2357,28 @@ def test_admin_get_room_type_shows_unselected_placeholder_by_default(tmp_path: P
     assert 'value="private" selected' not in select_html
 
 
+def test_admin_get_shows_detection_paused_false_by_default(tmp_path: Path, monkeypatch):
+    """Issue #440: 検知一時停止はプロセス起動のたびに必ずfalse(検知を実行する)から始まる。"""
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", False)
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    select_html = _extract_select_block(response.text, "detection_paused")
+    assert '<option value="false" selected>' in select_html
+    assert 'value="true" selected' not in select_html
+
+
+def test_admin_get_shows_current_detection_paused_state(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", True)
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    select_html = _extract_select_block(response.text, "detection_paused")
+    assert '<option value="true" selected>' in select_html
+
+
 def test_admin_get_obs_scene_switching_shows_unselected_placeholder_by_default(tmp_path: Path, monkeypatch):
     """Issue #379: OBS_SCENE_SWITCHING_ENABLEDも.envの現在値によらず、今回の起動で
     まだ選び直していない間はプレースホルダーのまま(前回値をプリフィルしない)。
@@ -2433,6 +2455,77 @@ def test_admin_post_room_type_with_invalid_value_shows_error_and_does_not_update
 
     follow_up = admin_client.get("/admin")
     assert '<option value="random" selected>' in follow_up.text
+
+
+def test_admin_post_does_not_log_settings_update_when_nothing_changed(admin_client: TestClient, monkeypatch, caplog):
+    """Issue #440: detection_pausedだけを切り替えて再送信しても、5項目・room_typeの
+    値そのものは変わっていないため、その2つの「更新しました」ログは出ないことを確認する。
+
+    detection_pausedが同じフォームに加わったことで、一時停止の切り替えのたびに
+    フォーム全体が再送信されるようになり、以前から無条件だったこれら2つのログが
+    無関係な送信のたびに出てノイズになっていたため、実際に値が変わった場合だけ
+    出すよう修正した(ユーザー報告により発覚)。
+    """
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", False)
+    # 現在値と全く同じ値を送る(room_typeもOBS設定もALLOWED_PLAYERS等も不変)。
+    # admin_clientフィクスチャが設定するenvの現在値(OldName/all/all/all/true)に揃える
+    same_data = _admin_form_data(
+        room_type="random",
+        obs_scene_switching_enabled="true",
+        allowed_players="OldName",
+        goal_record_mode="all",
+        rank_graph_match_limit="all",
+        rank_delta_distribution_scope="all",
+        detection_paused="true",
+    )
+
+    with caplog.at_level("INFO", logger="nss_tracker.web"):
+        admin_client.post("/admin", data=same_data)
+
+    assert not any("設定を更新しました" in message for message in caplog.messages)
+    assert not any("野良/専用部屋設定を更新しました" in message for message in caplog.messages)
+    # detection_paused自体は実際に変わっているので、そちらのログは出る
+    assert any("検知一時停止を切り替えました" in message for message in caplog.messages)
+
+
+def test_admin_post_toggles_detection_pause_without_persisting_to_env(admin_client: TestClient, monkeypatch):
+    """Issue #440: detection_pausedはroom_typeと同じく.env/os.environのいずれにも
+    書き込まず、起動確認ゲート(startup_gate)の対象にもならないことを確認する。
+    """
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", False)
+
+    response = admin_client.post("/admin", data=_admin_form_data(detection_paused="true"))
+
+    assert response.status_code == 200
+    assert "DETECTION_PAUSED" not in os.environ
+    from nss_tracker import detection_pause
+
+    assert detection_pause.is_paused() is True
+
+    follow_up = admin_client.get("/admin")
+    assert '<option value="true" selected>' in _extract_select_block(follow_up.text, "detection_paused")
+
+
+def test_admin_post_without_detection_paused_field_keeps_it_false(admin_client: TestClient, monkeypatch):
+    """detection_pausedを送らない送信(既存テストの多くが該当)では、falseのまま扱う。"""
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", False)
+
+    response = admin_client.post("/admin", data=_admin_form_data())
+
+    assert response.status_code == 200
+    from nss_tracker import detection_pause
+
+    assert detection_pause.is_paused() is False
+
+
+def test_admin_post_logs_info_message_on_detection_pause_change(admin_client: TestClient, monkeypatch, caplog):
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", False)
+
+    with caplog.at_level("INFO", logger="nss_tracker.web"):
+        admin_client.post("/admin", data=_admin_form_data(detection_paused="true"))
+
+    assert any("検知一時停止を切り替えました" in message for message in caplog.messages)
 
 
 def test_admin_post_marks_obs_scene_switching_confirmed(admin_client: TestClient):
@@ -3468,6 +3561,190 @@ def test_health_check_marks_rows_with_and_without_clips(tmp_path: Path, monkeypa
     assert matches[with_clip]["has_clip"] is True
     assert matches[without_clip]["has_clip"] is False
     assert matches[without_clip]["editable"] is True
+
+
+def test_health_check_applies_rule_k_for_mostly_unread_vs_slots(tmp_path: Path, monkeypatch):
+    """Issue #441/#433: 自チーム4人・相手チーム3人が未読(計7人)の場合に警告する。
+
+    ランクを賭けない試合(rank_before/rank_afterともNone)でも判定できる必要がある
+    (#433自体がそうだったため)。
+    """
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank(None, None)] * 4,
+        opponent_ranks=[SlotRank(None, None), SlotRank("∞", 2), SlotRank(None, None), SlotRank(None, None)],
+    )
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert [w["rule_code"] for w in matches[match_id]["warnings"]] == ["K"]
+
+
+def test_health_check_does_not_apply_rule_k_when_fully_unread(tmp_path: Path, monkeypatch):
+    """8人とも未読(ランクバッジが一切表示されない試合)は正常系のため警告しない。"""
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank(None, None)] * 4,
+        opponent_ranks=[SlotRank(None, None)] * 4,
+    )
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert matches[match_id]["warnings"] == []
+
+
+def test_health_check_does_not_apply_rule_k_when_vs_screen_never_seen(tmp_path: Path, monkeypatch):
+    """VS画面自体を見逃した試合(vs_slot_ranksが1行も無い)も正常系のため警告しない。"""
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert matches[match_id]["warnings"] == []
+
+
+def test_health_check_warning_ack_accepts_rule_k(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank(None, None)] * 4,
+        opponent_ranks=[SlotRank(None, None), SlotRank("∞", 2), SlotRank(None, None), SlotRank(None, None)],
+    )
+    conn.close()
+
+    response = client.post(
+        "/health-check/warnings", data={"match_id": match_id, "rule_code": "K", "action": "acknowledge"}
+    )
+
+    assert response.status_code == 200
+    matches = _health_check_matches(client)
+    assert matches[match_id]["warnings"][0]["acknowledged"] is True
+
+
+def test_health_check_context_includes_raw_result_and_room_type(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert matches[match_id]["result"] == "win"
+    assert matches[match_id]["room_type"] == "random"
+
+
+def test_health_check_post_match_updates_result_and_room_type(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    response = client.post(
+        "/health-check/match", data={"match_id": match_id, "result": "lose", "room_type": "private"}
+    )
+
+    assert response.status_code == 200
+    assert response.url.params["status"] == "match-updated"
+    matches = _health_check_matches(client)
+    assert matches[match_id]["result"] == "lose"
+    assert matches[match_id]["room_type"] == "private"
+
+
+def test_health_check_post_match_rejects_invalid_result(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    response = client.post(
+        "/health-check/match", data={"match_id": match_id, "result": "not-a-result", "room_type": "random"}
+    )
+
+    assert response.status_code == 200
+    assert response.url.params["error"]
+    matches = _health_check_matches(client)
+    assert matches[match_id]["result"] == "win"
+
+
+def test_health_check_post_match_rejects_missing_match(tmp_path: Path, monkeypatch):
+    client, _ = _setup_health_check(tmp_path, monkeypatch)
+
+    response = client.post("/health-check/match", data={"match_id": 999, "result": "win", "room_type": "random"})
+
+    assert response.status_code == 200
+    assert response.url.params["error"]
+
+
+def test_health_check_post_match_delete_removes_match_and_cascades(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank(None, None)] * 4,
+        opponent_ranks=[SlotRank(None, None)] * 4,
+    )
+    conn.close()
+
+    response = client.post("/health-check/match/delete", data={"match_id": match_id})
+
+    assert response.status_code == 200
+    assert response.url.params["status"] == "match-deleted"
+    matches = _health_check_matches(client)
+    assert match_id not in matches
+    conn = db.connect(db_path)
+    assert db.fetch_vs_slot_ranks(conn, match_id) == []
+    conn.close()
+
+
+def test_health_check_post_match_delete_removes_clip_files(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    gauge_clips_dir = tmp_path / "gauge_clips"
+    number_clips_dir = tmp_path / "number_clips"
+    monkeypatch.setattr(server_module, "GAUGE_CLIPS_DIR", gauge_clips_dir)
+    monkeypatch.setattr(server_module, "RANK_NUMBER_CLIPS_DIR", number_clips_dir)
+    gauge_clips_dir.mkdir()
+    number_clips_dir.mkdir()
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+    clip_path = tmp_path / "clips" / f"{match_id}.mp4"
+    clip_path.write_bytes(b"dummy")
+    gauge_clip_path = gauge_clips_dir / f"{match_id}.mp4"
+    gauge_clip_path.write_bytes(b"dummy")
+    number_clip_path = number_clips_dir / f"{match_id}.mp4"
+    number_clip_path.write_bytes(b"dummy")
+
+    client.post("/health-check/match/delete", data={"match_id": match_id})
+
+    assert not clip_path.exists()
+    assert not gauge_clip_path.exists()
+    assert not number_clip_path.exists()
+
+
+def test_health_check_post_match_delete_rejects_missing_match(tmp_path: Path, monkeypatch):
+    client, _ = _setup_health_check(tmp_path, monkeypatch)
+
+    response = client.post("/health-check/match/delete", data={"match_id": 999})
+
+    assert response.status_code == 200
+    assert response.url.params["error"]
 
 
 def test_health_check_marks_unranked_match_as_not_editable(tmp_path: Path, monkeypatch):

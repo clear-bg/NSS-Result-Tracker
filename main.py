@@ -68,7 +68,7 @@ from nss_tracker.detection.rank_ocr import (
     _get_reader,
 )
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
-from nss_tracker import match_transition, startup_gate
+from nss_tracker import detection_pause, match_transition, startup_gate
 from nss_tracker.obs_control import ObsSceneController
 from nss_tracker.banner_debug_frames import BANNER_DEBUG_FRAMES_DIR, BannerDebugFrameSaver
 from nss_tracker.rank_entry_clips import (
@@ -450,6 +450,18 @@ def run(
                     round(read_gap_seconds / expected_frame_interval_seconds),
                 )
             last_frame_read_at = now
+
+            # Issue #440: 他競技をプレイしている間、/adminから検知処理そのものを
+            # 一時停止できる。reader.read()は止めず読み続けて捨てるだけにする
+            # (ffmpeg側のパイプが詰まらないようにするため)。記録・クリップ録画・
+            # OBSシーン切替は一切行わない(detection_pause.pyのモジュールdocstring参照)。
+            # blackout_watcherだけは毎フレームdrainしておく(観測自体は捨てる)。
+            # そうしないと一時停止中に他競技側でたまたま暗転が起きた場合、再開後
+            # 最初のprocess_frame呼び出しにその観測がそのまま渡ってしまうため
+            if detection_pause.is_paused():
+                if blackout_watcher is not None:
+                    blackout_watcher.consume()
+                continue
 
             # Issue #398: read()が返した1枚だけでなく、前回の処理以降に
             # キャプチャ側が受け取った全フレームの暗転観測結果を渡す
