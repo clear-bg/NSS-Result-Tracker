@@ -482,6 +482,189 @@ def test_run_resets_vs_rank_snapshot_only_on_true_to_false(monkeypatch, tmp_path
         conn.close()
 
 
+def test_run_skips_process_frame_while_detection_paused(monkeypatch, tmp_path):
+    """Issue #440: detection_pause.is_paused()がTrueの間は、machine.process_frame()
+    自体が一切呼ばれないことを確認する(他競技プレイ中に検知処理を止める仕組み)。
+    """
+    monkeypatch.setattr(main, "_warmup_ocr_engines", lambda: None)
+    monkeypatch.setattr(main.detection_pause, "_paused", False)
+
+    # 一時停止中(True)2フレーム -> 再開後(False)2フレーム
+    pause_sequence = [True, True, False, False]
+    process_frame_calls = []
+
+    class _FakeMachine:
+        def __init__(self):
+            self.current_state = "watching"
+            self.in_match = False
+            self.match_end_seen = False
+            self.session_match_no = 0
+            self.current_match_has_rank = False
+
+        def process_frame(self, frame, blackout=None):
+            process_frame_calls.append(1)
+            return None
+
+        def pop_vs_screen_event(self):
+            return None
+
+    class _FakeReader:
+        def __init__(self, sequence):
+            self._sequence = iter(sequence)
+            self.is_running = True
+            self.error = None
+            self.frames_produced = 0
+            self.frames_consumed = 0
+
+        def start(self):
+            pass
+
+        def read(self, timeout):
+            try:
+                paused = next(self._sequence)
+            except StopIteration:
+                self.is_running = False
+                return None
+            main.detection_pause.set_paused(paused)
+            self.frames_produced += 1
+            self.frames_consumed += 1
+            return np.zeros((2, 2, 3), dtype=np.uint8)
+
+        def stop(self):
+            pass
+
+    class _RecordingObsController:
+        def set_in_match(self, in_match):
+            pass
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db._SCHEMA)
+        conn.commit()
+        session_id = db.create_session(conn)
+        clip_recorder = RankEntryClipRecorder(output_dir=tmp_path / "rank_entry_clips")
+        gauge_clip_recorder = RankEntryClipRecorder(
+            output_dir=tmp_path / "rank_gauge_clips", target_width=GAUGE_TARGET_WIDTH, crop_roi=GAUGE_ROI_ENLARGED
+        )
+        rank_number_clip_recorder = RankEntryClipRecorder(
+            output_dir=tmp_path / "rank_number_clips",
+            target_width=RANK_NUMBER_TARGET_WIDTH,
+            crop_roi=RANK_NUMBER_CLIP_ROI,
+        )
+
+        main.run(
+            _FakeReader(pause_sequence),
+            _FakeMachine(),
+            conn,
+            session_id,
+            _RecordingObsController(),
+            30.0,
+            clip_recorder,
+            gauge_clip_recorder,
+            rank_number_clip_recorder,
+        )
+
+        # 一時停止中の2フレーム分はスキップされ、再開後の2フレームだけ処理される
+        assert len(process_frame_calls) == 2
+    finally:
+        conn.close()
+        main.detection_pause.set_paused(False)
+
+
+def test_run_drains_blackout_watcher_while_detection_paused(monkeypatch, tmp_path):
+    """Issue #440: 一時停止中もblackout_watcher.consume()は毎フレーム呼び、観測を捨てる。
+
+    呼ばないと、一時停止中に他競技側でたまたま暗転が起きた場合、再開後最初の
+    process_frame呼び出しにその観測がそのまま渡ってしまう(main.pyのコメント参照)。
+    """
+    monkeypatch.setattr(main, "_warmup_ocr_engines", lambda: None)
+    monkeypatch.setattr(main.detection_pause, "_paused", False)
+    main.detection_pause.set_paused(True)
+
+    consume_calls = []
+
+    class _FakeBlackoutWatcher:
+        def consume(self):
+            consume_calls.append(1)
+            return None
+
+    class _FakeMachine:
+        def __init__(self):
+            self.current_state = "watching"
+            self.in_match = False
+            self.match_end_seen = False
+            self.session_match_no = 0
+            self.current_match_has_rank = False
+
+        def process_frame(self, frame, blackout=None):
+            return None
+
+        def pop_vs_screen_event(self):
+            return None
+
+    class _FakeReader:
+        def __init__(self, frame_count):
+            self._remaining = frame_count
+            self.is_running = True
+            self.error = None
+            self.frames_produced = 0
+            self.frames_consumed = 0
+
+        def start(self):
+            pass
+
+        def read(self, timeout):
+            if self._remaining <= 0:
+                self.is_running = False
+                return None
+            self._remaining -= 1
+            self.frames_produced += 1
+            self.frames_consumed += 1
+            return np.zeros((2, 2, 3), dtype=np.uint8)
+
+        def stop(self):
+            pass
+
+    class _RecordingObsController:
+        def set_in_match(self, in_match):
+            pass
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db._SCHEMA)
+        conn.commit()
+        session_id = db.create_session(conn)
+        clip_recorder = RankEntryClipRecorder(output_dir=tmp_path / "rank_entry_clips")
+        gauge_clip_recorder = RankEntryClipRecorder(
+            output_dir=tmp_path / "rank_gauge_clips", target_width=GAUGE_TARGET_WIDTH, crop_roi=GAUGE_ROI_ENLARGED
+        )
+        rank_number_clip_recorder = RankEntryClipRecorder(
+            output_dir=tmp_path / "rank_number_clips",
+            target_width=RANK_NUMBER_TARGET_WIDTH,
+            crop_roi=RANK_NUMBER_CLIP_ROI,
+        )
+
+        main.run(
+            _FakeReader(3),
+            _FakeMachine(),
+            conn,
+            session_id,
+            _RecordingObsController(),
+            30.0,
+            clip_recorder,
+            gauge_clip_recorder,
+            rank_number_clip_recorder,
+            blackout_watcher=_FakeBlackoutWatcher(),
+        )
+
+        assert len(consume_calls) == 3
+    finally:
+        conn.close()
+        main.detection_pause.set_paused(False)
+
+
 def test_run_writes_clip_even_when_match_id_arrives_after_max_duration(monkeypatch, tmp_path):
     """Issue #395: 録画が上限時間に達した後で試合結果が確定した場合でも、
     クリップが破棄されず書き出されることを確認する。

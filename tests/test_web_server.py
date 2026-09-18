@@ -2357,6 +2357,28 @@ def test_admin_get_room_type_shows_unselected_placeholder_by_default(tmp_path: P
     assert 'value="private" selected' not in select_html
 
 
+def test_admin_get_shows_detection_paused_false_by_default(tmp_path: Path, monkeypatch):
+    """Issue #440: 検知一時停止はプロセス起動のたびに必ずfalse(検知を実行する)から始まる。"""
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", False)
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    select_html = _extract_select_block(response.text, "detection_paused")
+    assert '<option value="false" selected>' in select_html
+    assert 'value="true" selected' not in select_html
+
+
+def test_admin_get_shows_current_detection_paused_state(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", True)
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    select_html = _extract_select_block(response.text, "detection_paused")
+    assert '<option value="true" selected>' in select_html
+
+
 def test_admin_get_obs_scene_switching_shows_unselected_placeholder_by_default(tmp_path: Path, monkeypatch):
     """Issue #379: OBS_SCENE_SWITCHING_ENABLEDも.envの現在値によらず、今回の起動で
     まだ選び直していない間はプレースホルダーのまま(前回値をプリフィルしない)。
@@ -2433,6 +2455,45 @@ def test_admin_post_room_type_with_invalid_value_shows_error_and_does_not_update
 
     follow_up = admin_client.get("/admin")
     assert '<option value="random" selected>' in follow_up.text
+
+
+def test_admin_post_toggles_detection_pause_without_persisting_to_env(admin_client: TestClient, monkeypatch):
+    """Issue #440: detection_pausedはroom_typeと同じく.env/os.environのいずれにも
+    書き込まず、起動確認ゲート(startup_gate)の対象にもならないことを確認する。
+    """
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", False)
+
+    response = admin_client.post("/admin", data=_admin_form_data(detection_paused="true"))
+
+    assert response.status_code == 200
+    assert "DETECTION_PAUSED" not in os.environ
+    from nss_tracker import detection_pause
+
+    assert detection_pause.is_paused() is True
+
+    follow_up = admin_client.get("/admin")
+    assert '<option value="true" selected>' in _extract_select_block(follow_up.text, "detection_paused")
+
+
+def test_admin_post_without_detection_paused_field_keeps_it_false(admin_client: TestClient, monkeypatch):
+    """detection_pausedを送らない送信(既存テストの多くが該当)では、falseのまま扱う。"""
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", False)
+
+    response = admin_client.post("/admin", data=_admin_form_data())
+
+    assert response.status_code == 200
+    from nss_tracker import detection_pause
+
+    assert detection_pause.is_paused() is False
+
+
+def test_admin_post_logs_info_message_on_detection_pause_change(admin_client: TestClient, monkeypatch, caplog):
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", False)
+
+    with caplog.at_level("INFO", logger="nss_tracker.web"):
+        admin_client.post("/admin", data=_admin_form_data(detection_paused="true"))
+
+    assert any("検知一時停止を切り替えました" in message for message in caplog.messages)
 
 
 def test_admin_post_marks_obs_scene_switching_confirmed(admin_client: TestClient):

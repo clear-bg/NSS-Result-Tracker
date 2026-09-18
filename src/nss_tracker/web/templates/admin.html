@@ -54,6 +54,13 @@
     {% endif %}
   </div>
   <div class="admin-field">
+    <label for="detection_paused">他競技プレイ中の検知一時停止(いつでも切り替え可能、アプリ再起動で必ずfalseに戻ります)</label>
+    <select id="detection_paused" name="detection_paused">
+      <option value="false" {% if not detection_paused %}selected{% endif %}>false(検知を実行する)</option>
+      <option value="true" {% if detection_paused %}selected{% endif %}>true(一時停止する)</option>
+    </select>
+  </div>
+  <div class="admin-field">
     <label for="allowed_players">許可リスト(得点・アシストを記録する対象のプレイヤー名、カンマ区切り)</label>
     <input type="text" id="allowed_players" name="allowed_players" value="{{ settings.ALLOWED_PLAYERS }}">
   </div>

@@ -174,7 +174,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from nss_tracker import match_transition, rank_warnings, startup_gate, youtube_chat
+from nss_tracker import detection_pause, match_transition, rank_warnings, startup_gate, youtube_chat
 from nss_tracker.config import (
     ConfigError,
     get_allowed_players,
@@ -1671,6 +1671,9 @@ def create_app(db_path: Path) -> FastAPI:
         context = {
             "settings": get_editable_settings(),
             "room_type": get_room_type(),
+            # Issue #440: startup_gateの対象外の常時操作可能なトグルのため、
+            # 起動確認済みかどうかに関わらずそのまま現在値を出す
+            "detection_paused": detection_pause.is_paused(),
             "obs_scene_switching_confirmed": startup_gate.is_obs_scene_switching_confirmed(),
             "startup_confirmed": startup_gate.is_confirmed(),
             "status": status,
@@ -1686,6 +1689,7 @@ def create_app(db_path: Path) -> FastAPI:
     @app.post("/admin")
     def admin_update(
         room_type: str = Form(""),
+        detection_paused: str = Form("false"),
         allowed_players: str = Form(""),
         goal_record_mode: str = Form(...),
         rank_graph_match_limit: str = Form(...),
@@ -1699,7 +1703,20 @@ def create_app(db_path: Path) -> FastAPI:
         片方だけ選んで送信した場合に、選んだ方をやり直さずに済むようにするため。
         両方選択済みなら、設定を反映したうえで起動確認(startup_gate.confirm_start())まで
         行い、main.py側のwait_for_confirmation()のブロックを解除する。
+
+        Issue #440: detection_pausedは起動確認ゲートの対象外(常に選択済みの値を持ち、
+        エラー・保留の対象にならない)ため、他のフィールドと独立してこの時点で即反映する。
         """
+        new_detection_paused = detection_paused == "true"
+        old_detection_paused = detection_pause.is_paused()
+        if new_detection_paused != old_detection_paused:
+            detection_pause.set_paused(new_detection_paused)
+            _logger.info(
+                "設定画面(/admin)から検知一時停止を切り替えました: %s -> %s",
+                old_detection_paused,
+                new_detection_paused,
+            )
+
         field_errors: dict[str, str] = {}
         if not room_type:
             field_errors["error_room_type"] = "野良/専用部屋を選択してください。"
