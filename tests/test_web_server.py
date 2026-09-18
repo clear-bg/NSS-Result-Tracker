@@ -2457,6 +2457,38 @@ def test_admin_post_room_type_with_invalid_value_shows_error_and_does_not_update
     assert '<option value="random" selected>' in follow_up.text
 
 
+def test_admin_post_does_not_log_settings_update_when_nothing_changed(admin_client: TestClient, monkeypatch, caplog):
+    """Issue #440: detection_pausedだけを切り替えて再送信しても、5項目・room_typeの
+    値そのものは変わっていないため、その2つの「更新しました」ログは出ないことを確認する。
+
+    detection_pausedが同じフォームに加わったことで、一時停止の切り替えのたびに
+    フォーム全体が再送信されるようになり、以前から無条件だったこれら2つのログが
+    無関係な送信のたびに出てノイズになっていたため、実際に値が変わった場合だけ
+    出すよう修正した(ユーザー報告により発覚)。
+    """
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", False)
+    # 現在値と全く同じ値を送る(room_typeもOBS設定もALLOWED_PLAYERS等も不変)。
+    # admin_clientフィクスチャが設定するenvの現在値(OldName/all/all/all/true)に揃える
+    same_data = _admin_form_data(
+        room_type="random",
+        obs_scene_switching_enabled="true",
+        allowed_players="OldName",
+        goal_record_mode="all",
+        rank_graph_match_limit="all",
+        rank_delta_distribution_scope="all",
+        detection_paused="true",
+    )
+
+    with caplog.at_level("INFO", logger="nss_tracker.web"):
+        admin_client.post("/admin", data=same_data)
+
+    assert not any("設定を更新しました" in message for message in caplog.messages)
+    assert not any("野良/専用部屋設定を更新しました" in message for message in caplog.messages)
+    # detection_paused自体は実際に変わっているので、そちらのログは出る
+    assert any("検知一時停止を切り替えました" in message for message in caplog.messages)
+
+
 def test_admin_post_toggles_detection_pause_without_persisting_to_env(admin_client: TestClient, monkeypatch):
     """Issue #440: detection_pausedはroom_typeと同じく.env/os.environのいずれにも
     書き込まず、起動確認ゲート(startup_gate)の対象にもならないことを確認する。

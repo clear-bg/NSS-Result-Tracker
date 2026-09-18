@@ -1778,7 +1778,12 @@ def create_app(db_path: Path) -> FastAPI:
         if obs_scene_switching_enabled:
             # Issue #379: 空欄のプレースホルダーから明示的に選び直された場合のみ確認済みとみなす
             startup_gate.mark_obs_scene_switching_confirmed()
-        _logger.info("設定画面(/admin)から設定を更新しました: %s -> %s", old_values, new_values)
+        if new_values != old_values:
+            # Issue #440: detection_pausedがこのフォームに加わったことで、他の値を
+            # 変えないまま送信する(一時停止だけ切り替える)頻度が上がった。値が
+            # 実際に変わった場合だけログを出すようにし、無関係な再送信のたびに
+            # 5項目分の値がそのまま出力されるノイズを避ける
+            _logger.info("設定画面(/admin)から設定を更新しました: %s -> %s", old_values, new_values)
 
         if room_type:
             old_room_type = get_room_type()
@@ -1787,7 +1792,8 @@ def create_app(db_path: Path) -> FastAPI:
             except ConfigError as exc:
                 _logger.warning("設定画面(/admin)からの野良/専用部屋切り替えが拒否されました: %s", exc)
                 return RedirectResponse(f"/admin?error={quote(str(exc))}", status_code=303)
-            _logger.info("設定画面(/admin)から野良/専用部屋設定を更新しました: %s -> %s", old_room_type, room_type)
+            if room_type != old_room_type:
+                _logger.info("設定画面(/admin)から野良/専用部屋設定を更新しました: %s -> %s", old_room_type, room_type)
 
         if field_errors:
             _logger.warning("設定画面(/admin)の未選択項目のため起動確認を保留しました: %s", sorted(field_errors))
