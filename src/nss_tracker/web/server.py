@@ -1993,6 +1993,13 @@ def create_app(db_path: Path) -> FastAPI:
         # 値に切り替わるようにする(#100、ユーザーとの相談で決定)
         context["refresh_interval_ms"] = _VS_RANK_COMPARISON_REFRESH_INTERVAL_MS
         context["debug_bg_style"] = _overlay_debug_bg_style(request)
+        # Issue #438: 試合間リセット(空スナップショット、main.py側)による"-"表示と、
+        # セッション開始直後でまだ一度もVS画面を検知していない(#359)"-"表示を区別する
+        # ためのepoch。overlay-refresh.jsのcountモードが、"-"→数値の遷移時にこの値を
+        # 見て、リセット後(epoch > 0)ならカウントアップ演出を再生し、セッション開始直後
+        # (epoch == 0)なら従来どおり無演出にする(rank-graphのsignalモードと同じ
+        # match_transition.get_between_matches_epoch()を流用)
+        context["epoch"] = match_transition.get_between_matches_epoch()
         return _TEMPLATES.TemplateResponse(request, "overlay_vs_rank_comparison.html", context)
 
     @app.get("/api/rank-delta-distribution")

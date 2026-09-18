@@ -1737,6 +1737,7 @@ def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
     conn.close()
 
     client = TestClient(create_app(db_path))
+    epoch = match_transition.get_between_matches_epoch()
 
     response = client.get("/overlay/vs-rank-comparison")
 
@@ -1745,11 +1746,11 @@ def test_overlay_vs_rank_comparison_page_shows_readable_summary(tmp_path: Path):
     assert '<link rel="stylesheet" href="/static/vs_rank_comparison.css">' in response.text
     assert (
         '<span id="vs-rank-value-mine" class="vs-rank-pill" data-animate-on-change="count" '
-        f'style="background-color: {_TEAM_COLOR_BLUE};">160</span>' in response.text
+        f'data-epoch="{epoch}" style="background-color: {_TEAM_COLOR_BLUE};">160</span>' in response.text
     )
     assert (
         '<span id="vs-rank-value-opponent" class="vs-rank-pill" data-animate-on-change="count" '
-        f'style="background-color: {_TEAM_COLOR_PINK};">40</span>' in response.text
+        f'data-epoch="{epoch}" style="background-color: {_TEAM_COLOR_PINK};">40</span>' in response.text
     )
     assert '<div class="vs-rank-caption">Rank Total</div>' in response.text
     assert "160</span><span class=\"vs-rank-vs\">VS</span><span" in response.text
@@ -1761,12 +1762,13 @@ def test_overlay_vs_rank_comparison_page_shows_dash_placeholders_when_no_data(tm
     db.connect(db_path).close()
 
     client = TestClient(create_app(db_path))
+    epoch = match_transition.get_between_matches_epoch()
 
     response = client.get("/overlay/vs-rank-comparison")
 
     assert (
         '<span id="vs-rank-value-mine" class="vs-rank-pill" data-animate-on-change="count" '
-        'style="background-color: #666666;">-</span>' in response.text
+        f'data-epoch="{epoch}" style="background-color: #666666;">-</span>' in response.text
     )
     assert '<div class="vs-rank-caption">Rank Total</div>' in response.text
 
@@ -1787,16 +1789,17 @@ def test_overlay_vs_rank_comparison_page_shows_dash_for_side_with_only_unknown_m
     conn.close()
 
     client = TestClient(create_app(db_path))
+    epoch = match_transition.get_between_matches_epoch()
 
     response = client.get("/overlay/vs-rank-comparison")
 
     assert (
         '<span id="vs-rank-value-mine" class="vs-rank-pill" data-animate-on-change="count" '
-        f'style="background-color: {_TEAM_COLOR_BLUE};">160</span>' in response.text
+        f'data-epoch="{epoch}" style="background-color: {_TEAM_COLOR_BLUE};">160</span>' in response.text
     )
     assert (
         '<span id="vs-rank-value-opponent" class="vs-rank-pill" data-animate-on-change="count" '
-        f'style="background-color: {_TEAM_COLOR_PINK};">-</span>' in response.text
+        f'data-epoch="{epoch}" style="background-color: {_TEAM_COLOR_PINK};">-</span>' in response.text
     )
 
 
@@ -1816,17 +1819,36 @@ def test_overlay_vs_rank_comparison_page_uses_default_color_when_team_color_not_
     conn.close()
 
     client = TestClient(create_app(db_path))
+    epoch = match_transition.get_between_matches_epoch()
 
     response = client.get("/overlay/vs-rank-comparison")
 
     assert (
         '<span id="vs-rank-value-mine" class="vs-rank-pill" data-animate-on-change="count" '
-        'style="background-color: #666666;">160</span>' in response.text
+        f'data-epoch="{epoch}" style="background-color: #666666;">160</span>' in response.text
     )
     assert (
         '<span id="vs-rank-value-opponent" class="vs-rank-pill" data-animate-on-change="count" '
-        'style="background-color: #666666;">40</span>' in response.text
+        f'data-epoch="{epoch}" style="background-color: #666666;">40</span>' in response.text
     )
+
+
+def test_overlay_vs_rank_comparison_page_embeds_current_between_matches_epoch(tmp_path: Path):
+    """Issue #438: match_transition.get_between_matches_epoch()の現在値がdata-epochへ
+    そのまま埋め込まれることを確認する。overlay-refresh.jsのcountモードが、この値を
+    見て「試合間リセットによる"-"→数値」(epoch > 0)と「セッション開始直後の初回表示」
+    (epoch == 0)を区別し、前者だけカウントアップ演出を再生する。
+    """
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+    before_epoch = match_transition.get_between_matches_epoch()
+    match_transition.notify_between_matches()
+
+    response = client.get("/overlay/vs-rank-comparison")
+
+    assert response.status_code == 200
+    assert response.text.count(f'data-epoch="{before_epoch + 1}"') == 2
 
 
 def test_percentile_linear_interpolation():
