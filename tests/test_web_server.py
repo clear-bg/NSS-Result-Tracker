@@ -2665,6 +2665,92 @@ def test_admin_get_shows_rank_entry_link(tmp_path: Path):
     assert '<a href="/rank-entry" target="_blank" rel="noopener">' in response.text
 
 
+def _extract_admin_details_block(html: str) -> str:
+    """Issue #444: 「その他の設定」の折りたたみ(<details>)の中身だけを抜き出す。"""
+    match = re.search(r'<details class="admin-details".*?</details>', html, re.DOTALL)
+    assert match is not None, "details.admin-details が見つかりません"
+    return match.group(0)
+
+
+def test_admin_get_renders_two_column_layout(tmp_path: Path):
+    """Issue #444: ウィジェット一覧と配信設定を2カラムに分ける。"""
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert response.status_code == 200
+    assert '<div class="admin-layout">' in response.text
+    assert '<div class="admin-col-widgets">' in response.text
+    assert '<div class="admin-col-settings">' in response.text
+    # h1は2カラムの外(全幅)に置く
+    assert response.text.index("<h1>配信ダッシュボード</h1>") < response.text.index('<div class="admin-layout">')
+
+
+def test_admin_get_collapses_only_rarely_changed_fields(tmp_path: Path, monkeypatch):
+    """Issue #444: めったに触らない4項目だけを既定で閉じた折りたたみに入れる。
+
+    起動時に決める2項目(野良/専用部屋・OBSシーン自動切替)と、配信中に切り替える
+    1項目(検知一時停止)は常時表示のまま。
+    """
+    monkeypatch.setattr("nss_tracker.detection_pause._paused", False)
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    details = _extract_admin_details_block(response.text)
+    assert "<summary>その他の設定(4項目)</summary>" in details
+    for collapsed in ("allowed_players", "goal_record_mode", "rank_graph_match_limit", "rank_delta_distribution_scope"):
+        assert f'name="{collapsed}"' in details
+    for always_visible in ("room_type", "obs_scene_switching_enabled", "detection_paused"):
+        assert f'name="{always_visible}"' not in details
+    # 既定では閉じた状態(openを付けない)
+    assert "<details class=\"admin-details\" id=\"admin-optional-settings\">" in response.text
+
+
+def test_admin_get_groups_startup_and_live_fields(tmp_path: Path):
+    """Issue #444: 起動時に決める項目と配信中に切り替える項目を区切り線で分ける。"""
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert '<p class="admin-group-label">起動時に決める</p>' in response.text
+    assert '<p class="admin-group-label">配信中に切り替える</p>' in response.text
+    assert '<hr class="admin-group-divider">' in response.text
+    # 順序: 起動時に決める -> 区切り線 -> 配信中に切り替える -> 検知一時停止
+    startup_index = response.text.index("起動時に決める")
+    divider_index = response.text.index('<hr class="admin-group-divider">')
+    live_index = response.text.index("配信中に切り替える")
+    pause_index = response.text.index('name="detection_paused"')
+    assert startup_index < divider_index < live_index < pause_index
+
+
+def test_admin_get_places_submit_button_after_collapsed_settings(tmp_path: Path):
+    """Issue #444: 送信ボタンは折りたたみの下(フォーム最下部)に置く。
+
+    折りたたみの上に置くと、開いて編集したときにボタンより下に入力欄が並び、
+    押すために上へ戻ることになるため。
+    """
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert response.text.index("</details>") < response.text.index('<button type="submit">')
+
+
+def test_admin_get_persists_collapsed_state_across_reloads(tmp_path: Path):
+    """Issue #444: 折りたたみの開閉状態をlocalStorageで覚える。
+
+    折りたたみ内の項目を直して送信するとPRGリダイレクトでページが再読み込みされる
+    ため、覚えないと毎回閉じてしまう。
+    """
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin")
+
+    assert "nss-admin-optional-settings-open" in response.text
+    assert "localStorage" in response.text
+
+
 def test_admin_get_shows_dashboard_heading_before_settings_heading(tmp_path: Path):
     """Issue #314: 見出し構成を「配信ダッシュボード」→「配信ウィジェット一覧」→
     設定の順に再構成したことを確認する(Issue #410でフォーム統合に伴い
