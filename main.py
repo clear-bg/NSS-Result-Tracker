@@ -556,6 +556,13 @@ def run(
                     # の値に関わらず発火する。OBS側のシーン切替そのものではなく、試合状態の
                     # 遷移自体を表す信号のため)
                     match_transition.notify_between_matches()
+                    # Issue #438: 同じタイミングで対戦相手ランク比較ウィジェットの表示も
+                    # リセットする。空スナップショットを書き込む点はVS画面を見逃した試合の
+                    # _record_match_resultと同じ仕組みで、fetch_latest_vs_rank_snapshotが
+                    # id順(=時系列順)に最新を返す既存の仕組みにそのまま乗るため、次のVS画面
+                    # 確定によるsave_vs_rank_snapshot呼び出しとの前後関係を別途気にする必要が
+                    # ない。OBS_SCENE_SWITCHING_ENABLEDの値には関わらず常に発火する
+                    db.save_vs_rank_snapshot(conn, session_id, [], [], None, None, now_jst())
                 prev_in_match = machine.in_match
 
             if result is not None:

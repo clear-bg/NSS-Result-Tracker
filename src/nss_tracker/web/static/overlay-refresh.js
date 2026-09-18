@@ -25,6 +25,14 @@
 // 「-」→数値の遷移。#359参照)は無演出のまま最終値を表示する
 // (`parseInt("-", 10)`はNaNになるため、初回だけ除外する特別な分岐は不要)。
 //
+// Issue #438: ただし「試合間リセットによる一時的な"-"→数値」は例外で、0から
+// カウントアップする演出を再生する。対象要素に`data-epoch`属性(rank-graphの
+// signalモードと同じmatch_transition.get_between_matches_epoch()の値)を
+// 持たせておくと、fromValueがNaN(="-"だった)でも、フェッチ後のページに
+// 埋め込まれたdata-epochが0より大きければ「セッション開始直後の初回表示ではなく、
+// 少なくとも1試合終了済み=試合間リセットによる"-"だった」と判定し、0起点で
+// カウントアップする。data-epoch自体が無い要素は従来どおりNaNガードのみで判定する。
+//
 // Issue #361: 「値の変化そのものをカウントアップで見せる」#360のcountモードとは別に、
 // 「値が変わった一瞬だけ、見た目とは無関係などこかの要素にトリガー用クラスを付ける」
 // signalモードを追加する。対象要素に`id`と`data-animate-on-change="signal"`、
@@ -97,8 +105,15 @@
       }
       var fromValue = parseInt(fromText, 10);
       var toValue = parseInt(toText, 10);
-      if (isNaN(fromValue) || isNaN(toValue)) {
+      if (isNaN(toValue)) {
         return;
+      }
+      if (isNaN(fromValue)) {
+        var epoch = parseInt(el.getAttribute("data-epoch"), 10);
+        if (isNaN(epoch) || epoch <= 0) {
+          return;
+        }
+        fromValue = 0;
       }
       animateCount(el, fromValue, toValue);
     });
