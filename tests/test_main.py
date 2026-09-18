@@ -388,6 +388,100 @@ def test_run_notifies_match_transition_only_on_true_to_false(monkeypatch, tmp_pa
         conn.close()
 
 
+def test_run_resets_vs_rank_snapshot_only_on_true_to_false(monkeypatch, tmp_path):
+    """Issue #438: 対戦相手ランク比較ウィジェットのリセット(空スナップショット書き込み)は、
+    match_transition.notify_between_matches()と全く同じ検知箇所(in_matchがTrue->False
+    になった瞬間)でのみ発火し、False->True(試合開始)や変化無しでは発火しないことを確認する。
+
+    test_run_notifies_match_transition_only_on_true_to_falseと同じフェイク構成を使う。
+    """
+    monkeypatch.setattr(main, "_warmup_ocr_engines", lambda: None)
+
+    # True(試合開始)->True(変化無し)->False(試合終了)->True(次の試合開始)
+    in_match_sequence = [True, True, False, True]
+
+    class _FakeMachine:
+        def __init__(self):
+            self.current_state = "watching"
+            self.in_match = False
+            self.match_end_seen = False
+            self.session_match_no = 0
+            self.current_match_has_rank = False
+            self._sequence = iter(in_match_sequence)
+
+        def process_frame(self, frame, blackout=None):
+            self.in_match = next(self._sequence)
+            return None
+
+        def pop_vs_screen_event(self):
+            return None
+
+    class _FakeReader:
+        def __init__(self, frame_count):
+            self._remaining = frame_count
+            self.is_running = True
+            self.error = None
+            self.frames_produced = 0
+            self.frames_consumed = 0
+
+        def start(self):
+            pass
+
+        def read(self, timeout):
+            if self._remaining <= 0:
+                self.is_running = False
+                return None
+            self._remaining -= 1
+            self.frames_produced += 1
+            self.frames_consumed += 1
+            return np.zeros((2, 2, 3), dtype=np.uint8)
+
+        def stop(self):
+            pass
+
+    class _RecordingObsController:
+        def set_in_match(self, in_match):
+            pass
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db._SCHEMA)
+        conn.commit()
+        session_id = db.create_session(conn)
+        clip_recorder = RankEntryClipRecorder(output_dir=tmp_path / "rank_entry_clips")
+        gauge_clip_recorder = RankEntryClipRecorder(
+            output_dir=tmp_path / "rank_gauge_clips", target_width=GAUGE_TARGET_WIDTH, crop_roi=GAUGE_ROI_ENLARGED
+        )
+        rank_number_clip_recorder = RankEntryClipRecorder(
+            output_dir=tmp_path / "rank_number_clips",
+            target_width=RANK_NUMBER_TARGET_WIDTH,
+            crop_roi=RANK_NUMBER_CLIP_ROI,
+        )
+
+        main.run(
+            _FakeReader(len(in_match_sequence)),
+            _FakeMachine(),
+            conn,
+            session_id,
+            _RecordingObsController(),
+            30.0,
+            clip_recorder,
+            gauge_clip_recorder,
+            rank_number_clip_recorder,
+        )
+
+        snapshot = db.fetch_latest_vs_rank_snapshot(conn, session_id=session_id)
+        assert snapshot is not None
+        assert snapshot["mine_team_color"] is None
+        assert snapshot["opponent_team_color"] is None
+        assert db.fetch_vs_rank_snapshot_slots(conn, snapshot["id"]) == []
+        # in_matchの変化はTrue->False1回だけのため、スナップショットも1件のみ書かれる
+        assert conn.execute("SELECT COUNT(*) FROM vs_rank_snapshots").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
 def test_run_writes_clip_even_when_match_id_arrives_after_max_duration(monkeypatch, tmp_path):
     """Issue #395: 録画が上限時間に達した後で試合結果が確定した場合でも、
     クリップが破棄されず書き出されることを確認する。
