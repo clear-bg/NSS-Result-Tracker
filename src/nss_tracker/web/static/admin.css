@@ -1,13 +1,40 @@
 /* Issue #129: 配信中に調整したくなり得る設定値を編集する管理画面(/admin)専用の
    スタイル。overlay.cssと異なりOBSへの配置を想定しない(通常のブラウザで見る用)
    ため、透過にはせず読みやすさ優先の通常のページとして組む。 */
+/* Issue #444: 項目が増えて縦に長くなり、初期表示でスクロールしないと更新ボタンに
+   届かなくなった(実測で約870〜980px。1920x1080を最大化してもビューポートは約900px)。
+   さらに送信のたびにPRGリダイレクトでページ先頭へ戻るため、スクロール位置と項目の
+   位置がズレて隣のプルダウンを掴む事故が起きた(Issue #440の検知一時停止と、
+   すぐ上のOBSシーン自動切替を取り違えた)。
+   幅を広げて2カラム(左=ウィジェット一覧 / 右=配信設定)にし、設定側は触る頻度で
+   グループ分けしたうえで「その他の設定」を折りたたむことで、1画面に収める。
+   左200px + gap 28px + 右480px = 708px(paddingを足した総幅は756px)。 */
 body {
     margin: 0;
     padding: 24px;
-    max-width: 480px;
+    max-width: 708px;
     font-family: sans-serif;
     color: #222;
     background: #fff;
+}
+
+.admin-layout {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 28px;
+    align-items: flex-start;
+}
+
+.admin-col-widgets {
+    flex: 0 0 200px;
+}
+
+/* ウィンドウが狭いときは、この基準幅を下回った時点で折り返して縦積みに戻る
+   (200 + 28 + 420 = 648pxが折り返しの境目)。min-width: 0はflexアイテムが
+   内容の最小幅より縮めるようにするための定石(長いラベルによる横はみ出し防止)。 */
+.admin-col-settings {
+    flex: 1 1 420px;
+    min-width: 0;
 }
 
 h1 {
@@ -55,6 +82,41 @@ h2 {
     text-decoration: underline;
 }
 
+/* Issue #444: 設定項目を触る頻度で3つに分ける。
+   「起動時に決める」(野良/専用部屋・OBSシーン自動切替、起動確認ゲートの対象2項目)と
+   「配信中に切り替える」(検知一時停止)を区切り線で分けることで、性質の違う項目が
+   隣り合って誤操作される事故(Issue #440の実機確認で発生)も避ける。 */
+.admin-group-label {
+    font-size: 12px;
+    color: #6b7280;
+    letter-spacing: .06em;
+    font-weight: bold;
+    margin: 0 0 6px;
+}
+
+.admin-group-divider {
+    border: 0;
+    border-top: 1px solid #e3e6ea;
+    margin: 4px 0 14px;
+}
+
+/* めったに触らない4項目は既定で折りたたむ。開閉状態はadmin.html側のスクリプトが
+   localStorageに保存し、送信後のリダイレクトをまたいで維持する */
+.admin-details {
+    border-top: 1px solid #e3e6ea;
+    padding-top: 12px;
+}
+
+.admin-details summary {
+    font-size: 13px;
+    color: #1a73e8;
+    cursor: pointer;
+}
+
+.admin-details[open] summary {
+    margin-bottom: 12px;
+}
+
 .admin-field {
     display: flex;
     flex-direction: column;
@@ -67,12 +129,17 @@ h2 {
     color: #555;
 }
 
+/* Issue #444: selectは既定で最長の選択肢の幅まで広がるため、縦積みに戻る狭い
+   ウィンドウではカラムからはみ出してページ全体に横スクロールが出る。カラム幅で
+   頭打ちにする(選択肢の文字が見切れる方が、横スクロールより実害が小さい)。 */
 .admin-field input,
 .admin-field select {
     font-size: 14px;
     padding: 6px 8px;
     border: 1px solid #ccc;
     border-radius: 4px;
+    max-width: 100%;
+    box-sizing: border-box;
 }
 
 /* Issue #410: 未選択の項目を、フォーム全体ではなくその項目の直下で指摘する。
@@ -93,6 +160,9 @@ h2 {
     border-color: #b3261e;
 }
 
+/* Issue #444: 送信ボタンは折りたたみの下(フォーム最下部)に置く。折りたたみの上に
+   置くと、開いて編集したときに「ボタンの下に入力欄がある」形になり、押すために
+   上へ戻ることになるため(ユーザーとの相談で決定)。 */
 button[type="submit"] {
     font-size: 14px;
     padding: 8px 20px;
@@ -101,6 +171,7 @@ button[type="submit"] {
     background: #1a73e8;
     color: #fff;
     cursor: pointer;
+    margin-top: 16px;
 }
 
 button[type="submit"]:hover {
