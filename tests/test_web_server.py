@@ -3604,6 +3604,117 @@ def test_health_check_warning_ack_accepts_rule_k(tmp_path: Path, monkeypatch):
     assert matches[match_id]["warnings"][0]["acknowledged"] is True
 
 
+def test_health_check_context_includes_raw_result_and_room_type(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert matches[match_id]["result"] == "win"
+    assert matches[match_id]["room_type"] == "random"
+
+
+def test_health_check_post_match_updates_result_and_room_type(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    response = client.post(
+        "/health-check/match", data={"match_id": match_id, "result": "lose", "room_type": "private"}
+    )
+
+    assert response.status_code == 200
+    assert response.url.params["status"] == "match-updated"
+    matches = _health_check_matches(client)
+    assert matches[match_id]["result"] == "lose"
+    assert matches[match_id]["room_type"] == "private"
+
+
+def test_health_check_post_match_rejects_invalid_result(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    response = client.post(
+        "/health-check/match", data={"match_id": match_id, "result": "not-a-result", "room_type": "random"}
+    )
+
+    assert response.status_code == 200
+    assert response.url.params["error"]
+    matches = _health_check_matches(client)
+    assert matches[match_id]["result"] == "win"
+
+
+def test_health_check_post_match_rejects_missing_match(tmp_path: Path, monkeypatch):
+    client, _ = _setup_health_check(tmp_path, monkeypatch)
+
+    response = client.post("/health-check/match", data={"match_id": 999, "result": "win", "room_type": "random"})
+
+    assert response.status_code == 200
+    assert response.url.params["error"]
+
+
+def test_health_check_post_match_delete_removes_match_and_cascades(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank(None, None)] * 4,
+        opponent_ranks=[SlotRank(None, None)] * 4,
+    )
+    conn.close()
+
+    response = client.post("/health-check/match/delete", data={"match_id": match_id})
+
+    assert response.status_code == 200
+    assert response.url.params["status"] == "match-deleted"
+    matches = _health_check_matches(client)
+    assert match_id not in matches
+    conn = db.connect(db_path)
+    assert db.fetch_vs_slot_ranks(conn, match_id) == []
+    conn.close()
+
+
+def test_health_check_post_match_delete_removes_clip_files(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    gauge_clips_dir = tmp_path / "gauge_clips"
+    number_clips_dir = tmp_path / "number_clips"
+    monkeypatch.setattr(server_module, "GAUGE_CLIPS_DIR", gauge_clips_dir)
+    monkeypatch.setattr(server_module, "RANK_NUMBER_CLIPS_DIR", number_clips_dir)
+    gauge_clips_dir.mkdir()
+    number_clips_dir.mkdir()
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+    clip_path = tmp_path / "clips" / f"{match_id}.mp4"
+    clip_path.write_bytes(b"dummy")
+    gauge_clip_path = gauge_clips_dir / f"{match_id}.mp4"
+    gauge_clip_path.write_bytes(b"dummy")
+    number_clip_path = number_clips_dir / f"{match_id}.mp4"
+    number_clip_path.write_bytes(b"dummy")
+
+    client.post("/health-check/match/delete", data={"match_id": match_id})
+
+    assert not clip_path.exists()
+    assert not gauge_clip_path.exists()
+    assert not number_clip_path.exists()
+
+
+def test_health_check_post_match_delete_rejects_missing_match(tmp_path: Path, monkeypatch):
+    client, _ = _setup_health_check(tmp_path, monkeypatch)
+
+    response = client.post("/health-check/match/delete", data={"match_id": 999})
+
+    assert response.status_code == 200
+    assert response.url.params["error"]
+
+
 def test_health_check_marks_unranked_match_as_not_editable(tmp_path: Path, monkeypatch):
     """ランクを賭けていない試合はsave_manual_rank_afterが受け付けないため修正できない。"""
     client, db_path = _setup_health_check(tmp_path, monkeypatch)
