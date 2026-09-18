@@ -177,6 +177,11 @@ Issue #433(テニスのVS画面をサッカーの試合開始と誤検知)への
   - `rank_warnings.py`とは責務を分け、`match_warnings.py`を新規作成した。DB/Webに依存しない純粋な判定に留める点は同じだが、`rank_before`/`rank_after`がNoneの試合(ランクを賭けない試合)でも判定できる必要がある(#433自体がそうだったため)ため、`rank_warnings.evaluate()`の早期return(rank_before/afterがNoneなら空リスト)とは独立させている
   - 確認済み(ack)は既存の`match_rank_warning_acks`テーブルをそのまま共有する。ルールコードは既存(A/C/D/E/H/I/J)と衝突しない`K`を使う
   - `/rank-entry`側には追加していない(クリップが残っている試合のみが対象のため、DB全体を見る本ページに統合する方針、ユーザーとの相談で決定)
+- **試合レコードの編集・削除(Issue #442)。** Issue #433の対応時、該当レコード(matches id=45、vs_slot_ranks 8行)を手動SQLで削除した。バックアップを都度手で取る運用は手間・ミスのもとなので、`/health-check`から直接編集・削除できるようにした
+  - 編集対象は`result`(win/lose/draw)・`room_type`(random/private)のみ。`rank_before`/`rank_after`は既存の入力フォーム(Issue #407/#408)と機能が重複するため対象外
+  - 削除(`db.delete_match()`)は、SQLiteの外部キー制約が現状有効化されていないため、`matches`だけ消すと`goals`/`vs_slot_ranks`/`match_rank_warning_acks`が孤立行として残ってしまう。この3テーブルを連動して削除する(`vs_rank_snapshots`はsession単位でmatch_idと直接紐付いていないため対象外)。クリップファイル(`clips/rank_entry_clips/`等)の削除はDBに依存しない`web/server.py`側の責務とする
+  - 削除前の内容はログにINFOで残す(削除後に内容を追えるようにする)
+  - 修正フォーム・削除ボタンは既存の「一括修正モード」(Issue #408)にまとめる。表示専用/編集可能の切り替えを増やさない
 
 ### ランク手動入力用クリップの保持件数と選択UI(Issue #409)
 

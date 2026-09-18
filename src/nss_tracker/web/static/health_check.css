@@ -266,6 +266,58 @@ h1 {
     font-family: inherit;
 }
 
+/* Issue #442: result/room_typeの修正・削除フォームも、rank_afterと同じく
+   一括修正モードのときだけ出す */
+.hc-match-edit {
+    display: none;
+    align-items: center;
+    gap: 5px;
+    margin: 0;
+}
+
+.hc-editing .hc-match-edit {
+    display: inline-flex;
+}
+
+.hc-match-edit select {
+    font-size: 12px;
+    padding: 2px 4px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: inherit;
+}
+
+.hc-match-edit button {
+    font-size: 11px;
+    padding: 3px 9px;
+    border: 1px solid #1a73e8;
+    border-radius: 4px;
+    background: #1a73e8;
+    color: #fff;
+    cursor: pointer;
+    font-family: inherit;
+}
+
+.hc-delete-form {
+    display: none;
+    margin: 0;
+}
+
+.hc-editing .hc-delete-form {
+    display: inline-flex;
+}
+
+.hc-delete-button {
+    font-size: 11px;
+    padding: 3px 9px;
+    border: 1px solid #b3261e;
+    border-radius: 4px;
+    background: #fff;
+    color: #b3261e;
+    cursor: pointer;
+    font-family: inherit;
+}
+
 .hc-warnings {
     display: flex;
     flex-direction: column;

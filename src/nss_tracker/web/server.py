@@ -188,6 +188,7 @@ from nss_tracker.config import (
 )
 from nss_tracker.database.db import (
     connect as _connect_and_migrate,
+    delete_match,
     delete_rank_warning_ack,
     fetch_all_matches,
     fetch_all_sessions,
@@ -208,6 +209,7 @@ from nss_tracker.database.db import (
     fetch_vs_slot_ranks,
     save_manual_rank_after,
     save_rank_warning_ack,
+    update_match_fields,
 )
 from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR, RANK_NUMBER_CLIPS_DIR
 
@@ -1632,6 +1634,10 @@ def _build_health_check_context(db_path: Path) -> dict:
                     "session_label": session_labels.get(row["session_id"], "配信セッション不明"),
                     "detected_at_text": _format_recorded_at(row["detected_at"]),
                     "result_text": _MATCH_RESULT_LABELS.get(row["result"], row["result"]),
+                    # Issue #442: result/room_typeの直接編集フォーム用の生値
+                    # (rank_before/afterと異なり、ランクを賭けていない試合も含め常に編集可能)
+                    "result": row["result"],
+                    "room_type": row["room_type"],
                     "rank_before": rank_before,
                     "rank_after": rank_after,
                     "delta": (
@@ -1900,6 +1906,51 @@ def create_app(db_path: Path) -> FastAPI:
         finally:
             conn.close()
         return RedirectResponse("/health-check", status_code=303)
+
+    @app.post("/health-check/match")
+    def health_check_update_match(match_id: int = Form(...), result: str = Form(...), room_type: str = Form(...)):
+        """一覧から直接result/room_typeを修正する(Issue #442)。
+
+        Issue #433(テニスのVS画面をサッカーの試合開始と誤検知)のようなレコードを
+        その場で直せるようにする。rank_before/rank_afterは対象外(既存の入力
+        フォームと機能が重複するため)。
+        """
+        conn = _connect(db_path)
+        try:
+            update_match_fields(conn, match_id, result=result, room_type=room_type)
+        except ValueError as exc:
+            _logger.warning("健全性チェック(/health-check)からの試合修正が拒否されました: %s", exc)
+            return RedirectResponse(f"/health-check?error={quote(str(exc))}", status_code=303)
+        finally:
+            conn.close()
+        _logger.info(
+            "健全性チェック(/health-check)から試合を修正しました: match_id=%d result=%s room_type=%s",
+            match_id,
+            result,
+            room_type,
+        )
+        return RedirectResponse("/health-check?status=match-updated", status_code=303)
+
+    @app.post("/health-check/match/delete")
+    def health_check_delete_match(match_id: int = Form(...)):
+        """一覧から試合レコードを関連テーブル・クリップごと削除する(Issue #442)。
+
+        DB側の削除(goals/vs_slot_ranks/match_rank_warning_acksの連動削除)は
+        `db.delete_match()`が担う。クリップファイルの削除はDBに依存しない
+        web/server.py側の責務として、ここでまとめて行う。
+        """
+        conn = _connect(db_path)
+        try:
+            delete_match(conn, match_id)
+        except ValueError as exc:
+            _logger.warning("健全性チェック(/health-check)からの試合削除が拒否されました: %s", exc)
+            return RedirectResponse(f"/health-check?error={quote(str(exc))}", status_code=303)
+        finally:
+            conn.close()
+        for clips_dir in (DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR, RANK_NUMBER_CLIPS_DIR):
+            (clips_dir / f"{match_id}.mp4").unlink(missing_ok=True)
+        _logger.info("健全性チェック(/health-check)から試合を削除しました: match_id=%d", match_id)
+        return RedirectResponse("/health-check?status=match-deleted", status_code=303)
 
     @app.post("/rank-entry/warnings")
     def rank_entry_warning_ack(match_id: int = Form(...), rule_code: str = Form(...), action: str = Form(...)):
