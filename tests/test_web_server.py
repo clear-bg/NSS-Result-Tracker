@@ -3531,6 +3531,79 @@ def test_health_check_marks_rows_with_and_without_clips(tmp_path: Path, monkeypa
     assert matches[without_clip]["editable"] is True
 
 
+def test_health_check_applies_rule_k_for_mostly_unread_vs_slots(tmp_path: Path, monkeypatch):
+    """Issue #441/#433: 自チーム4人・相手チーム3人が未読(計7人)の場合に警告する。
+
+    ランクを賭けない試合(rank_before/rank_afterともNone)でも判定できる必要がある
+    (#433自体がそうだったため)。
+    """
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank(None, None)] * 4,
+        opponent_ranks=[SlotRank(None, None), SlotRank("∞", 2), SlotRank(None, None), SlotRank(None, None)],
+    )
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert [w["rule_code"] for w in matches[match_id]["warnings"]] == ["K"]
+
+
+def test_health_check_does_not_apply_rule_k_when_fully_unread(tmp_path: Path, monkeypatch):
+    """8人とも未読(ランクバッジが一切表示されない試合)は正常系のため警告しない。"""
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank(None, None)] * 4,
+        opponent_ranks=[SlotRank(None, None)] * 4,
+    )
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert matches[match_id]["warnings"] == []
+
+
+def test_health_check_does_not_apply_rule_k_when_vs_screen_never_seen(tmp_path: Path, monkeypatch):
+    """VS画面自体を見逃した試合(vs_slot_ranksが1行も無い)も正常系のため警告しない。"""
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert matches[match_id]["warnings"] == []
+
+
+def test_health_check_warning_ack_accepts_rule_k(tmp_path: Path, monkeypatch):
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    db.save_vs_slot_ranks(
+        conn,
+        match_id,
+        mine_ranks=[SlotRank(None, None)] * 4,
+        opponent_ranks=[SlotRank(None, None), SlotRank("∞", 2), SlotRank(None, None), SlotRank(None, None)],
+    )
+    conn.close()
+
+    response = client.post(
+        "/health-check/warnings", data={"match_id": match_id, "rule_code": "K", "action": "acknowledge"}
+    )
+
+    assert response.status_code == 200
+    matches = _health_check_matches(client)
+    assert matches[match_id]["warnings"][0]["acknowledged"] is True
+
+
 def test_health_check_marks_unranked_match_as_not_editable(tmp_path: Path, monkeypatch):
     """ランクを賭けていない試合はsave_manual_rank_afterが受け付けないため修正できない。"""
     client, db_path = _setup_health_check(tmp_path, monkeypatch)
