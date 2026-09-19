@@ -1836,20 +1836,26 @@ def create_app(db_path: Path) -> FastAPI:
 
     @app.post("/rank-entry")
     def rank_entry_submit(match_id: int = Form(...), rank_after: str = Form(...)):
+        # Issue #449: 記録・修正した直後は最新の試合ではなく、今まさに記録した
+        # その試合をもう一度表示する(記録漏れを遡って何試合分もまとめて記録する際、
+        # 毎回最新試合へ戻されると順番に進めづらいため)。エラー時も同様に
+        # match_idを保持し、入力し直す試合が変わってしまわないようにする
         try:
             rank_after_value = float(rank_after)
         except ValueError:
-            return RedirectResponse(f"/rank-entry?error={quote('数値を入力してください')}", status_code=303)
+            return RedirectResponse(
+                f"/rank-entry?match_id={match_id}&error={quote('数値を入力してください')}", status_code=303
+            )
         conn = _connect(db_path)
         try:
             save_manual_rank_after(conn, match_id, rank_after_value)
         except ValueError as exc:
             _logger.warning("手動ランク入力(/rank-entry)からの更新が拒否されました: %s", exc)
-            return RedirectResponse(f"/rank-entry?error={quote(str(exc))}", status_code=303)
+            return RedirectResponse(f"/rank-entry?match_id={match_id}&error={quote(str(exc))}", status_code=303)
         finally:
             conn.close()
         _logger.info("手動ランク入力(/rank-entry)からrank_afterを記録しました: match_id=%d rank_after=%s", match_id, rank_after_value)
-        return RedirectResponse("/rank-entry?status=saved", status_code=303)
+        return RedirectResponse(f"/rank-entry?match_id={match_id}&status=saved", status_code=303)
 
     @app.get("/health-check")
     def health_check(request: Request, status: Optional[str] = None, error: Optional[str] = None):
@@ -1973,9 +1979,13 @@ def create_app(db_path: Path) -> FastAPI:
         確認済みの警告が残り続けて新しい警告に気付けなくなるのを避けるため、
         人間が確認したうえで個別に消せるようにする。
         """
+        # Issue #449: rank_entry_submit()と同じ理由で、確認済みにした試合へ
+        # そのまま留まるようにする(以前はmatch_idを持たず最新試合へ飛んでいた)
         if rule_code not in rank_warnings.RULE_CODES:
             _logger.warning("不明なルールコードのため警告の更新を拒否しました: %s", rule_code)
-            return RedirectResponse(f"/rank-entry?error={quote('不明なルールコードです')}", status_code=303)
+            return RedirectResponse(
+                f"/rank-entry?match_id={match_id}&error={quote('不明なルールコードです')}", status_code=303
+            )
         conn = _connect(db_path)
         try:
             if action == "unacknowledge":
@@ -1986,7 +1996,7 @@ def create_app(db_path: Path) -> FastAPI:
                 _logger.info("ランク警告を確認済みにしました: match_id=%d rule=%s", match_id, rule_code)
         finally:
             conn.close()
-        return RedirectResponse("/rank-entry", status_code=303)
+        return RedirectResponse(f"/rank-entry?match_id={match_id}", status_code=303)
 
     @app.get("/api/rank-entry-clips")
     def rank_entry_clips() -> dict:
