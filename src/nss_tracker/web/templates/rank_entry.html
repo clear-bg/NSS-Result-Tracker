@@ -46,6 +46,7 @@
           <button type="button" id="rank-entry-gauge-video-play-btn" class="rank-entry-video-play-btn">&#9654;</button>
           <input type="range" id="rank-entry-gauge-video-seek" class="rank-entry-video-seek" min="0" max="1000" value="0">
           <span id="rank-entry-gauge-video-time" class="rank-entry-video-time">0:00 / 0:00</span>
+          <button type="button" id="rank-entry-seek-mode-toggle" class="rank-entry-seek-mode-toggle">個別シークに切替</button>
         </div>
         <div id="rank-entry-clip-selector" class="rank-entry-clip-selector"></div>
       </div>
@@ -89,6 +90,13 @@
   const numberVideo = document.getElementById("rank-entry-number-video");
   const numberColumn = document.getElementById("rank-entry-number-column");
   const numberToggle = document.getElementById("rank-entry-number-toggle");
+  // Issue #448: 統一シークの主役はゲージ動画の行。全画面・帯番号拡大側の
+  // シークバーは統一モード中だけ隠す(再生ボタン・時刻表示はどちらのモードでも
+  // 個別に動く。詳細はモジュール末尾のsyncOthersToGaugeFraction参照)
+  const videoSeekInput = document.getElementById("rank-entry-video-seek");
+  const gaugeSeekInput = document.getElementById("rank-entry-gauge-video-seek");
+  const numberSeekInput = document.getElementById("rank-entry-number-video-seek");
+  const seekModeToggle = document.getElementById("rank-entry-seek-mode-toggle");
   // Issue #428: ランク数値拡大クリップを表示中かどうか。既定は非表示。
   // selectClip()が別の試合へ切り替わるたびに表示状態を設定し直すため、状態を
   // ここに持たせて尊重させる(持たせないと、クリップを選び直すたびに非表示へ
@@ -160,22 +168,78 @@
   const resetVideoControls = attachCustomControls(
     video,
     document.getElementById("rank-entry-video-play-btn"),
-    document.getElementById("rank-entry-video-seek"),
+    videoSeekInput,
     document.getElementById("rank-entry-video-time")
   );
   const resetGaugeVideoControls = attachCustomControls(
     gaugeVideo,
     document.getElementById("rank-entry-gauge-video-play-btn"),
-    document.getElementById("rank-entry-gauge-video-seek"),
+    gaugeSeekInput,
     document.getElementById("rank-entry-gauge-video-time")
   );
 
   const resetNumberVideoControls = attachCustomControls(
     numberVideo,
     document.getElementById("rank-entry-number-video-play-btn"),
-    document.getElementById("rank-entry-number-video-seek"),
+    numberSeekInput,
     document.getElementById("rank-entry-number-video-time")
   );
+
+  // Issue #448: 3本のクリップを1本のシークバーで同時に操作する。主役は
+  // ゲージ動画の行(一番よく見る動画のため、既存の行をそのまま使い新しい行を
+  // 増やさない、ユーザーとの相談で決定)。既定は統一シーク(true)。
+  // numberColumnShownと同じパターンでJS変数に保持し、クリップ切り替えでは
+  // 維持、ページ再読み込みでは既定(統一)に戻す。
+  //
+  // 再生(▶)ボタンは統一しない: 全画面クリップは8fps、ゲージ・帯番号拡大クリップは
+  // 30fpsとサンプリングfpsが異なり、実時間の長さはほぼ一致するが完全な一致は
+  // 保証されない(実測で1秒前後ズレることがある)。3本の同時再生を厳密に同期
+  // させる仕組み(ドリフト補正等)は過剰な複雑化と判断し、シーク位置(スクラブ)の
+  // 割合(currentTime / duration)だけを合わせる。この割合はgaugeSeekInputの
+  // "input"イベント(ユーザーがスライダーを動かしたときのみ発火し、再生中の
+  // timeupdateによるプログラム的な値更新では発火しない)に載せて転送するため、
+  // 自然に「スクラブのみ同期・再生は独立」という設計になる。
+  let unifiedSeekMode = true;
+
+  function currentGaugeFraction() {
+    return Number(gaugeSeekInput.value) / 1000;
+  }
+
+  function syncOthersToGaugeFraction() {
+    const fraction = currentGaugeFraction();
+    if (isFinite(video.duration) && video.duration > 0) {
+      video.currentTime = fraction * video.duration;
+    }
+    if (isFinite(numberVideo.duration) && numberVideo.duration > 0) {
+      numberVideo.currentTime = fraction * numberVideo.duration;
+    }
+  }
+
+  function applySeekMode() {
+    videoSeekInput.classList.toggle("rank-entry-video-seek-hidden", unifiedSeekMode);
+    videoSeekInput.disabled = unifiedSeekMode;
+    numberSeekInput.classList.toggle("rank-entry-video-seek-hidden", unifiedSeekMode);
+    numberSeekInput.disabled = unifiedSeekMode;
+    seekModeToggle.textContent = unifiedSeekMode ? "個別シークに切替" : "統一シークに戻す";
+  }
+
+  seekModeToggle.addEventListener("click", function () {
+    unifiedSeekMode = !unifiedSeekMode;
+    applySeekMode();
+    if (unifiedSeekMode) {
+      // 個別モードで動かした分だけ2本がズレている可能性があるため、
+      // 統一モードへ戻した瞬間にゲージ側の現在位置へ合わせ直す
+      syncOthersToGaugeFraction();
+    }
+  });
+
+  gaugeSeekInput.addEventListener("input", function () {
+    if (unifiedSeekMode) {
+      syncOthersToGaugeFraction();
+    }
+  });
+
+  applySeekMode();
 
   function findClip(matchId) {
     return clips.find(function (c) { return c.match_id === matchId; }) || null;
@@ -482,6 +546,22 @@
     if (clip.has_number_clip && numberColumnShown) {
       numberColumn.style.display = "";
       numberVideo.src = "/rank-entry/number-clips/" + clip.match_id + ".mp4?t=" + Date.now();
+      if (unifiedSeekMode) {
+        // Issue #448: 非表示の間はダウンロードを避けるため位置を合わせずにいた分、
+        // 表示した瞬間にゲージ動画の現在位置(割合)へ合わせておく。読み込み前は
+        // durationが定まらずcurrentTimeを設定しても効果が無いため、
+        // loadedmetadataを待って一度だけ行う
+        const fraction = currentGaugeFraction();
+        numberVideo.addEventListener(
+          "loadedmetadata",
+          function () {
+            if (isFinite(numberVideo.duration) && numberVideo.duration > 0) {
+              numberVideo.currentTime = fraction * numberVideo.duration;
+            }
+          },
+          { once: true }
+        );
+      }
     } else {
       // 列ごと隠す(見出しと動画だけ隠すと、空の再生コントロールが残るため)
       numberColumn.style.display = "none";

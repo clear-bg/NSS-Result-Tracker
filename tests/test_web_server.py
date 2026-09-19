@@ -4120,6 +4120,84 @@ def test_rank_entry_css_defines_number_toggle_style(tmp_path: Path):
     assert ".rank-entry-number-toggle {" in css
 
 
+# --- Issue #448: 3本のクリップを1本のシークバーで同時に操作する ---
+
+
+def test_rank_entry_page_has_seek_mode_toggle_button(tmp_path: Path, monkeypatch):
+    """ゲージ動画の行の末尾に、統一/個別シークを切り替えるボタンがあること。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert 'id="rank-entry-seek-mode-toggle"' in html
+    assert "個別シークに切替" in html
+
+
+def test_rank_entry_page_defaults_to_unified_seek_mode(tmp_path: Path, monkeypatch):
+    """既定は統一シーク(true)。ページ再読み込みのたびにこの既定へ戻る。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "let unifiedSeekMode = true;" in html
+
+
+def test_rank_entry_gauge_seek_forwards_to_others_only_when_unified(tmp_path: Path, monkeypatch):
+    """ゲージのシークバーを動かすと、統一モードのときだけ全画面・帯番号拡大の
+    再生位置を同じ割合(currentTime / duration)へ転送する。転送はgaugeSeekInputの
+    "input"イベント(ユーザー操作のみで発火)に載せるため、再生中の自動更新
+    (timeupdate)では発火しない。
+    """
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "function syncOthersToGaugeFraction() {" in html
+    assert "gaugeSeekInput.addEventListener(\"input\", function () {" in html
+    assert "if (unifiedSeekMode) {\n      syncOthersToGaugeFraction();\n    }" in html
+
+
+def test_rank_entry_seek_mode_toggle_hides_other_seek_bars_when_unified(tmp_path: Path, monkeypatch):
+    """統一モードでは全画面・帯番号拡大のシークバーを隠し、再生ボタン・時刻表示は
+    残す(どちらも各動画で独立して動く、モジュールdocstring参照)。
+    """
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "videoSeekInput.classList.toggle(\"rank-entry-video-seek-hidden\", unifiedSeekMode);" in html
+    assert "numberSeekInput.classList.toggle(\"rank-entry-video-seek-hidden\", unifiedSeekMode);" in html
+    assert "videoSeekInput.disabled = unifiedSeekMode;" in html
+    assert "numberSeekInput.disabled = unifiedSeekMode;" in html
+
+
+def test_rank_entry_seek_mode_toggle_resyncs_on_return_to_unified(tmp_path: Path, monkeypatch):
+    """個別モードで動かした分だけ2本がズレるため、統一モードへ戻した瞬間に
+    ゲージ側の現在位置へ合わせ直す。
+    """
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert (
+        'seekModeToggle.addEventListener("click", function () {\n'
+        "    unifiedSeekMode = !unifiedSeekMode;\n"
+        "    applySeekMode();\n"
+        "    if (unifiedSeekMode) {"
+    ) in html
+
+
+def test_rank_entry_number_column_syncs_to_gauge_position_when_revealed(tmp_path: Path, monkeypatch):
+    """非表示の間はダウンロードを避けて位置合わせをしていない分、表示ボタンを
+    押した瞬間にゲージ動画の現在位置(割合)へ合わせておく(Issue #448)。
+    """
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "const fraction = currentGaugeFraction();" in html
+    assert '"loadedmetadata",' in html
+    assert "{ once: true }" in html
+
+
+def test_rank_entry_css_defines_seek_mode_toggle_style(tmp_path: Path):
+    """統一/個別シーク切替ボタンのスタイルが静的ファイル側に用意されていること。"""
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    css = client.get("/static/rank_entry.css").text
+
+    assert ".rank-entry-seek-mode-toggle {" in css
+    assert ".rank-entry-video-seek-hidden {" in css
+
+
 def test_overlay_dive_time_polls_faster_than_other_widgets(tmp_path: Path):
     """Issue #419: YouTube側のポーリングを10秒へ広げた分、こちらを短くして
     画面反映までの体感を取り戻す(ローカルへのアクセスでクォータを消費しない)。
