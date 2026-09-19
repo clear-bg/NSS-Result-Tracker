@@ -3009,7 +3009,8 @@ def test_rank_entry_post_saves_rank_after_and_league_changed(tmp_path: Path):
     response = client.post("/rank-entry", data={"match_id": str(match_id), "rank_after": "39.10"}, follow_redirects=False)
 
     assert response.status_code == 303
-    assert response.headers["location"] == "/rank-entry?status=saved"
+    # Issue #449: 記録後は最新の試合ではなく、今記録したその試合をもう一度表示する
+    assert response.headers["location"] == f"/rank-entry?match_id={match_id}&status=saved"
     conn = db.connect(db_path)
     row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
     conn.close()
@@ -3032,7 +3033,8 @@ def test_rank_entry_post_with_non_numeric_value_shows_error(tmp_path: Path):
     )
 
     assert response.status_code == 303
-    assert response.headers["location"].startswith("/rank-entry?error=")
+    # Issue #449: エラー時も入力し直す試合が変わらないよう、match_idを保持する
+    assert response.headers["location"].startswith(f"/rank-entry?match_id={match_id}&error=")
     conn = db.connect(db_path)
     row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
     conn.close()
@@ -3055,7 +3057,8 @@ def test_rank_entry_post_with_unranked_match_shows_error(tmp_path: Path):
     response = client.post("/rank-entry", data={"match_id": str(match_id), "rank_after": "39.10"}, follow_redirects=False)
 
     assert response.status_code == 303
-    assert response.headers["location"].startswith("/rank-entry?error=")
+    # Issue #449: エラー時も入力し直す試合が変わらないよう、match_idを保持する
+    assert response.headers["location"].startswith(f"/rank-entry?match_id={match_id}&error=")
 
 
 def test_rank_entry_get_shows_pending_count_when_multiple_pending(tmp_path: Path, monkeypatch):
@@ -3541,6 +3544,57 @@ def test_rank_entry_get_embeds_null_when_match_id_omitted(tmp_path: Path, monkey
     )
     assert match is not None
     assert json.loads(match.group(1)) is None
+
+
+# --- Issue #449: 記録・確認後も同じ試合の表示を維持する ---
+
+
+def _embedded_initial_match_id(html: str) -> Optional[int]:
+    match = re.search(r'<script id="rank-entry-initial-match-id" type="application/json">(.*?)</script>', html)
+    assert match is not None, "rank-entry-initial-match-idが見つかりません"
+    return json.loads(match.group(1))
+
+
+def test_rank_entry_post_redirect_reselects_same_match(tmp_path: Path, monkeypatch):
+    """記録直後にリダイレクト先を辿ると、最新の試合ではなく今記録したその試合が
+    選択された状態で開くことを確認する(以前はmatch_idを持たず最新へ飛んでいた)。
+    """
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
+    (tmp_path / "clips").mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    older_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    db.save_manual_rank_after(conn, older_id, 39.10)
+    newer_id = db.save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=39.10, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.post("/rank-entry", data={"match_id": str(newer_id), "rank_after": "38.80"})
+
+    assert response.status_code == 200
+    assert _embedded_initial_match_id(response.text) == newer_id
+
+
+def test_rank_entry_warning_ack_redirect_preserves_match_id(tmp_path: Path, monkeypatch):
+    """警告の「確認済みにする」ボタンでも、記録と同じ理由で同じ試合に留まる
+    (ユーザーとの相談で#449に含めることを決定)。
+    """
+    client, match_id = _setup_warning_client(tmp_path, monkeypatch, _warning_match("win", 42.90), 42.75)
+
+    response = client.post(
+        "/rank-entry/warnings",
+        data={"match_id": match_id, "rule_code": "A", "action": "acknowledge"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/rank-entry?match_id={match_id}"
 
 
 # --- Issue #408: 健全性チェック一覧(/health-check) ---
