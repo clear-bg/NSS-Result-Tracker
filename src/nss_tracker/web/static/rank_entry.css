@@ -253,6 +253,34 @@ h1 {
     font-variant-numeric: tabular-nums;
 }
 
+/* Issue #448: 3本のクリップを1本のシークバーで同時に操作するモード切替。
+   ゲージ動画の行(一番よく見る動画のため統一シークの主役にした、モジュール
+   docstring・rank_entry.htmlのJS参照)の末尾に置く控えめなテキストリンク。
+   新しい行を増やさない案を採用したため、他のボタン(.rank-entry-number-toggle等)
+   のような枠付きの見た目にはせず、リンクのトーンにしている */
+.rank-entry-seek-mode-toggle {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: #1a73e8;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    white-space: nowrap;
+}
+
+.rank-entry-seek-mode-toggle:hover {
+    color: #1558b0;
+}
+
+/* 統一シーク中、主役ではない動画(全画面・帯番号拡大)のシークバーを隠し、
+   再生ボタン+時刻表示だけを残す(どちらも各動画で独立して動く) */
+.rank-entry-video-seek-hidden {
+    display: none;
+}
+
 /* Issue #409: 保持件数を50件に増やしたため、横一列のボタンから縦の
    スクロールリストへ変更した。試合終了時刻で目的の試合を探せるようにする */
 .rank-entry-clip-selector {
