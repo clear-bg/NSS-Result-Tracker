@@ -4131,3 +4131,95 @@ def test_overlay_dive_time_polls_faster_than_other_widgets(tmp_path: Path):
     assert response.status_code == 200
     assert str(server_module._DIVE_TIME_REFRESH_INTERVAL_MS) in response.text
     assert server_module._DIVE_TIME_REFRESH_INTERVAL_MS < server_module._OVERLAY_REFRESH_INTERVAL_MS
+
+
+def _match_with_unreadable_badge() -> MatchResult:
+    """Issue #446: 結果バナー確定時のバッジは読めなかったが、VS画面では自分の
+    ランクバッジを読めていた試合(実配信のid=101/107/109と同じ状況)。
+    """
+    return MatchResult(
+        result="lose",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime(2026, 9, 6, 22, 30, tzinfo=timezone.utc),
+        vs_mine_ranks=[SlotRank("∞", 45), SlotRank(None, None), SlotRank(None, None), SlotRank(None, None)],
+    )
+
+
+def test_rank_entry_marks_match_with_unreadable_badge_as_rank_staked(tmp_path: Path, monkeypatch):
+    """Issue #446: バッジ未読の試合でもVS画面で自分のランクを読めていれば、
+    rank_stakedが立ち、直前の試合の確定値からrank_beforeが解決されて入力できる。
+    """
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    first_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=45.20, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    db.save_manual_rank_after(conn, first_id, 45.10)
+    db.save_match_result(conn, _match_with_unreadable_badge())
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+
+    latest = clips[0]
+    assert latest["rank_staked"] is True
+    assert latest["rank_before"] == 45.10
+
+
+def test_rank_entry_marks_unranked_match_as_not_rank_staked(tmp_path: Path, monkeypatch):
+    """Issue #446: ランクを賭けていない試合はrank_stakedがFalseになり、
+    テンプレート側で「待っても解消しない」旨のメッセージに切り替わる。
+    """
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="draw", rank_before=None, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    (clips_dir / f"{match_id}.mp4").write_bytes(b"")
+    client = TestClient(create_app(db_path))
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+
+    assert clips[0]["rank_staked"] is False
+    assert clips[0]["rank_before"] is None
+
+
+def test_rank_entry_page_has_separate_messages_for_both_blocked_reasons(tmp_path: Path, monkeypatch):
+    """Issue #446: rank_beforeがNULLになる2つの理由で別々の文言を出す
+    (以前はどちらも「先に直前の試合を確定させてください」だった)。
+    """
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    html = client.get("/rank-entry").text
+
+    assert "先に直前の試合を確定させてください" in html
+    assert "ランクを賭けていない試合として記録されています" in html
+
+
+def test_health_check_marks_match_with_unreadable_badge_as_editable(tmp_path: Path, monkeypatch):
+    """Issue #446: バッジ未読でもVS画面で自分のランクを読めていれば修正できる。"""
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    first_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=45.20, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    db.save_manual_rank_after(conn, first_id, 45.10)
+    match_id = db.save_match_result(conn, _match_with_unreadable_badge())
+    conn.close()
+
+    matches = _health_check_matches(client)
+
+    assert matches[match_id]["editable"] is True
