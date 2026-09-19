@@ -3597,6 +3597,32 @@ def test_rank_entry_warning_ack_redirect_preserves_match_id(tmp_path: Path, monk
     assert response.headers["location"] == f"/rank-entry?match_id={match_id}"
 
 
+def test_rank_entry_page_persists_scroll_position_across_reload(tmp_path: Path, monkeypatch):
+    """記録後の画面更新(POSTの303リダイレクトによる通常のページ遷移)で
+    スクロール位置が失われないよう、sessionStorageへ保存・復元することを確認する。
+    """
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert 'sessionStorage.getItem(key)' in html
+    assert 'sessionStorage.setItem(key, String(value))' in html
+    assert 'window.addEventListener(\n    "scroll",' in html
+    assert "window.scrollTo(0, savedWindowScroll);" in html
+
+
+def test_rank_entry_selector_restores_scroll_position_after_rebuild(tmp_path: Path, monkeypatch):
+    """renderSelector()はrefresh()から5秒おきに呼ばれるたびにinnerHTMLを
+    作り直すため、そのままでは毎回スクロール位置が先頭へ戻ってしまう。
+    rebuild後に保存済みの位置へ読み戻すことを確認する。
+    """
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert (
+        'selector.addEventListener(\n    "scroll",\n'
+        "    function () { writeScrollValue(SCROLL_SELECTOR_KEY, selector.scrollTop); },"
+    ) in html
+    assert "selector.scrollTop = savedSelectorScroll;" in html
+
+
 # --- Issue #408: 健全性チェック一覧(/health-check) ---
 
 
