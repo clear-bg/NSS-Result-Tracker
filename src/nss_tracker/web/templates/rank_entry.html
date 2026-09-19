@@ -296,9 +296,17 @@
     }
 
     if (clip.rank_before === null || clip.rank_before === undefined) {
+      // Issue #446: rank_beforeがNULLになる理由は2つあり、待てば解消するものと
+      // 解消しないものがある。どちらも同じ文言を出していたため、「先に直前の試合を
+      // 確定させてください」と言われた通りにしても何も起きない(直前の試合はとっくに
+      // 確定済み)という状態になっていた
       const blocked = document.createElement("p");
       blocked.className = "rank-entry-empty";
-      blocked.textContent = "直前の試合のランクがまだ確定していないため、この試合は入力できません。先に直前の試合を確定させてください。";
+      if (clip.rank_staked) {
+        blocked.textContent = "直前の試合のランクがまだ確定していないため、この試合は入力できません。先に直前の試合を確定させてください。";
+      } else {
+        blocked.textContent = "この試合はVS画面で自分のランクバッジを検知できなかったため、ランクを賭けていない試合として記録されています。ランクの入力対象外です。";
+      }
       left.appendChild(blocked);
       return;
     }

@@ -121,7 +121,7 @@ DBとは別のライフサイクルで残り続けるため、DBリセット直�
 試合も永久に未確定のまま)デッドロックが実配信で見つかった。
 
 対策として、`max_clips`件を超えて削除の対象になった古いクリップのうち、
-対応する試合が未確定(`matches.rank_before_ocr`が非NULLかつ`rank_after`が
+対応する試合が未確定(`matches.rank_staked`が1かつ`rank_after`が
 NULL、`database.db.fetch_match`で判定)のものは削除せずそのまま残す。
 `/rank-entry`側(`web/server.py`)はディスク上に残っている全クリップを表示
 対象にするため、UIからは`max_clips`件に加えて未確定の試合の分だけ選択肢が
@@ -563,7 +563,7 @@ class RankEntryClipRecorder:
 
     def _apply_retention(self) -> None:
         """max_clips件を超えた分を古いものから削除する。ただし対応する試合が
-        未確定(rank_before_ocrが非NULLかつrank_afterがNULL)のクリップは
+        未確定(rank_stakedが1かつrank_afterがNULL)のクリップは
         削除しない(Issue #389、モジュールdocstring参照)。
 
         Issue #381: 以前はファイル名の数字(match_id)の昇順を「古い」とみなしていたが、
@@ -589,7 +589,7 @@ class RankEntryClipRecorder:
             for path in clip_files[:excess]:
                 match_id = int(path.stem)
                 row = db.fetch_match(conn, match_id)
-                if row is not None and row["rank_before_ocr"] is not None and row["rank_after"] is None:
+                if row is not None and row["rank_staked"] and row["rank_after"] is None:
                     # Issue #389: rank_beforeチェーンを塞いでいる可能性がある未確定
                     # 試合のクリップは、max_clips件を超えていても削除せず残す
                     pending_kept += 1
