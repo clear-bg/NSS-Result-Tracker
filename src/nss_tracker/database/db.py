@@ -163,10 +163,17 @@ CREATE TABLE IF NOT EXISTS matches (
                                      -- いずれかが非NULL)は常に'random'を強制する(save_match_result参照)
     league_change_label_detected TEXT, -- 'up' / 'down' / NULL。Issue #374。昇格演出/降格ラベルを
                                      -- 視覚的に検知できたか(league_changedとは独立、数値化の
-                                     -- 成否に関わらず記録する)。rank_before_ocrがNULLの試合
+                                     -- 成否に関わらず記録する)。rank_stakedが0の試合
                                      -- (バッジ完全未読)でここが非NULLの場合、rank_beforeチェーンが
                                      -- この試合を素通りする際にWARNINGを出す
                                      -- (_warn_if_skipped_match_had_league_change_label参照)
+    rank_staked INTEGER NOT NULL DEFAULT 0, -- 1=ランクを賭けた試合 / 0=賭けていない試合。Issue #446。
+                                     -- VS画面のスロット0(自分自身)のランクバッジを読めたかで決める
+                                     -- (state/match_state.pyのcurrent_match_has_rankと同じ条件)。
+                                     -- rank_beforeチェーンの対象・手動入力の可否はすべてこの列で
+                                     -- 判定する(以前はrank_before_ocrの非NULLで代用していたが、
+                                     -- 結果バナー確定時のバッジ読み取りに失敗した試合が
+                                     -- 永久に入力できなくなるため。save_match_result参照)
     created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601, JST)
     updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601, JST)
 );
@@ -390,6 +397,83 @@ def _migrate_matches_add_league_change_label_detected(conn: sqlite3.Connection) 
     conn.commit()
 
 
+def _migrate_matches_add_rank_staked(conn: sqlite3.Connection) -> None:
+    """Issue #446: 既存DBファイルのmatchesテーブルにrank_staked列を追加する。
+
+    「ランクを賭けた試合か」の判定根拠を、結果バナー確定時のバッジ読み取り
+    (`rank_before_ocr`の非NULL)からVS画面のスロット0(自分自身)の読み取りへ
+    移すための列(モジュールdocstring・save_match_result参照)。
+
+    既存行のバックフィルは次のどちらかを満たせば1にする:
+
+    - `rank_before_ocr`が非NULL … 従来の基準で「ランクを賭けた試合」だった行
+    - `vs_slot_ranks`のmine slot0の`rank_tier_label`が非NULL … VS画面で自分の
+      ランクバッジを読めていた行(バッジ読み取りに失敗して従来の基準から
+      漏れていた行を拾い直すのが、この移行の主目的)
+
+    あわせて、rank_stakedが1なのに`rank_before`がNULLのままの行を、直前の
+    「ランクを賭けた試合」の確定済み`rank_after`で埋める一度きりの補修を行う
+    (_repair_missing_rank_before参照)。従来の基準から漏れていた行は、前後の
+    試合をいくら確定させても`rank_before`が埋まらず`/rank-entry`から永久に
+    入力できない状態で残っているため。**既存の値は書き換えない**(NULLの行を
+    埋めるだけ)。
+
+    新規DBでは_SCHEMA自体に既にrank_staked列を含むため、この関数は無害にreturnする
+    (補修対象の行も存在しない)。
+    """
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    if any(c["name"] == "rank_staked" for c in columns):
+        return
+
+    logger.info("matchesテーブルにrank_staked列を追加しています")
+    conn.execute("ALTER TABLE matches ADD COLUMN rank_staked INTEGER NOT NULL DEFAULT 0")
+    conn.execute("UPDATE matches SET rank_staked = 1 WHERE rank_before_ocr IS NOT NULL")
+    conn.execute(
+        "UPDATE matches SET rank_staked = 1 WHERE EXISTS ("
+        "  SELECT 1 FROM vs_slot_ranks v"
+        "  WHERE v.match_id = matches.id AND v.side = 'mine' AND v.slot_index = 0"
+        "    AND v.rank_tier_label IS NOT NULL"
+        ")"
+    )
+    conn.commit()
+    _repair_missing_rank_before(conn)
+
+
+def _repair_missing_rank_before(conn: sqlite3.Connection) -> None:
+    """rank_stakedが1なのにrank_beforeがNULLのままの行を、直前の「ランクを賭けた
+    試合」の確定済みrank_afterで埋める(Issue #446、_migrate_matches_add_rank_stakedから
+    一度だけ呼ばれる)。
+
+    引き継ぎ元(直前のランクを賭けた試合)が無い、またはその試合のrank_afterが
+    まだ未確定の場合はNULLのままにする(値を捏造しない)。古い順に処理するため、
+    複数件が連続して欠けていても前から順に埋まっていく。
+    """
+    rows = conn.execute(
+        "SELECT id FROM matches WHERE rank_staked = 1 AND rank_before IS NULL ORDER BY id ASC"
+    ).fetchall()
+    for row in rows:
+        previous = conn.execute(
+            "SELECT id, rank_after FROM matches "
+            "WHERE id < ? AND rank_staked = 1 ORDER BY id DESC LIMIT 1",
+            (row["id"],),
+        ).fetchone()
+        if previous is None or previous["rank_after"] is None:
+            continue
+        now = now_jst().isoformat()
+        conn.execute(
+            "UPDATE matches SET rank_before = ?, updated_at = ? WHERE id = ?",
+            (previous["rank_after"], now, row["id"]),
+        )
+        conn.commit()
+        logger.info(
+            "matches.id=%d のrank_beforeを、直前のランクを賭けた試合(id=%d)の"
+            "rank_after(%s)で補修しました(Issue #446の移行)",
+            row["id"],
+            previous["id"],
+            previous["rank_after"],
+        )
+
+
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """DBに接続し、テーブルが無ければ作成して返す。
 
@@ -411,6 +495,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     _migrate_matches_add_rank_before_ocr(conn)
     _migrate_matches_add_room_type(conn)
     _migrate_matches_add_league_change_label_detected(conn)
+    _migrate_matches_add_rank_staked(conn)
     logger.info("DBに接続しました: %s", Path(db_path).resolve())
     return conn
 
@@ -503,22 +588,26 @@ def _warn_if_skipped_match_had_league_change_label(
     conn: sqlite3.Connection, after_id: int, before_id: Optional[int] = None
 ) -> None:
     """Issue #374: rank_beforeチェーンがafter_idから(before_id指定時はその手前まで)
-    素通りした試合の中に、バッジ完全未読(rank_before_ocrがNULL)だが昇格/降格ラベルは
+    素通りした試合の中に、ランクを賭けていない扱い(rank_stakedが0)だが昇格/降格ラベルは
     検知できていた(league_change_label_detectedが非NULL)試合が無いか確認し、あれば
     WARNINGログを出す。
 
-    チェーンはrank_before_ocrが非NULLの行だけを見て辿るため(_resolve_rank_before/
+    チェーンはrank_stakedが1の行だけを見て辿るため(_resolve_rank_before/
     _backfill_next_rank_before参照)、その間にある該当試合は素通りされ、これ以降の
     rank_beforeが実態と1帯ズレたまま気づかれずに記録されてしまう(実際に発生した
     ケースの詳細はGitHub Issue #374参照。7試合目でバッジが完全に読み取れないまま
     降格ラベルだけ検知され、8試合目のrank_beforeが1帯ズレて記録された)。
+
+    Issue #446でrank_stakedの判定をVS画面側へ移したため、「バッジは読めなかったが
+    VS画面では自分のランクを読めていた」試合は素通りされなくなり、この警告が出る
+    ケース自体が減る(VS画面も読めなかった試合だけが残る)。
 
     数値の自動推定は行わない(スコープ外、Issue #374本文の「最小案」を参照)。
     あくまで人間が気づいて/rank-entry等で手動修正できるようにする通知に留める。
     """
     query = (
         "SELECT id, league_change_label_detected FROM matches "
-        "WHERE id > ? AND rank_before_ocr IS NULL AND league_change_label_detected IS NOT NULL"
+        "WHERE id > ? AND rank_staked = 0 AND league_change_label_detected IS NOT NULL"
     )
     params: tuple = (after_id,)
     if before_id is not None:
@@ -535,16 +624,20 @@ def _warn_if_skipped_match_had_league_change_label(
         )
 
 
-def _resolve_rank_before(conn: sqlite3.Connection, rank_before_ocr: Optional[float]) -> Optional[float]:
+def _resolve_rank_before(
+    conn: sqlite3.Connection, rank_before_ocr: Optional[float], rank_staked: bool
+) -> Optional[float]:
     """新しい試合のrank_before(チェーン導出値)を決定する(Issue #308)。
 
-    ランクを賭けない試合(rank_before_ocrがNone)はチェーンの対象外で、常にNoneを返す。
-    ランクを賭けた試合は、直近の「ランクを賭けた試合」(rank_before_ocrが非NULLの
-    行、確定済みかどうかは問わない)を1件だけ見る:
+    ランクを賭けない試合(rank_stakedがFalse)はチェーンの対象外で、常にNoneを返す。
+    ランクを賭けた試合は、直近の「ランクを賭けた試合」(rank_stakedが1の行、
+    確定済みかどうかは問わない)を1件だけ見る:
 
     - 直近の試合が無い(DB上で最初のランクを賭けた試合、またはそれまでの試合が
       すべてランクを賭けない試合だった場合): 引き継ぎ元が無いため、フォールバックと
-      してこの試合自身のrank_before_ocr(OCR実測値)をそのまま使う
+      してこの試合自身のrank_before_ocr(OCR実測値)をそのまま使う。バッジを
+      読み取れずrank_before_ocrもNoneの場合はNoneのまま(値を捏造しない。
+      DB上で最初のランクを賭けた試合でのみ起こりうる既知の制限)
     - 直近の試合のrank_afterが確定済み(非NULL): その値をそのまま引き継ぐ
     - 直近の試合のrank_afterが未確定(NULL、手動入力待ち): チェーンが詰まっている
       ため、この試合のrank_beforeもNoneのまま(手動入力待ち)にする。直近の試合が
@@ -555,17 +648,23 @@ def _resolve_rank_before(conn: sqlite3.Connection, rank_before_ocr: Optional[flo
     生の値のため、ここで丸める。チェーン由来のrank_afterは既に丸め済みのはずだが
     念のため通す)。
 
-    Issue #374: 上記「直近の試合」を探す際、間に素通りした試合(rank_before_ocrが
-    NULL)が実は昇格/降格ラベルを検知していた場合、WARNINGログを出す
+    Issue #446: 「ランクを賭けた試合か」の判定をrank_before_ocrの非NULLから
+    rank_staked列(VS画面のスロット0を読めたか)へ移した。結果バナー確定時の
+    バッジ読み取りに失敗しただけの試合がチェーンから丸ごと除外され、前後の試合を
+    いくら確定させてもrank_beforeが埋まらない(=/rank-entryから永久に入力できない)
+    状態になっていたため(モジュールdocstring・save_match_result参照)。
+
+    Issue #374: 上記「直近の試合」を探す際、間に素通りした試合(rank_stakedが0)が
+    実は昇格/降格ラベルを検知していた場合、WARNINGログを出す
     (_warn_if_skipped_match_had_league_change_label参照。今回返す値自体は補正しない)。
     """
-    if rank_before_ocr is None:
+    if not rank_staked:
         return None
     row = conn.execute(
-        "SELECT id, rank_after FROM matches WHERE rank_before_ocr IS NOT NULL ORDER BY id DESC LIMIT 1"
+        "SELECT id, rank_after FROM matches WHERE rank_staked = 1 ORDER BY id DESC LIMIT 1"
     ).fetchone()
     if row is None:
-        return _round_rank(rank_before_ocr)
+        return _round_rank(rank_before_ocr) if rank_before_ocr is not None else None
     _warn_if_skipped_match_had_league_change_label(conn, row["id"])
     return _round_rank(row["rank_after"])
 
@@ -574,13 +673,13 @@ def _backfill_next_rank_before(conn: sqlite3.Connection, confirmed_match_id: int
     """confirmed_match_idのrank_afterが確定したことで、rank_beforeのチェーンが
     詰まっていた後続の試合を解決できないか確認し、解決できれば埋める(Issue #308)。
 
-    「直近のランクを賭けた試合」(rank_before_ocrが非NULL)を時系列順に1件ずつ
+    「直近のランクを賭けた試合」(rank_stakedが1)を時系列順に1件ずつ
     辿り、rank_beforeがまだNoneの間は今回確定した値を使って埋め、そのままさらに
     次の試合へ連鎖的に辿る(通常の運用では古い順に1件ずつ確定させるため高々1件
     しか埋まらないはずだが、まとめて何件も未確定のまま溜まっていた場合等の
     保険として複数件に対応できるようにしている)。
 
-    Issue #374: 各ステップで素通りした試合(rank_before_ocrがNULL)が昇格/降格
+    Issue #374: 各ステップで素通りした試合(rank_stakedが0)が昇格/降格
     ラベルを検知していた場合、WARNINGログを出す
     (_warn_if_skipped_match_had_league_change_label参照)。
     """
@@ -589,7 +688,7 @@ def _backfill_next_rank_before(conn: sqlite3.Connection, confirmed_match_id: int
     while True:
         row = conn.execute(
             "SELECT id, rank_before, rank_after FROM matches "
-            "WHERE id > ? AND rank_before_ocr IS NOT NULL ORDER BY id ASC LIMIT 1",
+            "WHERE id > ? AND rank_staked = 1 ORDER BY id ASC LIMIT 1",
             (after_id,),
         ).fetchone()
         if row is None or row["rank_before"] is not None:
@@ -632,7 +731,7 @@ def _force_overwrite_next_rank_before(conn: sqlite3.Connection, corrected_match_
     """
     row = conn.execute(
         "SELECT id, rank_before, rank_after FROM matches "
-        "WHERE id > ? AND rank_before_ocr IS NOT NULL ORDER BY id ASC LIMIT 1",
+        "WHERE id > ? AND rank_staked = 1 ORDER BY id ASC LIMIT 1",
         (corrected_match_id,),
     ).fetchone()
     if row is None:
@@ -685,12 +784,31 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
 
     Issue #374: match.league_change_label_detected(昇格演出/降格ラベルの検知結果、
     数値化の成否に関わらず独立に持ち回る)もそのままleague_change_label_detected列へ
-    保存する。バッジ完全未読(rank_before_ocrがNULL)の試合でここが非NULLだと、
+    保存する。ランクを賭けていない扱い(rank_stakedが0)の試合でここが非NULLだと、
     後続の試合のrank_beforeチェーンがこの試合を素通りする際にWARNINGが出る
     (_warn_if_skipped_match_had_league_change_label参照)。
+
+    Issue #446: 「ランクを賭けた試合か」(rank_staked列)は、**VS画面のスロット0
+    (自分自身)のランクバッジを読めたか**を主な根拠にする。state/match_state.pyの
+    `MatchStateMachine.current_match_has_rank`(結果バナー確定時にランク変動の
+    追跡へ進むかどうかの判定、Issue #235/#430)と同じ条件で、DB層だけが別の基準
+    (`rank_before_ocr`の非NULL)を使っていた食い違いの解消でもある。実測では全125試合中、
+    VS画面が失敗してバッジだけ成功した試合は1件も無く(逆は3件)、判定基準として
+    VS画面側が厳密に優れている。
+
+    ただし従来の基準(`rank_before_ocr`が非NULL)も**OR条件として残す**。VS画面を
+    見逃したがバッジは読めた、という組み合わせは実測では1件も無いものの、
+    そちらが起きた場合に今度は逆向きにチェーンから漏れてしまうため
+    (この判定は「広い方に倒す」のが安全: 誤ってstakedにした試合は手動入力の
+    選択肢に1件余分に出るだけだが、誤って非stakedにした試合は永久に入力できなく
+    なる)。移行時のバックフィル条件(_migrate_matches_add_rank_staked)もこれと
+    同じOR条件にしてある。
     """
     _maybe_correct_previous_match_rank_after(conn, match.rank_before)
-    rank_before = _resolve_rank_before(conn, match.rank_before)
+    rank_staked = bool(match.vs_mine_ranks and match.vs_mine_ranks[0].tier is not None) or (
+        match.rank_before is not None
+    )
+    rank_before = _resolve_rank_before(conn, match.rank_before, rank_staked)
     is_ranked_match = match.rank_before is not None or match.rank_after is not None
     room_type = "random" if is_ranked_match else get_room_type()
     now = now_jst().isoformat()
@@ -698,8 +816,8 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
         "INSERT INTO matches "
         "(session_id, detected_at, result, rank_before, rank_before_ocr, rank_after_ocr, "
         "mine_team_color, opponent_team_color, room_type, league_change_label_detected, "
-        "created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "rank_staked, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             session_id,
             match.detected_at.isoformat(),
@@ -711,6 +829,7 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
             match.opponent_team_color,
             room_type,
             match.league_change_label_detected,
+            1 if rank_staked else 0,
             now,
             now,
         ),
@@ -726,12 +845,16 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
     書き込む(state/match_state.pyの_finalize()と同じ、帯番号(整数)同士で比較する
     方式。小数のランク値同士で比較すると、帯自体は変わっていないのにゲージの
     僅かな増減だけで誤判定するため)。対象の試合が存在しない、またはランクを
-    賭けていない試合(rank_before_ocrがNULL)の場合はValueErrorを送出する
+    賭けていない試合(rank_stakedが0)の場合はValueErrorを送出する
     (呼び出し元がfetch_oldest_pending_manual_rank_match()の結果のみを渡す前提のため、
     通常はここに到達しない想定の防御的チェック)。
 
+    Issue #446: このガードは以前`rank_before_ocr`のNULL判定で行っていたが、
+    結果バナー確定時のバッジ読み取りに失敗しただけの試合まで弾いてしまい、
+    永久に入力できない状態になっていた(save_match_result参照)。
+
     Issue #308: rank_beforeのチェーンがまだ詰まっていて解決できていない
-    (rank_before_ocrは非NULLだがrank_beforeがまだNULL)試合もValueErrorを送出する
+    (rank_stakedは1だがrank_beforeがまだNULL)試合もValueErrorを送出する
     (fetch_oldest_pending_manual_rank_match()は通常この状態の試合を返さないはずだが、
     直前の試合がまだ未確定のまま呼び出された場合の防御的チェック)。確定後は、
     このrank_afterを引き継ぎ元として待っていた後続の試合のrank_beforeが
@@ -749,12 +872,12 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
     既に確定済みの場合に連動が効かない)。
     """
     row = conn.execute(
-        "SELECT rank_before, rank_before_ocr, rank_after FROM matches WHERE id = ?", (match_id,)
+        "SELECT rank_before, rank_staked, rank_after FROM matches WHERE id = ?", (match_id,)
     ).fetchone()
     if row is None:
         raise ValueError(f"matches.id={match_id} が見つかりません")
-    if row["rank_before_ocr"] is None:
-        raise ValueError(f"matches.id={match_id} はランクを賭けていない試合です(rank_before_ocrがNULL)")
+    if not row["rank_staked"]:
+        raise ValueError(f"matches.id={match_id} はランクを賭けていない試合です(rank_stakedが0)")
     rank_before = row["rank_before"]
     if rank_before is None:
         raise ValueError(
@@ -882,19 +1005,19 @@ def delete_match(conn: sqlite3.Connection, match_id: int) -> None:
 def fetch_oldest_pending_manual_rank_match(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
     """rank_after未確定(手動入力待ち)の試合のうち、最も古い1件を返す(Issue #306)。
 
-    ランクを賭けた試合(rank_before_ocrが非NULL)かつrank_afterが未確定(NULL)の
-    ものが対象。ランクを賭けない試合はrank_before_ocr自体がNULLのため対象外
+    ランクを賭けた試合(rank_stakedが1)かつrank_afterが未確定(NULL)の
+    ものが対象。ランクを賭けない試合はrank_stakedが0のため対象外
     (従来どおり)。1件も無ければNoneを返す。
 
-    Issue #308: 判定にはrank_before(チェーン導出値、まだ解決できておらずNULLの
-    ことがある)ではなくrank_before_ocr(自動検知値、ランクを賭けた試合なら
+    Issue #308/#446: 判定にはrank_before(チェーン導出値、まだ解決できておらず
+    NULLのことがある)ではなくrank_staked(VS画面で自分のランクバッジを読めたか、
     チェーンの解決状況に関わらず必ず入っている)を使う。古い順に確定させていく
     運用であれば返す試合のrank_beforeは通常既に解決済みのはずだが、万一
     (直前セッションの終わり際等)未解決のまま返ることもありうるため、
     呼び出し側(web/server.py)でrank_beforeがNoneの場合の表示を用意している。
     """
     return conn.execute(
-        "SELECT * FROM matches WHERE rank_before_ocr IS NOT NULL AND rank_after IS NULL ORDER BY id ASC LIMIT 1"
+        "SELECT * FROM matches WHERE rank_staked = 1 AND rank_after IS NULL ORDER BY id ASC LIMIT 1"
     ).fetchone()
 
 
@@ -905,7 +1028,7 @@ def fetch_pending_manual_rank_match_count(conn: sqlite3.Connection) -> int:
     (fetch_oldest_pending_manual_rank_matchと同じ絞り込み条件)。
     """
     row = conn.execute(
-        "SELECT COUNT(*) AS count FROM matches WHERE rank_before_ocr IS NOT NULL AND rank_after IS NULL"
+        "SELECT COUNT(*) AS count FROM matches WHERE rank_staked = 1 AND rank_after IS NULL"
     ).fetchone()
     return row["count"]
 

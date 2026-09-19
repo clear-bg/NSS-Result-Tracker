@@ -1526,6 +1526,11 @@ def _build_rank_entry_clip_info(
         # Issue #417: 帯番号だけを拡大したクリップ。ゲージ動画と同じく、
         # 導入前に録画された試合ではFalseになりうる
         "has_number_clip": has_number_clip,
+        # Issue #446: ランクを賭けた試合か(VS画面で自分のランクバッジを読めたか)。
+        # rank_beforeがNULLで入力フォームを出せない理由が「直前の試合がまだ未確定」
+        # (rank_stakedが1、待てば解消する)なのか「そもそもランクを賭けていない試合」
+        # (rank_stakedが0、待っても解消しない)なのかをテンプレート側で出し分けるために渡す
+        "rank_staked": bool(row["rank_staked"]),
         # Issue #407: 入力値の矛盾の警告(rank_afterが未確定の試合では常に空)
         "warnings": warnings or [],
     }
@@ -1644,9 +1649,9 @@ def _build_health_check_context(db_path: Path) -> dict:
                         None if rank_before is None or rank_after is None else round(rank_after - rank_before, 2)
                     ),
                     "league_changed": row["league_changed"],
-                    # ランクを賭けていない試合(rank_before_ocrがNULL)は修正できない
-                    # (save_manual_rank_afterがValueErrorを送出する)
-                    "editable": row["rank_before_ocr"] is not None and rank_before is not None,
+                    # ランクを賭けていない試合(rank_stakedが0)は修正できない
+                    # (save_manual_rank_afterがValueErrorを送出する、Issue #446)
+                    "editable": bool(row["rank_staked"]) and rank_before is not None,
                     "has_clip": row["id"] in clip_ids,
                     "warnings": warnings,
                 }

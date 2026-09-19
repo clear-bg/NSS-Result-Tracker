@@ -2497,3 +2497,303 @@ def test_delete_match_logs_content_before_deleting(caplog):
         delete_match(conn, match_id)
 
     assert any(str(match_id) in message and "削除します" in message for message in caplog.messages)
+
+
+def _vs_mine_with_rank() -> list[SlotRank]:
+    """VS画面のスロット0(自分自身)のランクバッジを読めた状態のmine_ranks(Issue #446)。"""
+    return [SlotRank("∞", 45), SlotRank("∞", 20), SlotRank(None, None), SlotRank(None, None)]
+
+
+def test_save_match_result_marks_rank_staked_from_vs_screen():
+    """Issue #446: 結果バナー確定時のバッジを読み取れなくても(rank_beforeがNone)、
+    VS画面のスロット0を読めていればランクを賭けた試合として記録することを確認する。
+    """
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="lose",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+        vs_mine_ranks=_vs_mine_with_rank(),
+    )
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["rank_staked"] == 1
+    assert row["rank_before_ocr"] is None
+
+
+def test_save_match_result_marks_rank_staked_from_badge_when_vs_screen_missed():
+    """Issue #446: VS画面を見逃してもバッジを読めていれば、従来どおりランクを
+    賭けた試合として扱う(判定は広い方に倒す、save_match_result参照)。
+    """
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=38.62,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+    match_id = save_match_result(conn, match)
+
+    assert conn.execute("SELECT rank_staked FROM matches WHERE id = ?", (match_id,)).fetchone()[0] == 1
+
+
+def test_save_match_result_leaves_rank_staked_zero_when_no_rank_detected():
+    """Issue #446: VS画面でもバッジでも自分のランクを検知できなかった試合
+    (専用部屋・ランクを賭けない試合)はrank_stakedが0のままであることを確認する。
+    """
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="draw",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+        vs_mine_ranks=[SlotRank(None, None), SlotRank("∞", 20), SlotRank(None, None), SlotRank(None, None)],
+    )
+    match_id = save_match_result(conn, match)
+
+    assert conn.execute("SELECT rank_staked FROM matches WHERE id = ?", (match_id,)).fetchone()[0] == 0
+
+
+def test_save_match_result_chains_rank_before_through_match_with_unreadable_badge():
+    """Issue #446: バッジを読み取れなかった試合もチェーンに含まれ、直前の試合の
+    確定済みrank_afterをrank_beforeとして引き継ぐことを確認する(以前は
+    rank_before_ocrがNULLの試合が素通りされ、次の試合が1帯ズレていた)。
+    """
+    conn = connect(":memory:")
+    first_id = save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=45.20,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+            vs_mine_ranks=_vs_mine_with_rank(),
+        ),
+    )
+    save_manual_rank_after(conn, first_id, 45.10)
+
+    unreadable_id = save_match_result(
+        conn,
+        MatchResult(
+            result="lose",
+            rank_before=None,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+            vs_mine_ranks=_vs_mine_with_rank(),
+        ),
+    )
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (unreadable_id,)).fetchone()
+    assert row["rank_before"] == 45.10
+
+    save_manual_rank_after(conn, unreadable_id, 44.90)
+    next_id = save_match_result(
+        conn,
+        MatchResult(
+            result="lose",
+            rank_before=44.74,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+            vs_mine_ranks=_vs_mine_with_rank(),
+        ),
+    )
+
+    assert conn.execute("SELECT rank_before FROM matches WHERE id = ?", (next_id,)).fetchone()[0] == 44.90
+
+
+def test_save_manual_rank_after_accepts_match_with_unreadable_badge():
+    """Issue #446: バッジ未読の試合でも、VS画面で自分のランクを読めていれば
+    手動入力を受け付ける(以前はValueErrorで永久に入力できなかった)。
+    """
+    conn = connect(":memory:")
+    first_id = save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=45.20,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+            vs_mine_ranks=_vs_mine_with_rank(),
+        ),
+    )
+    save_manual_rank_after(conn, first_id, 45.10)
+    match_id = save_match_result(
+        conn,
+        MatchResult(
+            result="lose",
+            rank_before=None,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+            vs_mine_ranks=_vs_mine_with_rank(),
+        ),
+    )
+
+    save_manual_rank_after(conn, match_id, 44.90)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["rank_after"] == 44.90
+    assert row["league_changed"] == "down"
+
+
+def test_fetch_pending_manual_rank_match_count_includes_match_with_unreadable_badge():
+    """Issue #446: 「未確定0件」と表示しながら入力不能な試合が並ぶ矛盾を解消する。"""
+    conn = connect(":memory:")
+    save_match_result(
+        conn,
+        MatchResult(
+            result="lose",
+            rank_before=None,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+            vs_mine_ranks=_vs_mine_with_rank(),
+        ),
+    )
+
+    assert fetch_pending_manual_rank_match_count(conn) == 1
+    assert fetch_oldest_pending_manual_rank_match(conn) is not None
+
+
+def test_connect_migrates_legacy_matches_without_rank_staked(tmp_path):
+    """Issue #446: rank_staked列が無い移行前のDBに対しても、connect()を呼ぶだけで
+    列が追加され、「rank_before_ocrが非NULL」または「VS画面のmine slot0を読めていた」
+    行が1にバックフィルされることを確認する。
+    """
+    db_path = tmp_path / "legacy.db"
+    conn = connect(db_path)
+    badge_only_id = save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=45.20,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+    vs_only_id = save_match_result(
+        conn,
+        MatchResult(
+            result="lose",
+            rank_before=None,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+    save_vs_slot_ranks(conn, vs_only_id, _vs_mine_with_rank(), [SlotRank(None, None)] * 4)
+    unranked_id = save_match_result(
+        conn,
+        MatchResult(
+            result="draw",
+            rank_before=None,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+    save_vs_slot_ranks(conn, unranked_id, [SlotRank(None, None)] * 4, [SlotRank(None, None)] * 4)
+    # 移行前の状態(列が無い)を人為的に再現する
+    conn.execute("ALTER TABLE matches DROP COLUMN rank_staked")
+    conn.commit()
+    conn.close()
+
+    conn = connect(db_path)
+
+    staked = {row["id"]: row["rank_staked"] for row in fetch_all_matches(conn)}
+    assert staked[badge_only_id] == 1
+    assert staked[vs_only_id] == 1
+    assert staked[unranked_id] == 0
+
+
+def test_connect_migration_repairs_rank_before_of_match_with_unreadable_badge(tmp_path):
+    """Issue #446: 移行前に「ランクを賭けていない試合」扱いで取り残され、
+    rank_beforeがNULLのまま永久に入力できなくなっていた行が、直前の
+    ランクを賭けた試合の確定済みrank_afterで埋め直されることを確認する。
+    """
+    db_path = tmp_path / "legacy.db"
+    conn = connect(db_path)
+    first_id = save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=45.20,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+    save_manual_rank_after(conn, first_id, 45.10)
+    stranded_id = save_match_result(
+        conn,
+        MatchResult(
+            result="lose",
+            rank_before=None,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+    save_vs_slot_ranks(conn, stranded_id, _vs_mine_with_rank(), [SlotRank(None, None)] * 4)
+    conn.execute("ALTER TABLE matches DROP COLUMN rank_staked")
+    conn.commit()
+    conn.close()
+
+    conn = connect(db_path)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (stranded_id,)).fetchone()
+    assert row["rank_staked"] == 1
+    assert row["rank_before"] == 45.10
+    # 既存の値は書き換えない
+    assert conn.execute("SELECT rank_before FROM matches WHERE id = ?", (first_id,)).fetchone()[0] == 45.20
+
+
+def test_connect_migration_does_not_invent_rank_before_without_confirmed_predecessor(tmp_path):
+    """Issue #446: 引き継ぎ元が未確定なら、補修はせずNULLのままにする(値を捏造しない)。"""
+    db_path = tmp_path / "legacy.db"
+    conn = connect(db_path)
+    save_match_result(
+        conn,
+        MatchResult(
+            result="win",
+            rank_before=45.20,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+    stranded_id = save_match_result(
+        conn,
+        MatchResult(
+            result="lose",
+            rank_before=None,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+    )
+    save_vs_slot_ranks(conn, stranded_id, _vs_mine_with_rank(), [SlotRank(None, None)] * 4)
+    conn.execute("ALTER TABLE matches DROP COLUMN rank_staked")
+    conn.commit()
+    conn.close()
+
+    conn = connect(db_path)
+
+    assert conn.execute("SELECT rank_before FROM matches WHERE id = ?", (stranded_id,)).fetchone()[0] is None
+
+
+def test_connect_rank_staked_migration_is_idempotent(tmp_path):
+    db_path = tmp_path / "test.db"
+    connect(db_path).close()
+
+    connect(db_path).close()  # 2回目もエラーにならない
