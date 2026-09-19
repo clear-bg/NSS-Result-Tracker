@@ -4278,6 +4278,21 @@ def test_rank_entry_css_defines_seek_mode_toggle_style(tmp_path: Path):
     assert ".rank-entry-video-seek-hidden {" in css
 
 
+# --- Issue #450: 試合選択リストの表示領域を広げる ---
+
+
+def test_rank_entry_css_widens_clip_selector_max_height(tmp_path: Path):
+    """220pxでは運用してみると小さく感じたため、およそ2倍の440pxに広げたことを確認する。
+    保持件数(50件)・1行あたりの高さは変更していない(スクロール枠の高さだけを広げる)。
+    """
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    css = client.get("/static/rank_entry.css").text
+
+    assert "max-height: 440px;" in css
+    assert "max-height: 220px;" not in css
+
+
 def test_overlay_dive_time_polls_faster_than_other_widgets(tmp_path: Path):
     """Issue #419: YouTube側のポーリングを10秒へ広げた分、こちらを短くして
     画面反映までの体感を取り戻す(ローカルへのアクセスでクォータを消費しない)。
