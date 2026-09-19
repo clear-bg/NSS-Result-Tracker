@@ -178,6 +178,39 @@
     document.getElementById("rank-entry-gauge-video-time")
   );
 
+  // Issue #449(追加対応): 記録・確認後に同じ試合へ戻れるようにしたが、その画面更新
+  // (POSTの303リダイレクトによる通常のページ遷移)でスクロール位置が失われる問題が
+  // 別途見つかった。sessionStorageに保存し、ページ読み込みのたびに復元する
+  // (タブを閉じるまでの間だけ有効であれば十分なため、localStorageではなく
+  // sessionStorageを使う)。sessionStorageが使えない環境(プライベートウィンドウ等、
+  // /adminのlocalStorage利用時と同じ理由)では例外を握りつぶし、既定の位置(先頭)の
+  // まま動作を続ける。
+  const SCROLL_WINDOW_KEY = "nss-rank-entry-scroll-window";
+  const SCROLL_SELECTOR_KEY = "nss-rank-entry-scroll-selector";
+
+  function readScrollValue(key) {
+    try {
+      const raw = sessionStorage.getItem(key);
+      return raw === null ? null : Number(raw);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeScrollValue(key, value) {
+    try {
+      sessionStorage.setItem(key, String(value));
+    } catch (e) {
+      // 無視する(上記コメント参照)
+    }
+  }
+
+  window.addEventListener(
+    "scroll",
+    function () { writeScrollValue(SCROLL_WINDOW_KEY, window.scrollY); },
+    { passive: true }
+  );
+
   const resetNumberVideoControls = attachCustomControls(
     numberVideo,
     document.getElementById("rank-entry-number-video-play-btn"),
@@ -463,6 +496,18 @@
     return cell;
   }
 
+  // Issue #449(追加対応): renderSelector()はrefresh()から5秒おきに呼ばれ、
+  // innerHTMLを丸ごと作り直すたびにスクロール位置が先頭へ戻ってしまっていた
+  // (試合を1件ずつ遡って記録していく間、リストを下の方までスクロールしていても
+  // 5秒ごとに先頭へ戻される)。selector自身のscrollイベントで常に最新位置を
+  // sessionStorageへ書き出し、rebuild後に読み戻すことで、ページ内での定期更新・
+  // ページ読み込み(記録後のリダイレクト)をまたいだ両方をこの1箇所で解決する
+  selector.addEventListener(
+    "scroll",
+    function () { writeScrollValue(SCROLL_SELECTOR_KEY, selector.scrollTop); },
+    { passive: true }
+  );
+
   function renderSelector() {
     selector.innerHTML = "";
     clips.forEach(function (clip, index) {
@@ -495,6 +540,10 @@
       });
       selector.appendChild(row);
     });
+    const savedSelectorScroll = readScrollValue(SCROLL_SELECTOR_KEY);
+    if (savedSelectorScroll !== null) {
+      selector.scrollTop = savedSelectorScroll;
+    }
   }
 
   function selectClip(matchId) {
@@ -629,6 +678,13 @@
     } else {
       selectClip(clips[0].match_id);
     }
+  }
+  // Issue #449(追加対応): ページの縦スクロール位置はrenderSelector()のような
+  // 定期更新の影響を受けない(fetchによるDOM更新はwindowのスクロールを
+  // 巻き戻さないため)、ページ読み込み時に一度だけ復元すれば足りる
+  const savedWindowScroll = readScrollValue(SCROLL_WINDOW_KEY);
+  if (savedWindowScroll !== null) {
+    window.scrollTo(0, savedWindowScroll);
   }
   setInterval(refresh, 5000);
 })();
