@@ -4396,3 +4396,86 @@ def test_health_check_marks_match_with_unreadable_badge_as_editable(tmp_path: Pa
     matches = _health_check_matches(client)
 
     assert matches[match_id]["editable"] is True
+
+
+# --- Issue #457: ランク入力欄を整数部・小数部に分け、整数部に増減ボタンを付ける ---
+
+
+def test_rank_entry_splits_rank_input_into_tier_and_fraction(tmp_path: Path, monkeypatch):
+    """帯番号(整数部)と溜まり具合(小数部)を別々の入力欄にする。
+
+    整数部は自動検知どおりで合っていることが多く、直したいのは小数部だけという
+    場面が多いため、まとめて打ち直さずに済むようにする。
+    """
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert 'tierInput.id = "rank_after_tier";' in html
+    assert 'fractionInput.id = "rank_after_fraction";' in html
+    # 旧実装(値をまとめて入力する単一のnumber入力欄)が残っていないこと
+    assert 'input.step = "0.01";' not in html
+
+
+def test_rank_entry_zero_pads_fraction_when_filling_inputs(tmp_path: Path, monkeypatch):
+    """小数部は2桁に0埋めして表示する(46.5を"5"と出すと.05と.50を区別できない)。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "function splitRank(value) {" in html
+    assert 'String(hundredths - tier * 100).padStart(2, "0")' in html
+
+
+def test_rank_entry_combines_split_inputs_into_single_rank_after_field(tmp_path: Path, monkeypatch):
+    """送信時は従来どおり1つのrank_afterへ結合する(サーバー側は変更不要)。
+
+    整数部が空のときは空文字のまま送り、既存の「数値を入力してください」の
+    エラー表示に委ねる。
+    """
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert 'combined.type = "hidden";' in html
+    assert 'combined.name = "rank_after";' in html
+    assert 'form.addEventListener("submit", function () {' in html
+    assert 'combined.value = tier === "" ? "" : tier + "." + (fraction === "" ? "0" : fraction);' in html
+
+
+def test_rank_entry_tier_steppers_change_value_by_one(tmp_path: Path, monkeypatch):
+    """整数部の上下ボタンは押すたびに1ずつ増減する(上限・下限は設けない)。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert '[["\u25b2", 1], ["\u25bc", -1]].forEach(function (pair) {' in html
+    assert "tierInput.value = String((isNaN(current) ? 0 : current) + pair[1]);" in html
+    # 増減ボタンでも、以後の定期更新でこの試合から勝手に離れないようにする
+    assert (
+        "        tierInput.value = String((isNaN(current) ? 0 : current) + pair[1]);\n"
+        "        userSelected = true;"
+    ) in html
+
+
+def test_rank_entry_copy_button_fills_both_inputs(tmp_path: Path, monkeypatch):
+    """「推定値を使う」は分割後も残し、自動検知値を両方の欄へ分けて反映する。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "推定値を使う" in html
+    assert (
+        "      copyButton.addEventListener(\"click\", function () {\n"
+        "        fillInputs(clip.rank_after_ocr);\n"
+        "        fractionInput.focus();"
+    ) in html
+
+
+def test_rank_entry_focuses_fraction_input_on_open(tmp_path: Path, monkeypatch):
+    """直すのは小数部だけという場面が多いため、開いた直後は小数部にフォーカスする。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "    fractionInput.focus();\n    fractionInput.select();\n  }" in html
+
+
+def test_rank_entry_css_defines_tier_stepper_style(tmp_path: Path):
+    """分割入力欄・増減ボタンのスタイルが静的ファイル側に用意されていること。"""
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    css = client.get("/static/rank_entry.css").text
+
+    assert ".rank-entry-tier-field {" in css
+    assert ".rank-entry-tier-steppers {" in css
+    assert ".rank-entry-tier-step {" in css
+    assert ".rank-entry-input-fraction {" in css
