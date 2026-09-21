@@ -4525,3 +4525,16 @@ def test_rank_entry_css_defines_tier_stepper_style(tmp_path: Path):
     assert ".rank-entry-tier-steppers {" in css
     assert ".rank-entry-tier-step {" in css
     assert ".rank-entry-input-fraction {" in css
+
+
+# --- Issue #456: /rank-entryに試合idを表示する ---
+
+
+def test_rank_entry_shows_match_id_above_recorded_at(tmp_path: Path, monkeypatch):
+    """ログ(grep)・DBと突き合わせられるよう、記録時刻の上に試合idを出す。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert (
+        '    addRow(info, "試合ID", clip.match_id);\n'
+        '    addRow(info, "記録時刻", clip.detected_at_text);'
+    ) in html
