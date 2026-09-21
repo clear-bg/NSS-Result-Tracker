@@ -503,6 +503,10 @@
     inputRow.appendChild(decimalPoint);
     inputRow.appendChild(fractionInput);
 
+    form.appendChild(inputRow);
+
+    // Issue #457: 入力欄を2つに分けて幅を詰めたため、同じ行に並べると左カラム
+    // (150px)に収まらない。入力欄の下・「記録」ボタンの上へ独立した行として置く
     if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
       const copyButton = document.createElement("button");
       copyButton.type = "button";
@@ -513,10 +517,8 @@
         fractionInput.focus();
         fractionInput.select();
       });
-      inputRow.appendChild(copyButton);
+      form.appendChild(copyButton);
     }
-
-    form.appendChild(inputRow);
 
     // Issue #457: 2つに分けた入力欄を、従来どおり1つのrank_afterとして送信する
     // (サーバー側(POST /rank-entry)は値1つをfloatにパースする実装のまま)。
