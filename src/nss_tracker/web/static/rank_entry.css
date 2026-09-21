@@ -300,7 +300,9 @@ h1 {
 
 .rank-entry-clip-row {
     display: grid;
-    grid-template-columns: 16px 104px 32px 1fr auto;
+    /* Issue #455: 結果列は「勝ち」「負け」(2文字)しか想定しておらず32pxだったため、
+       「引き分け」(4文字、12pxフォントで約48px)が折り返して行が2行になっていた */
+    grid-template-columns: 16px 104px 52px 1fr auto;
     align-items: center;
     gap: 6px;
     width: 100%;
