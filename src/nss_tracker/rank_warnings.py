@@ -35,6 +35,11 @@ id=17(lose, 42.28→42.28)がいずれも配信映像で確認済みの正しい
 人間が確認したうえで消せる前提で設計してあり、確認済みの記録は
 `database/db.py`の`match_rank_warning_acks`テーブルが持つ。
 
+**ルールJは引き分けの試合を対象にしない(Issue #455)。** 引き分けはゲージが全く
+動かないのがゲーム仕様(ユーザー確認済み)で、Δ=0が常に正常なため。ルールAが
+引き分けについて`delta != 0`の側だけを警告するのと同じ前提に揃えている
+(実データのid=134で、正常な引き分けに毎回ルールJが出ていた)。
+
 ルールHはIssue #408の健全性チェック一覧ページ専用で、`/rank-entry`(#407)からは
 呼ばない。次の試合が記録されて初めて判定できるため、入力直後に警告を出す
 `/rank-entry`では意味を成さないという理由による(呼び出し元が
@@ -216,7 +221,8 @@ def evaluate(
             )
 
     # J: 両チームの合計ランク差が小さいのに変化量がゼロ
-    if delta == 0 and team_rank_totals is not None:
+    # (引き分けはΔ=0が常に正常なため対象にしない、Issue #455)
+    if delta == 0 and result != "draw" and team_rank_totals is not None:
         diff = team_rank_totals.diff()
         if diff is not None and abs(diff) < TEAM_RANK_DIFF_THRESHOLD:
             found.append(

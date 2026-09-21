@@ -217,6 +217,22 @@ def test_rule_j_skipped_when_delta_is_not_zero():
     assert _evaluate(result="lose", rank_before=42.40, rank_after=42.18, team_rank_totals=_totals(44, 44)) == []
 
 
+def test_rule_j_skipped_for_draw():
+    """引き分けはゲージが全く動かないのがゲーム仕様のため、Δ=0は常に正常(Issue #455)。
+
+    実データのid=134(合計44対43、Δ=0の引き分け)で、正常な記録に毎回警告が出ていた。
+    """
+    assert _evaluate(result="draw", rank_before=46.53, rank_after=46.53, team_rank_totals=_totals(44, 43)) == []
+
+
+def test_rule_a_still_warns_for_draw_with_change():
+    """引き分けでランクが動いている場合は、ルールAが従来どおり警告する
+    (ルールJの除外は「引き分けのΔ=0」だけを対象にしている)。
+    """
+    warnings = _evaluate(result="draw", rank_before=46.53, rank_after=46.60, team_rank_totals=_totals(44, 43))
+    assert _codes(warnings) == ["A"]
+
+
 # --- 共通の振る舞い ---
 
 
