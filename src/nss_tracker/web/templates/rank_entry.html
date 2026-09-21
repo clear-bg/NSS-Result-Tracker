@@ -367,6 +367,9 @@
 
     const info = document.createElement("div");
     info.className = "rank-entry-match-info";
+    // Issue #456: 記録内容を追う際にログ(grep)・DBと突き合わせられるよう、
+    // matchesテーブルの主キーをそのまま出す
+    addRow(info, "試合ID", clip.match_id);
     addRow(info, "記録時刻", clip.detected_at_text);
     addRow(info, "結果", clip.result_text);
     addRow(info, "試合前ランク", formatRank(clip.rank_before));
