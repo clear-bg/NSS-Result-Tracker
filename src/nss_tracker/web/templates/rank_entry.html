@@ -282,6 +282,16 @@
     return value === null || value === undefined ? "未解決" : value;
   }
 
+  // Issue #457: ランクの入力欄は帯番号(整数部)と溜まり具合(小数部)に分ける。
+  // 小数部は「小数点以下の桁をそのまま並べたもの」(46.53なら"53")として扱い、
+  // 既存の値から初期表示する際は2桁に0埋めする(46.5を"5"と出すと、読み手に
+  // とって.05なのか.50なのか分からなくなるため)
+  function splitRank(value) {
+    const hundredths = Math.round(value * 100);
+    const tier = Math.floor(hundredths / 100);
+    return { tier: String(tier), fraction: String(hundredths - tier * 100).padStart(2, "0") };
+  }
+
   function addRow(container, label, value, extraClass) {
     const row = document.createElement("div");
     row.className = "rank-entry-match-row" + (extraClass ? " " + extraClass : "");
@@ -422,46 +432,108 @@
     const inputRow = document.createElement("div");
     inputRow.className = "rank-entry-input-row";
 
-    const input = document.createElement("input");
-    input.type = "number";
-    input.step = "0.01";
-    input.name = "rank_after";
-    input.id = "rank_after";
-    input.className = "rank-entry-input";
-    input.autocomplete = "off";
+    const tierInput = document.createElement("input");
+    tierInput.type = "number";
+    tierInput.step = "1";
+    tierInput.id = "rank_after_tier";
+    tierInput.className = "rank-entry-input rank-entry-input-tier";
+    tierInput.autocomplete = "off";
+
+    const fractionInput = document.createElement("input");
+    fractionInput.type = "number";
+    fractionInput.step = "1";
+    fractionInput.min = "0";
+    fractionInput.max = "99";
+    fractionInput.id = "rank_after_fraction";
+    fractionInput.className = "rank-entry-input rank-entry-input-fraction";
+    fractionInput.autocomplete = "off";
+
+    function fillInputs(value) {
+      const parts = splitRank(value);
+      tierInput.value = parts.tier;
+      fractionInput.value = parts.fraction;
+    }
+
     if (isEditing) {
       // Issue #338: 修正モードでは、確定済みの値を初期値にする(推定値ではなく
       // 現在確定している値からの修正が自然なため)。推定値に戻したい場合は
       // 下の「推定値を使う」ボタンから明示的に取り込める。
-      input.value = clip.rank_after;
+      fillInputs(clip.rank_after);
     } else if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
       // 初回表示時の初期値としてのみ使う。定期更新のたびにここへ来ても
       // (renderLeftPanelは同じ試合を選んだままの間は呼ばれないため)入力中の
       // 内容を勝手に上書きすることはない。値を戻したい場合は下の「推定値を使う」
       // ボタンから明示的に取り込む(ユーザー確認済み、モジュールdocstring参照)
-      input.value = clip.rank_after_ocr;
+      fillInputs(clip.rank_after_ocr);
     }
     // 入力欄を一度でも操作したら、以後の自動更新でこの試合から勝手に
     // 離れないようにする(定期更新中に別の試合の動画へ切り替わって
     // 入力内容を見失わないようにするため)
-    input.addEventListener("focus", function () { userSelected = true; });
-    input.addEventListener("input", function () { userSelected = true; });
-    inputRow.appendChild(input);
+    [tierInput, fractionInput].forEach(function (el) {
+      el.addEventListener("focus", function () { userSelected = true; });
+      el.addEventListener("input", function () { userSelected = true; });
+    });
 
+    // Issue #457: 帯番号は自動検知どおりで合っていることが多く、直す場合も
+    // ±1で足りるため、キー入力せずに増減できる上下ボタンを添える
+    // (上限・下限は設けない、ユーザーとの相談で決定)
+    const tierField = document.createElement("div");
+    tierField.className = "rank-entry-tier-field";
+    tierField.appendChild(tierInput);
+    const steppers = document.createElement("span");
+    steppers.className = "rank-entry-tier-steppers";
+    [["▲", 1], ["▼", -1]].forEach(function (pair) {
+      const stepButton = document.createElement("button");
+      stepButton.type = "button";
+      stepButton.className = "rank-entry-tier-step";
+      stepButton.textContent = pair[0];
+      stepButton.addEventListener("click", function () {
+        const current = parseInt(tierInput.value, 10);
+        tierInput.value = String((isNaN(current) ? 0 : current) + pair[1]);
+        userSelected = true;
+      });
+      steppers.appendChild(stepButton);
+    });
+    tierField.appendChild(steppers);
+    inputRow.appendChild(tierField);
+
+    const decimalPoint = document.createElement("span");
+    decimalPoint.className = "rank-entry-decimal-point";
+    decimalPoint.textContent = ".";
+    inputRow.appendChild(decimalPoint);
+    inputRow.appendChild(fractionInput);
+
+    form.appendChild(inputRow);
+
+    // Issue #457: 入力欄を2つに分けて幅を詰めたため、同じ行に並べると左カラム
+    // (150px)に収まらない。入力欄の下・「記録」ボタンの上へ独立した行として置く
     if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
       const copyButton = document.createElement("button");
       copyButton.type = "button";
       copyButton.className = "rank-entry-copy-button";
       copyButton.textContent = "推定値を使う";
       copyButton.addEventListener("click", function () {
-        input.value = clip.rank_after_ocr;
-        input.focus();
-        input.select();
+        fillInputs(clip.rank_after_ocr);
+        fractionInput.focus();
+        fractionInput.select();
       });
-      inputRow.appendChild(copyButton);
+      form.appendChild(copyButton);
     }
 
-    form.appendChild(inputRow);
+    // Issue #457: 2つに分けた入力欄を、従来どおり1つのrank_afterとして送信する
+    // (サーバー側(POST /rank-entry)は値1つをfloatにパースする実装のまま)。
+    // 整数部が空のときは空文字のまま送り、既存の「数値を入力してください」の
+    // エラー表示に委ねる
+    const combined = document.createElement("input");
+    combined.type = "hidden";
+    combined.name = "rank_after";
+    combined.id = "rank_after";
+    form.appendChild(combined);
+    form.addEventListener("submit", function () {
+      const tier = tierInput.value.trim();
+      const fraction = fractionInput.value.trim();
+      combined.value = tier === "" ? "" : tier + "." + (fraction === "" ? "0" : fraction);
+    });
 
     const button = document.createElement("button");
     button.type = "submit";
@@ -481,8 +553,10 @@
     }
 
     left.appendChild(form);
-    input.focus();
-    input.select();
+    // Issue #457: 帯番号は合っていることが多く、直すのは小数部だけという場面が
+    // 多いため、開いた直後は小数部の入力欄にフォーカスする
+    fractionInput.focus();
+    fractionInput.select();
   }
 
   // Issue #409: 保持件数を50件に増やしたため、横一列のボタン(「49つ前」等)では

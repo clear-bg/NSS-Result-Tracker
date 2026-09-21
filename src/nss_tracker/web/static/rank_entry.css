@@ -378,6 +378,10 @@ h1 {
 
 .rank-entry-input-row {
     display: flex;
+    align-items: center;
+    /* Issue #457: 入力欄の幅を2桁ぶんに詰めた分、左寄せだと余白が右に偏るため、
+       カラム幅いっぱいに伸びる「記録」ボタンを基準に中央へ揃える */
+    justify-content: center;
     gap: 4px;
 }
 
@@ -400,9 +404,67 @@ h1 {
     margin: 0;
 }
 
+/* Issue #457: 帯番号(整数部)と溜まり具合(小数部)を別の入力欄に分ける。
+   帯番号は自動検知どおりで合っていることが多く、直すとしても±1で足りるため、
+   キー入力せずに増減できる上下ボタンを入力欄の右に添える */
+.rank-entry-tier-field {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+}
+
+/* 整数部・小数部とも入るのは2桁までなので、2桁ぶんの幅に絞る
+   (.rank-entry-inputのflex: 1 / width: 0は1つの欄で全幅を使っていた頃の指定) */
+.rank-entry-input-tier,
+.rank-entry-input-fraction {
+    flex: 0 0 35px;
+}
+
+.rank-entry-decimal-point {
+    font-size: 16px;
+    font-weight: bold;
+    color: #555;
+}
+
+.rank-entry-tier-steppers {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+}
+
+.rank-entry-tier-step {
+    flex: 1;
+    font-size: 9px;
+    line-height: 1;
+    padding: 0 7px;
+    border: 1px solid #ccc;
+    background: #fff;
+    color: #555;
+    cursor: pointer;
+}
+
+.rank-entry-tier-step:first-child {
+    border-radius: 4px 4px 0 0;
+    border-bottom: none;
+}
+
+.rank-entry-tier-step:last-child {
+    border-radius: 0 0 4px 4px;
+}
+
+.rank-entry-tier-step:hover {
+    background: #f0f0f0;
+}
+
+/* Issue #457: 入力欄を2つに分けて幅を詰めた分、同じ行には収まらないため
+   入力欄の下の独立した行にした。フォームは縦並びのflexなので、そのままだと
+   カラム幅いっぱいに伸びてしまう(align-selfで文字幅に留めつつ、入力欄と
+   同じく「記録」ボタンを基準に中央へ揃える) */
 .rank-entry-copy-button {
+    align-self: center;
     font-size: 11px;
-    padding: 0 8px;
+    padding: 2px 8px;
     border: 1px solid #ccc;
     border-radius: 4px;
     background: #fff;
