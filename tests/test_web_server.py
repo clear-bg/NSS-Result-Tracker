@@ -3478,6 +3478,52 @@ def test_rank_entry_clips_api_reports_rule_j_for_evenly_matched_zero_delta(tmp_p
     assert [w["rule_code"] for w in clips[0]["warnings"]] == ["J"]
 
 
+def test_rank_entry_clips_api_does_not_report_rule_j_for_draw(tmp_path: Path, monkeypatch):
+    """Issue #455: 引き分けはΔ=0が常に正常なため、ルールJの対象にしない。
+
+    上のルールJのテストと同じ合計ランク(差が閾値の内側)のまま結果だけをdrawに
+    した形で、実データのid=134(正常な引き分けに毎回警告が出ていた)に相当する。
+    """
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = _save_confirmed_match(conn, _warning_match("draw", 42.20), 42.20)
+    db.save_vs_slot_ranks(
+        conn,
+        match_id=match_id,
+        mine_ranks=[
+            SlotRank(tier="∞", value=42),
+            SlotRank(tier="S", value=2),
+            SlotRank(tier="A", value=24),
+            SlotRank(tier="∞", value=26),
+        ],
+        opponent_ranks=[
+            SlotRank(tier="A", value=27),
+            SlotRank(tier="A", value=28),
+            SlotRank(tier="∞", value=29),
+            SlotRank(tier="∞", value=40),
+        ],
+    )
+    conn.close()
+    (clips_dir / f"{match_id}.mp4").write_bytes(b"dummy")
+    client = TestClient(create_app(db_path))
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+
+    assert clips[0]["warnings"] == []
+
+
+def test_rank_entry_css_fits_draw_label_in_result_column(tmp_path: Path):
+    """Issue #455: 結果列が32pxだと「引き分け」(4文字)が折り返して行が2行になる。"""
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    css = client.get("/static/rank_entry.css").text
+
+    assert "grid-template-columns: 16px 104px 52px 1fr auto;" in css
+
+
 def test_rank_entry_warning_acknowledge_hides_and_restores(tmp_path: Path, monkeypatch):
     client, match_id = _setup_warning_client(tmp_path, monkeypatch, _warning_match("win", 42.90), 42.75)
 
