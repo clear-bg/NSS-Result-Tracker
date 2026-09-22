@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from conftest import requires_fixtures
-from nss_tracker.detection.banner import banner_roi_stats, classify_banner
+from nss_tracker.detection.banner import BANNER_ROIS, banner_roi_stats, classify_banner
 
 EXPECTED = {
     "72_matching_hdr_off_1.png": None,
@@ -97,6 +97,57 @@ def test_classify_banner(fixtures_dir, filename, expected):
     frame = cv2.imread(str(fixtures_dir / filename))
     assert frame is not None, f"failed to load {filename}"
     assert classify_banner(frame) == expected
+
+
+# Issue #431/#423の再較正を守るための回帰テスト。実フレーム
+# (clips/banner_debug_frames/)はfixtures/と同じく.gitignore対象で、CIにも
+# クローン直後の環境にも存在しないため、実測した色で塗った合成フレームを使う。
+# 負けバナーの帯はほぼ無彩色の暗いグレーで、BANNER_ROIS内の生のBGRは
+# ローカル録画(85,79,71)とVirtual Camera(85,79,73)で2階調しか違わないのに、
+# 色相・彩度はこの差だけで閾値をまたいでしまう(詳細はdetection/banner.pyの
+# モジュールdocstringのIssue #431の節参照)
+LOSE_BANNER_BGR_LOCAL_RECORDING = (85, 79, 71)
+LOSE_BANNER_BGR_VIRTUAL_CAMERA = (85, 79, 73)
+
+
+def _frame_with_banner_color(bgr):
+    """BANNER_ROISだけを指定色で塗った1920x1080のフレームを作る。
+
+    DRAW_TEXT_ROIは黒のままなので_is_draw_text()はFalseになり、
+    帯の色だけで"lose"と判定されることを確認できる。
+    """
+    frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+    for x1, y1, x2, y2 in BANNER_ROIS:
+        frame[y1:y2, x1:x2] = bgr
+    return frame
+
+
+@pytest.mark.parametrize(
+    "bgr",
+    [
+        pytest.param(LOSE_BANNER_BGR_LOCAL_RECORDING, id="local_recording"),
+        pytest.param(LOSE_BANNER_BGR_VIRTUAL_CAMERA, id="virtual_camera"),
+    ],
+)
+def test_classify_banner_detects_lose_banner_from_both_capture_paths(bgr):
+    """Issue #431: Virtual Camera経由の負けバナーも"lose"と判定できること。
+
+    再較正前はローカル録画側(H=103 S=42)だけが通り、Virtual Camera側
+    (H=105 S=36)は色相が上限103を超えてNoneになっていた。これが専用部屋で
+    負け試合が丸ごと消える原因(Issue #423)だった。
+    """
+    assert classify_banner(_frame_with_banner_color(bgr)) == "lose"
+
+
+def test_classify_banner_keeps_margin_against_one_more_quantization_step():
+    """Issue #431: Rがもう2階調ずれても"lose"のままであること。
+
+    帯がほぼ無彩色のため、Rが1階調動くだけで色相が約1.0〜1.5・彩度が約3も
+    振れる。キャプチャ経路が変わっても再び閾値の外へ出ないよう、実測値
+    (85,79,73)の外側にマージンを取ってある。
+    """
+    r_shifted = (85, 79, LOSE_BANNER_BGR_VIRTUAL_CAMERA[2] + 2)
+    assert classify_banner(_frame_with_banner_color(r_shifted)) == "lose"
 
 
 def test_banner_roi_stats_returns_none_for_undersized_frame():
