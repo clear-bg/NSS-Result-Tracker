@@ -17,8 +17,11 @@ BANNER_ROIS = [[696, 71, 879, 149], [879, 44, 1057, 128], [1057, 8, 1245, 86], [
 WIN_HUE_RANGE = [77, 87]
 WIN_SAT_MIN = 120
 WIN_VAL_MIN = 165
-LOSE_HUE_RANGE = [87, 103]
-LOSE_SAT_RANGE = [35, 65]
+# Issue #431/#423: OBS Virtual Camera経由の負けバナーの実測(6セッション・31試合)に
+# 合わせて、色相の上限を103→108・彩度の下限を35→30に再較正
+# (根拠はdetection/banner.pyのモジュールdocstring参照)
+LOSE_HUE_RANGE = [87, 108]
+LOSE_SAT_RANGE = [30, 65]
 # Issue #193: 降格ラベル付きの負けバナーの実測値(2セッション分)に合わせて
 # 下限を65→50に再較正(根拠はdetection/banner.pyのモジュールdocstring参照)
 LOSE_VAL_RANGE = [50, 130]
