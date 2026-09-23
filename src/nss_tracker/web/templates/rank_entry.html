@@ -523,6 +523,20 @@
       form.appendChild(copyButton);
     }
 
+    // Issue #462: 「味方が抜けて人数差あり」の手動フラグ。試合直後が一番覚えて
+    // いるタイミングなので、ランク入力と同じフォームで一緒に送る。チェックを
+    // 触った場合も、定期更新でこの試合から勝手に離れないようuserSelectedを立てる
+    const shortageLabel = document.createElement("label");
+    shortageLabel.className = "rank-entry-shortage";
+    const shortageInput = document.createElement("input");
+    shortageInput.type = "checkbox";
+    shortageInput.name = "player_shortage";
+    shortageInput.checked = !!clip.player_shortage;
+    shortageInput.addEventListener("change", function () { userSelected = true; });
+    shortageLabel.appendChild(shortageInput);
+    shortageLabel.appendChild(document.createTextNode("味方が抜けて人数差あり"));
+    form.appendChild(shortageLabel);
+
     // Issue #457: 2つに分けた入力欄を、従来どおり1つのrank_afterとして送信する
     // (サーバー側(POST /rank-entry)は値1つをfloatにパースする実装のまま)。
     // 整数部が空のときは空文字のまま送り、既存の「数値を入力してください」の

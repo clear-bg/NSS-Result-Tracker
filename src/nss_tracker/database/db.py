@@ -174,6 +174,13 @@ CREATE TABLE IF NOT EXISTS matches (
                                      -- 判定する(以前はrank_before_ocrの非NULLで代用していたが、
                                      -- 結果バナー確定時のバッジ読み取りに失敗した試合が
                                      -- 永久に入力できなくなるため。save_match_result参照)
+    player_shortage INTEGER NOT NULL DEFAULT 0, -- 1=試合中に味方が抜けて人数差があった試合。Issue #462。
+                                     -- 自動検知はせず、/rank-entry・/health-checkから人間が立てる
+                                     -- (チームの人数は画面から検知しておらず、他に知る手段が無い)。
+                                     -- 既定は0なので、触らなければ従来と同じ挙動になる。
+                                     -- Δ=0(ランク増減ゼロ)になる2つの理由のうち「味方が抜けて3人」を
+                                     -- 「合計ランク差が大きい」と区別するために使う(rank_warnings.pyの
+                                     -- ルールJの抑止、およびランク増減分布の集計除外)
     created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601, JST)
     updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601, JST)
 );
@@ -439,6 +446,28 @@ def _migrate_matches_add_rank_staked(conn: sqlite3.Connection) -> None:
     _repair_missing_rank_before(conn)
 
 
+def _migrate_matches_add_player_shortage(conn: sqlite3.Connection) -> None:
+    """Issue #462: 既存DBファイルのmatchesテーブルにplayer_shortage列を追加する。
+
+    DEFAULT付きのNOT NULL列追加のため、SQLiteのALTER TABLE ADD COLUMNだけで済む
+    (DEFAULTがある場合、既存行にもその値が自動的に埋まる)。
+
+    既存行は全て0(人数差なし)になる。**遡ってのバックフィルは行わない。** チームの
+    人数はDB上のどこにも記録されておらず、画面からも検知していないため、過去の
+    試合について機械的に復元する手段が無い(配信アーカイブを見るしかない)。
+    既定が0なので、フラグを一切触らなければ従来と全く同じ挙動になる。
+
+    新規DBでは_SCHEMA自体に既にplayer_shortage列を含むため、この関数は無害にreturnする。
+    """
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    if any(c["name"] == "player_shortage" for c in columns):
+        return
+
+    logger.info("matchesテーブルにplayer_shortage列を追加しています(既存行は全て0=人数差なし扱い)")
+    conn.execute("ALTER TABLE matches ADD COLUMN player_shortage INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+
+
 def _repair_missing_rank_before(conn: sqlite3.Connection) -> None:
     """rank_stakedが1なのにrank_beforeがNULLのままの行を、直前の「ランクを賭けた
     試合」の確定済みrank_afterで埋める(Issue #446、_migrate_matches_add_rank_stakedから
@@ -496,6 +525,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     _migrate_matches_add_room_type(conn)
     _migrate_matches_add_league_change_label_detected(conn)
     _migrate_matches_add_rank_staked(conn)
+    _migrate_matches_add_player_shortage(conn)
     logger.info("DBに接続しました: %s", Path(db_path).resolve())
     return conn
 
@@ -932,16 +962,22 @@ def update_match_fields(
     *,
     result: Optional[str] = None,
     room_type: Optional[str] = None,
+    player_shortage: Optional[bool] = None,
 ) -> None:
-    """試合レコードのresult/room_typeを健全性チェック(/health-check)から直接修正する(Issue #442)。
+    """試合レコードの手動編集できる項目を更新する(Issue #442、#462)。
 
     Issue #433(テニスのVS画面をサッカーの試合開始と誤検知)のようなレコードを
-    その場で直せるようにする。編集対象はresult/room_typeのみに留める。
-    rank_before/rank_afterは既存の`/rank-entry`・`/health-check`の入力フォーム
-    (Issue #407/#408)と機能が重複するため対象外(ユーザーとの相談で決定)。
-    result/room_typeのどちらか一方だけを渡した場合、渡さなかった方は変更しない。
+    その場で直せるようにする。編集対象はresult/room_type/player_shortageのみに
+    留める。rank_before/rank_afterは既存の`/rank-entry`・`/health-check`の入力
+    フォーム(Issue #407/#408)と機能が重複するため対象外(ユーザーとの相談で決定)。
+    渡さなかった項目は変更しない。
+
+    Issue #462: `player_shortage`(味方が抜けて人数差があった試合か)を追加した。
+    `/health-check`の一括修正モードに加え、`/rank-entry`のランク入力フォームからも
+    この関数を呼ぶ(試合直後が一番覚えているタイミングのため)。呼び出し元がどの
+    画面から来たかはそれぞれのハンドラ側でログに残す。
     """
-    if result is None and room_type is None:
+    if result is None and room_type is None and player_shortage is None:
         return
     row = conn.execute("SELECT id FROM matches WHERE id = ?", (match_id,)).fetchone()
     if row is None:
@@ -963,16 +999,20 @@ def update_match_fields(
     if room_type is not None:
         updates.append("room_type = ?")
         params.append(room_type)
+    if player_shortage is not None:
+        updates.append("player_shortage = ?")
+        params.append(1 if player_shortage else 0)
     updates.append("updated_at = ?")
     params.append(now_jst().isoformat())
     params.append(match_id)
     conn.execute(f"UPDATE matches SET {', '.join(updates)} WHERE id = ?", params)
     conn.commit()
     logger.info(
-        "matches.id=%d を健全性チェック(/health-check)から修正しました: result=%s room_type=%s",
+        "matches.id=%d を修正しました: result=%s room_type=%s player_shortage=%s",
         match_id,
         result,
         room_type,
+        player_shortage,
     )
 
 

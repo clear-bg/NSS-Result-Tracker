@@ -479,6 +479,24 @@ h1 {
     background: #f0f0f0;
 }
 
+/* Issue #462: 味方が抜けて人数差があった試合かの手動フラグ。
+   左カラム(150px)に収まるよう、チェックボックスと文言を1行に詰める */
+.rank-entry-shortage {
+    align-self: center;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: #555;
+    cursor: pointer;
+    line-height: 1.3;
+}
+
+.rank-entry-shortage input {
+    margin: 0;
+    flex: none;
+}
+
 .rank-entry-form button[type="submit"] {
     font-size: 14px;
     padding: 6px 16px;

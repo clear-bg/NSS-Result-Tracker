@@ -1464,6 +1464,8 @@ def _build_rank_warnings(
         next_match_vs_tier=next_match_vs_tier,
         next_match_rank_before_ocr=next_match_rank_before_ocr,
         team_rank_totals=totals,
+        # Issue #462: 人数差ありと確認済みの試合はルールJを出さない
+        player_shortage=bool(row["player_shortage"]),
         acknowledged_rule_codes=fetch_rank_warning_acks(conn, match_id),
     )
     return [
@@ -1531,6 +1533,9 @@ def _build_rank_entry_clip_info(
         # (rank_stakedが1、待てば解消する)なのか「そもそもランクを賭けていない試合」
         # (rank_stakedが0、待っても解消しない)なのかをテンプレート側で出し分けるために渡す
         "rank_staked": bool(row["rank_staked"]),
+        # Issue #462: 味方が抜けて人数差があった試合か(手動フラグ)。
+        # 入力フォームのチェックボックスの初期状態に使う
+        "player_shortage": bool(row["player_shortage"]),
         # Issue #407: 入力値の矛盾の警告(rank_afterが未確定の試合では常に空)
         "warnings": warnings or [],
     }
@@ -1643,6 +1648,9 @@ def _build_health_check_context(db_path: Path) -> dict:
                     # (rank_before/afterと異なり、ランクを賭けていない試合も含め常に編集可能)
                     "result": row["result"],
                     "room_type": row["room_type"],
+                    # Issue #462: 味方が抜けて人数差があった試合か(手動フラグ)。
+                    # result/room_typeと同じく、ランクを賭けていない試合も含め常に編集可能
+                    "player_shortage": bool(row["player_shortage"]),
                     "rank_before": rank_before,
                     "rank_after": rank_after,
                     "delta": (
@@ -1835,23 +1843,45 @@ def create_app(db_path: Path) -> FastAPI:
         return _TEMPLATES.TemplateResponse(request, "rank_entry.html", context)
 
     @app.post("/rank-entry")
-    def rank_entry_submit(match_id: int = Form(...), rank_after: str = Form(...)):
+    def rank_entry_submit(
+        match_id: int = Form(...),
+        rank_after: str = Form(...),
+        player_shortage: Optional[str] = Form(None),
+    ):
         # Issue #449: 記録・修正した直後は最新の試合ではなく、今まさに記録した
         # その試合をもう一度表示する(記録漏れを遡って何試合分もまとめて記録する際、
         # 毎回最新試合へ戻されると順番に進めづらいため)。エラー時も同様に
         # match_idを保持し、入力し直す試合が変わってしまわないようにする
-        try:
-            rank_after_value = float(rank_after)
-        except ValueError:
-            return RedirectResponse(
-                f"/rank-entry?match_id={match_id}&error={quote('数値を入力してください')}", status_code=303
-            )
+        #
+        # Issue #462: 「味方が抜けて人数差あり」のチェックボックスは、ランク値の
+        # パースより先に保存する。チェックを付けたのにランク値を打ち間違えた場合、
+        # エラーで差し戻される際にチェックまで失われると入れ直しになるため
+        # (未チェックのcheckboxはそもそも送信されないのでNoneで届く)
+        shortage_value = player_shortage is not None
         conn = _connect(db_path)
         try:
-            save_manual_rank_after(conn, match_id, rank_after_value)
-        except ValueError as exc:
-            _logger.warning("手動ランク入力(/rank-entry)からの更新が拒否されました: %s", exc)
-            return RedirectResponse(f"/rank-entry?match_id={match_id}&error={quote(str(exc))}", status_code=303)
+            # Issue #440で学んだとおり、値が変わっていないのにログを出すとノイズに
+            # なるため、実際に変わったときだけ更新・ログする。存在しない試合は
+            # ここでは何もせず、後段のsave_manual_rank_after()のエラーに任せる
+            current = fetch_match(conn, match_id)
+            if current is not None and bool(current["player_shortage"]) != shortage_value:
+                update_match_fields(conn, match_id, player_shortage=shortage_value)
+                _logger.info(
+                    "手動ランク入力(/rank-entry)から人数差フラグを更新しました: match_id=%d player_shortage=%s",
+                    match_id,
+                    shortage_value,
+                )
+            try:
+                rank_after_value = float(rank_after)
+            except ValueError:
+                return RedirectResponse(
+                    f"/rank-entry?match_id={match_id}&error={quote('数値を入力してください')}", status_code=303
+                )
+            try:
+                save_manual_rank_after(conn, match_id, rank_after_value)
+            except ValueError as exc:
+                _logger.warning("手動ランク入力(/rank-entry)からの更新が拒否されました: %s", exc)
+                return RedirectResponse(f"/rank-entry?match_id={match_id}&error={quote(str(exc))}", status_code=303)
         finally:
             conn.close()
         _logger.info("手動ランク入力(/rank-entry)からrank_afterを記録しました: match_id=%d rank_after=%s", match_id, rank_after_value)
@@ -1925,26 +1955,40 @@ def create_app(db_path: Path) -> FastAPI:
         return RedirectResponse("/health-check", status_code=303)
 
     @app.post("/health-check/match")
-    def health_check_update_match(match_id: int = Form(...), result: str = Form(...), room_type: str = Form(...)):
-        """一覧から直接result/room_typeを修正する(Issue #442)。
+    def health_check_update_match(
+        match_id: int = Form(...),
+        result: str = Form(...),
+        room_type: str = Form(...),
+        player_shortage: Optional[str] = Form(None),
+    ):
+        """一覧から直接result/room_type/player_shortageを修正する(Issue #442、#462)。
 
         Issue #433(テニスのVS画面をサッカーの試合開始と誤検知)のようなレコードを
         その場で直せるようにする。rank_before/rank_afterは対象外(既存の入力
         フォームと機能が重複するため)。
+
+        Issue #462: 「味方が抜けて人数差あり」を追加した。クリップが残っていない
+        過去の試合もここから立てられる(`/rank-entry`はクリップのある試合しか開けない)。
+        未チェックのcheckboxは送信されないのでNoneで届く。
         """
+        shortage_value = player_shortage is not None
         conn = _connect(db_path)
         try:
-            update_match_fields(conn, match_id, result=result, room_type=room_type)
+            update_match_fields(
+                conn, match_id, result=result, room_type=room_type, player_shortage=shortage_value
+            )
         except ValueError as exc:
             _logger.warning("健全性チェック(/health-check)からの試合修正が拒否されました: %s", exc)
             return RedirectResponse(f"/health-check?error={quote(str(exc))}", status_code=303)
         finally:
             conn.close()
         _logger.info(
-            "健全性チェック(/health-check)から試合を修正しました: match_id=%d result=%s room_type=%s",
+            "健全性チェック(/health-check)から試合を修正しました: "
+            "match_id=%d result=%s room_type=%s player_shortage=%s",
             match_id,
             result,
             room_type,
+            shortage_value,
         )
         return RedirectResponse("/health-check?status=match-updated", status_code=303)
 
