@@ -1057,6 +1057,50 @@ def test_connect_migrates_legacy_matches_without_room_type(tmp_path):
     assert rows[0]["room_type"] == "random"
 
 
+def test_connect_migrates_legacy_matches_without_player_shortage(tmp_path):
+    """Issue #462: player_shortage列が無い移行前のDBファイルに対しても、connect()を
+    呼ぶだけで列が追加され、既存行は全て0(人数差なし)扱いになることを確認する。
+
+    チームの人数はDBにもログにも残っていないため、遡ってのバックフィルは行わない。
+    """
+    db_path = tmp_path / "legacy_shortage.db"
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.executescript(
+        """
+        CREATE TABLE matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            result TEXT NOT NULL,
+            rank_before REAL,
+            rank_after REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO matches (detected_at, result, created_at, updated_at)
+            VALUES ('2026-07-01T00:00:00+09:00', 'win', '2026-07-01T00:00:00+09:00', '2026-07-01T00:00:00+09:00');
+        """
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    conn = connect(db_path)
+
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    shortage_column = next(c for c in columns if c["name"] == "player_shortage")
+    assert shortage_column["notnull"] == 1
+
+    rows = fetch_all_matches(conn)
+    assert len(rows) == 1
+    assert rows[0]["player_shortage"] == 0
+
+
+def test_connect_migrates_legacy_matches_without_player_shortage_is_idempotent(tmp_path):
+    db_path = tmp_path / "shortage_idempotent.db"
+    connect(db_path).close()
+
+    connect(db_path).close()  # 2回目もエラーにならない
+
+
 def test_connect_migrates_legacy_matches_without_room_type_is_idempotent(tmp_path):
     db_path = tmp_path / "test.db"
     connect(db_path).close()
@@ -2419,6 +2463,41 @@ def test_update_match_fields_leaves_unspecified_field_unchanged():
     row = fetch_match(conn, match_id)
     assert row["result"] == "win"
     assert row["room_type"] == "private"
+
+
+def test_update_match_fields_updates_player_shortage():
+    """Issue #462: 味方が抜けて人数差があった試合かの手動フラグを立てられる。"""
+    conn = connect(":memory:")
+    match_id = _unranked_match(conn)
+    assert fetch_match(conn, match_id)["player_shortage"] == 0
+
+    update_match_fields(conn, match_id, player_shortage=True)
+
+    assert fetch_match(conn, match_id)["player_shortage"] == 1
+
+
+def test_update_match_fields_clears_player_shortage():
+    """チェックを外した場合(False)は0へ戻せる(立てたままにならない)。"""
+    conn = connect(":memory:")
+    match_id = _unranked_match(conn)
+    update_match_fields(conn, match_id, player_shortage=True)
+
+    update_match_fields(conn, match_id, player_shortage=False)
+
+    assert fetch_match(conn, match_id)["player_shortage"] == 0
+
+
+def test_update_match_fields_leaves_player_shortage_unchanged_when_omitted():
+    """他の項目だけを修正したときに、人数差フラグを巻き込んで消さない。"""
+    conn = connect(":memory:")
+    match_id = _unranked_match(conn, result="win")
+    update_match_fields(conn, match_id, player_shortage=True)
+
+    update_match_fields(conn, match_id, result="lose")
+
+    row = fetch_match(conn, match_id)
+    assert row["result"] == "lose"
+    assert row["player_shortage"] == 1
 
 
 def test_update_match_fields_raises_for_missing_match():

@@ -29,11 +29,17 @@
 id=17(lose, 42.28→42.28)がいずれも配信映像で確認済みの正しい記録だった。
 符号が逆になっている場合だけを矛盾として扱う。
 
-ルールJはこのうち「合計ランク差が大きい」ケースだけを条件として持つ。もう一方の
-理由(味方が抜けて3人)は**チームの人数がDB上のどこにも記録されていないため判定
-できない**(id=11がまさにこのケースで、ルールJでは誤検知になる)。そのため警告は
-人間が確認したうえで消せる前提で設計してあり、確認済みの記録は
-`database/db.py`の`match_rank_warning_acks`テーブルが持つ。
+ルールJはこのうち「合計ランク差が大きい」ケースだけを条件として持つ。
+
+**Issue #462: もう一方の理由(味方が抜けて3人)は`player_shortage`で受け取る。**
+チームの人数は画面から検知しておらずDBにも自動では残らないが、`/rank-entry`・
+`/health-check`から人間が立てた手動フラグを`matches.player_shortage`に持つように
+したため、立っている試合ではルールJを出さない(正常だと分かっている試合に毎回
+警告が出ることがなくなる)。フラグを立てていない試合の挙動は従来どおり。
+
+フラグを立てるより先に警告を消したい場合のために、人間が確認したうえで個別に
+消せる仕組みも従来どおり残す(ルールJ以外にも誤検知の余地はあるため)。確認済みの
+記録は`database/db.py`の`match_rank_warning_acks`テーブルが持つ。
 
 **ルールJは引き分けの試合を対象にしない(Issue #455)。** 引き分けはゲージが全く
 動かないのがゲーム仕様(ユーザー確認済み)で、Δ=0が常に正常なため。ルールAが
@@ -129,6 +135,7 @@ def evaluate(
     next_match_vs_tier: Optional[int] = None,
     next_match_rank_before_ocr: Optional[float] = None,
     team_rank_totals: Optional[TeamRankTotals] = None,
+    player_shortage: bool = False,
     acknowledged_rule_codes: frozenset[str] = frozenset(),
 ) -> list[RankWarning]:
     """1試合分の警告を、ルールコード順(RULE_CODES順)で返す。
@@ -141,6 +148,10 @@ def evaluate(
     読んだバッジの値(ルールH、Issue #408の一覧ページからのみ渡す)。
     `team_rank_totals`はこの試合のVS画面から集計した両チームの合計ランク。
     いずれも無ければ対応するルールをスキップする。
+
+    `player_shortage`は「試合中に味方が抜けて人数差があった」手動フラグ
+    (Issue #462、`matches.player_shortage`)。Trueの試合はΔ=0が正常だと人間が
+    確認済みということなので、ルールJを出さない。
 
     ルールHは`next_match_vs_tier`が分かっている場合、**次の試合のバッジ読み取り値の
     帯がVS画面の帯と一致するときだけ**判定に使う。バッジOCRは帯番号を誤読すること
@@ -222,7 +233,8 @@ def evaluate(
 
     # J: 両チームの合計ランク差が小さいのに変化量がゼロ
     # (引き分けはΔ=0が常に正常なため対象にしない、Issue #455)
-    if delta == 0 and result != "draw" and team_rank_totals is not None:
+    # (人数差ありと確認済みの試合も対象にしない、Issue #462)
+    if delta == 0 and result != "draw" and not player_shortage and team_rank_totals is not None:
         diff = team_rank_totals.diff()
         if diff is not None and abs(diff) < TEAM_RANK_DIFF_THRESHOLD:
             found.append(

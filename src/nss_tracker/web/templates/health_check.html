@@ -154,6 +154,18 @@
     });
     form.appendChild(roomTypeSelect);
 
+    // Issue #462: 味方が抜けて人数差があった試合か。クリップが残っていない
+    // 過去の試合はここからしか立てられない(/rank-entryはクリップ必須のため)
+    const shortageLabel = document.createElement("label");
+    shortageLabel.className = "hc-shortage";
+    const shortageInput = document.createElement("input");
+    shortageInput.type = "checkbox";
+    shortageInput.name = "player_shortage";
+    shortageInput.checked = !!match.player_shortage;
+    shortageLabel.appendChild(shortageInput);
+    shortageLabel.appendChild(document.createTextNode("人数差あり"));
+    form.appendChild(shortageLabel);
+
     const save = el("button", null, "保存");
     save.type = "submit";
     form.appendChild(save);
