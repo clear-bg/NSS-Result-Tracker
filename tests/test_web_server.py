@@ -2996,6 +2996,59 @@ def test_rank_entry_get_shows_oldest_pending_match(tmp_path: Path, monkeypatch):
     assert clips[0]["recency_label"] == "最新"
 
 
+def test_rank_entry_post_saves_player_shortage_with_rank_after(tmp_path: Path):
+    """Issue #462: ランク入力と同じ送信で人数差フラグも保存される。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    client.post(
+        "/rank-entry",
+        data={"match_id": str(match_id), "rank_after": "39.10", "player_shortage": "on"},
+        follow_redirects=False,
+    )
+
+    conn = db.connect(db_path)
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    conn.close()
+    assert row["player_shortage"] == 1
+    assert row["rank_after"] == 39.10
+
+
+def test_rank_entry_post_keeps_player_shortage_when_rank_value_is_invalid(tmp_path: Path):
+    """Issue #462: ランク値を打ち間違えてエラーに差し戻されても、チェックは残る。
+
+    チェックまで失われると、エラーのたびに入れ直しになるため。
+    """
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=38.62, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.post(
+        "/rank-entry",
+        data={"match_id": str(match_id), "rank_after": "あ", "player_shortage": "on"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert "error=" in response.headers["location"]
+    conn = db.connect(db_path)
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    conn.close()
+    assert row["player_shortage"] == 1
+    assert row["rank_after"] is None
+
+
 def test_rank_entry_post_saves_rank_after_and_league_changed(tmp_path: Path):
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
@@ -3478,6 +3531,48 @@ def test_rank_entry_clips_api_reports_rule_j_for_evenly_matched_zero_delta(tmp_p
     assert [w["rule_code"] for w in clips[0]["warnings"]] == ["J"]
 
 
+def test_rank_entry_clips_api_does_not_report_rule_j_when_player_shortage_is_flagged(
+    tmp_path: Path, monkeypatch
+):
+    """Issue #462: 人数差ありのフラグを立てた試合はルールJが出なくなる。
+
+    ルールJのテストと同じ合計ランク(差が閾値の内側)・同じΔ=0のまま、
+    フラグだけを立てた形。あわせてclipsに`player_shortage`が載ることも確認する
+    (テンプレート側がチェックボックスの初期状態に使う)。
+    """
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = _save_confirmed_match(conn, _warning_match("lose", 42.20), 42.20)
+    db.save_vs_slot_ranks(
+        conn,
+        match_id=match_id,
+        mine_ranks=[
+            SlotRank(tier="∞", value=42),
+            SlotRank(tier="S", value=2),
+            SlotRank(tier="A", value=24),
+            SlotRank(tier="∞", value=26),
+        ],
+        opponent_ranks=[
+            SlotRank(tier="A", value=27),
+            SlotRank(tier="A", value=28),
+            SlotRank(tier="∞", value=29),
+            SlotRank(tier="∞", value=40),
+        ],
+    )
+    db.update_match_fields(conn, match_id, player_shortage=True)
+    conn.close()
+    (clips_dir / f"{match_id}.mp4").write_bytes(b"dummy")
+    client = TestClient(create_app(db_path))
+
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
+
+    assert clips[0]["warnings"] == []
+    assert clips[0]["player_shortage"] is True
+
+
 def test_rank_entry_clips_api_does_not_report_rule_j_for_draw(tmp_path: Path, monkeypatch):
     """Issue #455: 引き分けはΔ=0が常に正常なため、ルールJの対象にしない。
 
@@ -3875,6 +3970,30 @@ def test_health_check_post_match_updates_result_and_room_type(tmp_path: Path, mo
     matches = _health_check_matches(client)
     assert matches[match_id]["result"] == "lose"
     assert matches[match_id]["room_type"] == "private"
+
+
+def test_health_check_post_match_sets_and_clears_player_shortage(tmp_path: Path, monkeypatch):
+    """Issue #462: クリップが残っていない過去の試合も、一覧から人数差フラグを立てられる。
+
+    checkboxは未チェックだと送信されないため、キーを送らない=False になることも
+    あわせて確認する(立てたまま外せない、という事故を防ぐ)。
+    """
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    client.post(
+        "/health-check/match",
+        data={"match_id": match_id, "result": "win", "room_type": "random", "player_shortage": "on"},
+    )
+    assert _health_check_matches(client)[match_id]["player_shortage"] is True
+
+    client.post(
+        "/health-check/match",
+        data={"match_id": match_id, "result": "win", "room_type": "random"},
+    )
+    assert _health_check_matches(client)[match_id]["player_shortage"] is False
 
 
 def test_health_check_post_match_rejects_invalid_result(tmp_path: Path, monkeypatch):

@@ -213,6 +213,34 @@ def test_rule_j_skipped_when_a_slot_is_unread(mine_known, opponent_known):
     assert _evaluate(result="win", rank_before=42.28, rank_after=42.28, team_rank_totals=totals) == []
 
 
+def test_rule_j_skipped_when_player_shortage_is_flagged():
+    """Issue #462: 人数差ありと確認済みの試合は、Δ=0でも警告しない。
+
+    実データのid=11(合計44対44、Δ=0)はルールJでは誤検知になる形だが、
+    フラグが立っていれば正常だと分かっているため出さない。
+    """
+    assert _evaluate(
+        result="lose", rank_before=42.20, rank_after=42.20,
+        team_rank_totals=_totals(44, 44), player_shortage=True,
+    ) == []
+
+
+def test_rule_j_still_reported_when_player_shortage_is_not_flagged():
+    """フラグを立てていない試合の挙動は従来どおり(既定Falseで変化しない)。"""
+    assert _codes(_evaluate(
+        result="lose", rank_before=42.20, rank_after=42.20,
+        team_rank_totals=_totals(44, 44), player_shortage=False,
+    )) == ["J"]
+
+
+def test_player_shortage_does_not_suppress_other_rules():
+    """人数差フラグが抑止するのはルールJだけで、他の矛盾は隠さない。"""
+    assert _codes(_evaluate(
+        result="win", rank_before=42.40, rank_after=42.18,
+        team_rank_totals=_totals(44, 44), player_shortage=True,
+    )) == ["A"]
+
+
 def test_rule_j_skipped_when_delta_is_not_zero():
     assert _evaluate(result="lose", rank_before=42.40, rank_after=42.18, team_rank_totals=_totals(44, 44)) == []
 
