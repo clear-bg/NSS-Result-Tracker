@@ -49,6 +49,7 @@ from nss_tracker.web.server import (
     _parse_hex_color,
     _percentile,
     _rank_delta_axis_max,
+    _rank_delta_toggle_phase,
     _rank_graph_x_axis_max,
     _rank_graph_x_tick_step,
     _rank_graph_x_tick_values,
@@ -1868,11 +1869,124 @@ def test_percentile_single_value():
 def test_compute_box_stats_returns_expected_summary():
     stats = _compute_box_stats([1, 2, 3, 4])
 
-    assert stats == {"min": 1, "q1": 1.75, "median": 2.5, "q3": 3.25, "max": 4, "mean": 2.5}
+    assert stats == {
+        "min": 1, "q1": 1.75, "median": 2.5, "q3": 3.25, "max": 4, "mean": 2.5,
+        # Issue #463: IQR=1.5 -> フェンスは[-0.5, 5.5]で全件が内側。
+        # ヒゲは最小〜最大と一致し、外れ値は0件になる
+        "whisker_min": 1, "whisker_max": 4, "outliers": [], "inlier_mean": 2.5,
+    }
 
 
 def test_compute_box_stats_returns_none_for_empty_list():
     assert _compute_box_stats([]) is None
+
+
+def test_compute_box_stats_detects_outliers_with_tukey_fence():
+    """Issue #463: 実データ(勝ち76件)と同じ形。Q1=0.17 Q3=0.26 IQR=0.09 ->
+    フェンスは[0.035, 0.395]で、0.42/0.44/0.51が外れ値になる。
+    """
+    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.04, 0.37, 0.42, 0.44, 0.51]
+
+    stats = _compute_box_stats(values)
+
+    assert stats["outliers"] == [0.42, 0.44, 0.51]
+    assert stats["whisker_min"] == 0.04
+    assert stats["whisker_max"] == 0.37
+    # 箱と中央値は外れ値の有無に関係なく同じ(切り替えても動かない)
+    assert stats["q1"] == 0.17
+    assert stats["q3"] == 0.26
+    # 外れ値を除いた平均は全体の平均より小さくなる
+    assert stats["inlier_mean"] < stats["mean"]
+
+
+def test_compute_box_stats_inlier_mean_matches_mean_without_outliers():
+    stats = _compute_box_stats([0.20, 0.21, 0.22])
+
+    assert stats["outliers"] == []
+    assert stats["inlier_mean"] == stats["mean"]
+
+
+# --- Issue #463: 「全データ」と「外れ値を考慮」の5秒ごとの切り替え ---
+
+
+def _stats_with_outlier():
+    return _compute_box_stats([0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51])
+
+
+def test_rank_delta_toggle_phase_alternates_every_toggle_window():
+    """壁時計を_RANK_DELTA_TOGGLE_SECONDSで割ったバケツの偶奇で表示側が決まる。"""
+    stats = {"win": _stats_with_outlier(), "lose": None}
+    seconds = server_module._RANK_DELTA_TOGGLE_SECONDS
+
+    assert _rank_delta_toggle_phase(stats, now=0.0) == (False, 0)
+    assert _rank_delta_toggle_phase(stats, now=seconds) == (True, 1)
+    assert _rank_delta_toggle_phase(stats, now=seconds * 2) == (False, 2)
+    # 同じバケツの中では表示側もepochも変わらない(ポーリングのたびに点滅しない)
+    assert _rank_delta_toggle_phase(stats, now=seconds - 0.001) == (False, 0)
+
+
+def test_rank_delta_toggle_phase_stops_switching_without_outliers():
+    """Issue #463: 外れ値が1件も無いと2つの状態が同じ絵になるため、切り替えを止める。"""
+    stats = {"win": _compute_box_stats([0.20, 0.21, 0.22]), "lose": None}
+    seconds = server_module._RANK_DELTA_TOGGLE_SECONDS
+
+    assert _rank_delta_toggle_phase(stats, now=0.0) == (False, 0)
+    assert _rank_delta_toggle_phase(stats, now=seconds) == (False, 0)
+
+
+def test_rank_delta_toggle_phase_switches_when_only_one_series_has_outliers():
+    stats = {"win": None, "lose": _stats_with_outlier()}
+
+    assert _rank_delta_toggle_phase(stats, now=server_module._RANK_DELTA_TOGGLE_SECONDS)[0] is True
+
+
+def test_render_rank_delta_box_plot_svg_draws_outliers_only_in_outlier_view():
+    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
+    seconds = server_module._RANK_DELTA_TOGGLE_SECONDS
+
+    all_data = _render_rank_delta_box_plot_svg(values, [], now=0.0)
+    outlier_view = _render_rank_delta_box_plot_svg(values, [], now=seconds)
+
+    assert "rank-delta-outlier" not in all_data
+    assert outlier_view.count("rank-delta-outlier") == 1
+
+
+def test_render_rank_delta_box_plot_svg_keeps_axis_fixed_across_views():
+    """Issue #463: 横軸は常に全データの最大値から決める(切り替えでグラフが跳ねない)。"""
+    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
+    seconds = server_module._RANK_DELTA_TOGGLE_SECONDS
+
+    labels = re.compile(r'class="rank-delta-tick-label">([0-9.]+)<')
+    all_data = labels.findall(_render_rank_delta_box_plot_svg(values, [], now=0.0))
+    outlier_view = labels.findall(_render_rank_delta_box_plot_svg(values, [], now=seconds))
+
+    assert all_data == outlier_view
+    # 外れ値0.51を含む位置まで軸が伸びている
+    assert all_data[-1] == "0.6"
+
+
+def test_render_rank_delta_box_plot_svg_embeds_epoch_for_crossfade():
+    """Issue #463: overlay-refresh.jsのsignalモードが変化を検知するための属性。"""
+    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
+    seconds = server_module._RANK_DELTA_TOGGLE_SECONDS
+
+    svg = _render_rank_delta_box_plot_svg(values, [], now=seconds)
+
+    assert 'id="rank-delta-svg"' in svg
+    assert 'data-animate-on-change="signal"' in svg
+    assert 'data-epoch="1"' in svg
+
+
+def test_render_rank_delta_box_plot_svg_marks_changing_elements_for_crossfade():
+    """箱・中央値は両表示で共通なので、フェード対象(rank-delta-variable)に含めない。"""
+    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
+
+    svg = _render_rank_delta_box_plot_svg(values, [], now=0.0)
+
+    assert 'class="rank-delta-whisker rank-delta-variable' in svg
+    assert 'class="rank-delta-mean rank-delta-variable"' in svg
+    assert "rank-delta-variable" not in svg.split('class="rank-delta-box')[1].split(">")[0]
+    assert "rank-delta-variable" not in svg.split('class="rank-delta-median')[1].split(">")[0]
 
 
 def test_rank_delta_distribution_endpoint_separates_win_and_lose_and_excludes_draw(tmp_path: Path, monkeypatch):
@@ -1910,6 +2024,52 @@ def test_rank_delta_distribution_endpoint_separates_win_and_lose_and_excludes_dr
 
     assert response.status_code == 200
     assert response.json() == {"win": [2], "lose": [2]}
+
+
+def test_rank_delta_distribution_endpoint_excludes_player_shortage_matches(tmp_path: Path, monkeypatch):
+    """Issue #463: 味方が抜けて人数差があった試合(#462)は増減の分布から除外する。
+
+    ゲーム内容とは別の理由でゲージが動かなかった試合のため。合計ランク差が大きかった
+    ことによるΔ=0(フラグを立てていない試合)は従来どおり含める。
+    """
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    kept = _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=10, rank_after=12, league_changed=None, detected_at=now_jst()),
+    )
+    excluded = _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=10, rank_after=10, league_changed=None, detected_at=now_jst()),
+    )
+    zero_delta_kept = _save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=10, rank_after=10, league_changed=None, detected_at=now_jst()),
+    )
+    db.update_match_fields(conn, excluded, player_shortage=True)
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-delta-distribution")
+
+    assert kept and zero_delta_kept
+    assert response.json() == {"win": [2], "lose": [0]}
+
+
+def test_rank_delta_distribution_overlay_polls_faster_than_other_widgets(tmp_path: Path, monkeypatch):
+    """Issue #463: 5秒ごとの切り替えにポーリングが追いつくよう短くしている。"""
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    db_path = tmp_path / "test.db"
+    db.connect(db_path).close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/overlay/rank-delta-distribution")
+
+    assert response.status_code == 200
+    assert f'data-interval-ms="{server_module._RANK_DELTA_REFRESH_INTERVAL_MS}"' in response.text
+    assert server_module._RANK_DELTA_REFRESH_INTERVAL_MS < server_module._RANK_DELTA_TOGGLE_SECONDS * 1000
 
 
 def test_rank_delta_distribution_endpoint_scoped_to_current_session(tmp_path: Path, monkeypatch):
@@ -2022,7 +2182,8 @@ def test_render_rank_delta_box_plot_svg_draws_both_categories():
 
     assert svg.count('class="rank-delta-box rank-delta-win"') == 1
     assert svg.count('class="rank-delta-box rank-delta-lose"') == 1
-    assert svg.count('class="rank-delta-mean"') == 2
+    # Issue #463: クロスフェード用のrank-delta-variableが付くため前方一致で数える
+    assert svg.count('class="rank-delta-mean') == 2
     assert svg.count('class="rank-delta-median"') == 2
 
 
@@ -2036,7 +2197,8 @@ def test_render_rank_delta_box_plot_svg_handles_one_category_missing():
 def test_render_rank_delta_box_plot_svg_single_value_does_not_crash():
     svg = _render_rank_delta_box_plot_svg([2], [3])
 
-    assert svg.count('class="rank-delta-mean"') == 2
+    # Issue #463: クロスフェード用のrank-delta-variableが付くため前方一致で数える
+    assert svg.count('class="rank-delta-mean') == 2
 
 
 def test_overlay_rank_delta_distribution_page_links_transparent_background_stylesheet(tmp_path: Path, monkeypatch):
@@ -2183,9 +2345,10 @@ def test_overlay_refresh_script_supports_signal_mode_entrance_animation(tmp_path
     [
         "/overlay/goal-stats-winrate",
         "/overlay/match-log",
-        "/overlay/rank-delta-distribution",
         # Issue #419: /overlay/dive-timeは既定より短い間隔を使うため対象外
         # (test_overlay_dive_time_polls_faster_than_other_widgetsで別途検証する)
+        # Issue #463: /overlay/rank-delta-distributionも同じ理由で対象外
+        # (test_rank_delta_distribution_overlay_polls_faster_than_other_widgets)
     ],
 )
 def test_overlay_pages_include_refresh_script_with_default_interval(tmp_path: Path, path: str, monkeypatch):
