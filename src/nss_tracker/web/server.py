@@ -164,6 +164,7 @@ import colorsys
 import logging
 import math
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -239,6 +240,19 @@ _RANK_GRAPH_REFRESH_INTERVAL_MS = 500
 # こちらはローカルの自分のサーバーへのポーリングでクォータを消費しないため、
 # 短くして遅くなった分を取り戻す(ランク推移グラフの0.5秒と同じ考え方)
 _DIVE_TIME_REFRESH_INTERVAL_MS = 1000
+
+# Issue #463: ランク増減分布は「全データ」と「外れ値を考慮」をこの秒数ごとに
+# 交互に表示する。どちらを表示するかはサーバー側が壁時計から決める
+# (int(time / 秒数) % 2)。overlay-refresh.jsは<body>の中身を丸ごと差し替えるため、
+# クライアント側に独自タイマーを持たせると差し替えのたびに切り替え状態が
+# リセットされてしまうことによる
+_RANK_DELTA_TOGGLE_SECONDS = 5
+# 上記の切り替わりにポーリングが追いつくよう、このウィジェットだけ他ウィジェット
+# (既定5秒)より短くする。5秒周期に対して5秒間隔でポーリングすると、位相のずれ方に
+# よっては同じ状態を2回続けて取ったり片方を飛ばしたりするため。ローカルの自分の
+# サーバーへのポーリングなのでコストは無視できる(ランク推移グラフの0.5秒・
+# 「次に潜る時間」の1秒と同じ考え方)
+_RANK_DELTA_REFRESH_INTERVAL_MS = 1000
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -1111,6 +1125,12 @@ def _fetch_rank_delta_distribution(db_path: Path) -> dict:
     そのまま返すと、勝ちが正・負けが負の値になり単純な大小比較がしづらいため)。
     draw(引き分け)、rank_before/rank_afterのいずれかがNULLの試合は対象外。
     "session"指定時に配信セッションが1件も無い場合は両方とも空リストを返す。
+
+    Issue #463: **味方が抜けて人数差があった試合(matches.player_shortage、#462)は
+    集計から除外する。** ゲーム内容とは別の理由でゲージが動かなかった試合であり、
+    増減の分布に混ぜる意味が無いため(ユーザーとの相談で決定)。一方、合計ランク差が
+    大きかったことによるΔ=0は正当な試合結果なので含めたままにし、外れ値かどうかは
+    1.5×IQRの判定に任せる。
     """
     scope = get_rank_delta_distribution_scope()
     conn = _connect(db_path)
@@ -1129,6 +1149,8 @@ def _fetch_rank_delta_distribution(db_path: Path) -> dict:
     lose_deltas: list[float] = []
     for row in rows:
         if row["rank_before"] is None or row["rank_after"] is None:
+            continue
+        if row["player_shortage"]:
             continue
         delta = row["rank_after"] - row["rank_before"]
         if row["result"] == "win":
@@ -1157,17 +1179,44 @@ def _compute_box_stats(values: list[float]) -> Optional[dict]:
     """箱ひげ図に必要な統計値(最小・第1四分位・中央値・第3四分位・最大・平均)を返す。
 
     値が1件も無い場合はNoneを返す。
+
+    Issue #463: あわせて外れ値を考慮した表示に必要な値も返す。外れ値の判定は
+    **Tukeyの1.5×IQR**(`Q1 - 1.5×IQR`より下、`Q3 + 1.5×IQR`より上)で、箱ひげ図の
+    世界標準かつ試合数が増えても自動で追従するという理由で採用した(パーセンタイル
+    (5%〜95%)は常に一定割合が外れ値になってしまうため、固定閾値は帯が変わると
+    再調整が必要になるためいずれも不採用、ユーザーとの相談で決定):
+
+    - `whisker_min`/`whisker_max`: フェンスの内側に収まる実測値の最小・最大
+      (外れ値を除いたヒゲの両端)
+    - `outliers`: フェンスの外側にある実測値(昇順、重複はそのまま残す)
+    - `inlier_mean`: 外れ値を除いた平均(外れ値考慮側の平均マーカーに使う)
+
+    箱(Q1〜Q3)・中央値は両方の表示で共通のため、切り替えても動かない。
     """
     if not values:
         return None
     sorted_values = sorted(values)
+    q1 = _percentile(sorted_values, 25)
+    q3 = _percentile(sorted_values, 75)
+    iqr = q3 - q1
+    lower_fence, upper_fence = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    inliers = [v for v in sorted_values if lower_fence <= v <= upper_fence]
+    outliers = [v for v in sorted_values if v < lower_fence or v > upper_fence]
+    # 全件が外れ値になることは1.5×IQRの定義上ありえない(Q1〜Q3は必ずフェンスの
+    # 内側にあるため)が、念のためinliersが空の場合は全データ側にフォールバックする
+    if not inliers:
+        inliers, outliers = sorted_values, []
     return {
         "min": sorted_values[0],
-        "q1": _percentile(sorted_values, 25),
+        "q1": q1,
         "median": _percentile(sorted_values, 50),
-        "q3": _percentile(sorted_values, 75),
+        "q3": q3,
         "max": sorted_values[-1],
         "mean": sum(values) / len(values),
+        "whisker_min": inliers[0],
+        "whisker_max": inliers[-1],
+        "outliers": outliers,
+        "inlier_mean": sum(inliers) / len(inliers),
     }
 
 
@@ -1220,19 +1269,60 @@ def _rank_delta_axis_max(stats_by_category: dict) -> float:
     return round((steps + 1) * _BOX_PLOT_X_TICK_STEP, 10)
 
 
-def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[float]) -> str:
+def _rank_delta_toggle_phase(stats_by_category: dict, now: Optional[float] = None) -> tuple[bool, int]:
+    """ランク増減分布の「全データ / 外れ値を考慮」の表示側とepochを返す(Issue #463)。
+
+    戻り値は`(外れ値を考慮した表示にするか, epoch)`。epochは`data-epoch`属性へ
+    そのまま埋め込み、overlay-refresh.jsのsignalモードが変化を検知してクロスフェードを
+    再生するための通し番号として使う(値自体に意味は無い。#361と同じ仕組み)。
+
+    表示側は壁時計から決める(`int(time / _RANK_DELTA_TOGGLE_SECONDS) % 2`)。
+    クライアント側に独自タイマーを持たせられないため(モジュール先頭の定数参照)。
+
+    **外れ値が両系列とも1件も無い場合は切り替えを止め、常に全データ側を返す**
+    (ユーザーとの相談で決定)。2つの状態が完全に同じ絵になるため、切り替え続けると
+    「何も変わらないのに5秒ごとに再描画される」だけになるため。このときepochは
+    0固定になり、signalモードも発火しない。
+    """
+    has_outliers = any(
+        stats is not None and stats["outliers"] for stats in stats_by_category.values()
+    )
+    if not has_outliers:
+        return False, 0
+    bucket = int((time.time() if now is None else now) // _RANK_DELTA_TOGGLE_SECONDS)
+    return bucket % 2 == 1, bucket
+
+
+def _render_rank_delta_box_plot_svg(
+    win_values: list[float], lose_values: list[float], now: Optional[float] = None
+) -> str:
     """勝ち試合の増加量・負け試合の減少量(絶対値)を、横向きの箱ひげ図2段でSVG描画する。
 
     JS・外部チャートライブラリは使わずサーバー側でSVGを組み立てる(#95と同じ方針)。
+
+    Issue #463: 「全データ(ヒゲ=最小〜最大、従来どおり)」と「外れ値を考慮
+    (ヒゲ=1.5×IQRの内側、外れ値は丸)」を`_RANK_DELTA_TOGGLE_SECONDS`ごとに
+    交互に描く。**横軸は常に全データの最大値から決めるため、どちらの表示でも
+    スケールは変わらない**(切り替えのたびに目盛りが変わってグラフ全体が
+    跳ねるのを避けるため、ユーザーとの相談で決定)。箱(Q1〜Q3)・中央値も共通のため、
+    実際に動くのはヒゲの両端・外れ値の丸・平均マーカーだけになる。
+
+    `now`はテスト用に壁時計を固定するための引数(省略時は`time.time()`)。
     """
     width, height = _BOX_PLOT_VIEWBOX_WIDTH, _BOX_PLOT_VIEWBOX_HEIGHT
-    svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+    stats_by_category = {"win": _compute_box_stats(win_values), "lose": _compute_box_stats(lose_values)}
+    show_outliers, epoch = _rank_delta_toggle_phase(stats_by_category, now)
+    # Issue #463: epochが変わった瞬間だけoverlay-refresh.jsがクラスを付け、
+    # rank_delta_distribution.css側でクロスフェードを再生する(#361と同じsignalモード)
+    svg_open = (
+        f'<svg id="rank-delta-svg" data-animate-on-change="signal" data-epoch="{epoch}" '
+        f'viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
+    )
     # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
     # 一番背面に来るようにする
     panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-delta-panel" />'
     title_svg = f'<text x="{width / 2}" y="36" text-anchor="middle" class="rank-delta-title">{_BOX_PLOT_TITLE}</text>'
 
-    stats_by_category = {"win": _compute_box_stats(win_values), "lose": _compute_box_stats(lose_values)}
     if stats_by_category["win"] is None and stats_by_category["lose"] is None:
         return (
             f"{svg_open}{panel_svg}{title_svg}"
@@ -1282,31 +1372,37 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
         if stats is None:
             continue
         box_top, box_bottom = row_center_y - box_height / 2, row_center_y + box_height / 2
+        # Issue #463: 箱(Q1〜Q3)・中央値は両方の表示で共通。ヒゲの両端と平均だけが
+        # 表示側によって変わる(外れ値考慮側はフェンスの内側の実測値・外れ値を
+        # 除いた平均を使う)
+        whisker_low = stats["whisker_min"] if show_outliers else stats["min"]
+        whisker_high = stats["whisker_max"] if show_outliers else stats["max"]
+        mean_value = stats["inlier_mean"] if show_outliers else stats["mean"]
         min_x, q1_x, median_x, q3_x, max_x, mean_x = (
-            x_at(stats["min"]),
+            x_at(whisker_low),
             x_at(stats["q1"]),
             x_at(stats["median"]),
             x_at(stats["q3"]),
-            x_at(stats["max"]),
-            x_at(stats["mean"]),
+            x_at(whisker_high),
+            x_at(mean_value),
         )
         css_class = f"rank-delta-{category}"
         # ひげ(最小〜第1四分位、第3四分位〜最大)+ 両端のキャップ
         rows_svg.append(
             f'<line x1="{min_x:.1f}" y1="{row_center_y:.1f}" x2="{q1_x:.1f}" y2="{row_center_y:.1f}" '
-            f'class="rank-delta-whisker {css_class}" />'
+            f'class="rank-delta-whisker rank-delta-variable {css_class}" />'
         )
         rows_svg.append(
             f'<line x1="{q3_x:.1f}" y1="{row_center_y:.1f}" x2="{max_x:.1f}" y2="{row_center_y:.1f}" '
-            f'class="rank-delta-whisker {css_class}" />'
+            f'class="rank-delta-whisker rank-delta-variable {css_class}" />'
         )
         rows_svg.append(
             f'<line x1="{min_x:.1f}" y1="{box_top:.1f}" x2="{min_x:.1f}" y2="{box_bottom:.1f}" '
-            f'class="rank-delta-cap {css_class}" />'
+            f'class="rank-delta-cap rank-delta-variable {css_class}" />'
         )
         rows_svg.append(
             f'<line x1="{max_x:.1f}" y1="{box_top:.1f}" x2="{max_x:.1f}" y2="{box_bottom:.1f}" '
-            f'class="rank-delta-cap {css_class}" />'
+            f'class="rank-delta-cap rank-delta-variable {css_class}" />'
         )
         # 箱(第1四分位〜第3四分位)
         rows_svg.append(
@@ -1320,8 +1416,17 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
         )
         # 平均(丸マーカー)
         rows_svg.append(
-            f'<circle cx="{mean_x:.1f}" cy="{row_center_y:.1f}" r="4" class="rank-delta-mean" />'
+            f'<circle cx="{mean_x:.1f}" cy="{row_center_y:.1f}" r="4" '
+            'class="rank-delta-mean rank-delta-variable" />'
         )
+        # Issue #463: 外れ値(フェンスの外側の実測値)を中抜きの丸で描く。
+        # 全データ側では描かない
+        if show_outliers:
+            for outlier in stats["outliers"]:
+                rows_svg.append(
+                    f'<circle cx="{x_at(outlier):.1f}" cy="{row_center_y:.1f}" r="5" '
+                    f'class="rank-delta-outlier rank-delta-variable {css_class}" />'
+                )
 
     return f"{svg_open}{panel_svg}{title_svg}{''.join(axis_svg)}{''.join(rows_svg)}</svg>"
 
@@ -2177,7 +2282,8 @@ def create_app(db_path: Path) -> FastAPI:
         svg = _render_rank_delta_box_plot_svg(distribution["win"], distribution["lose"])
         context = {
             "svg": svg,
-            "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
+            # Issue #463: 5秒周期の切り替えにポーリングが追いつくよう短くする
+            "refresh_interval_ms": _RANK_DELTA_REFRESH_INTERVAL_MS,
             "debug_bg_style": _overlay_debug_bg_style(request),
         }
         return _TEMPLATES.TemplateResponse(request, "overlay_rank_delta_distribution.html", context)
