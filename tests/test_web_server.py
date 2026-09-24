@@ -291,13 +291,63 @@ def test_rank_history_returns_recent_matches_oldest_first(tmp_path: Path, monkey
     response = client.get("/api/rank-history")
 
     assert response.status_code == 200
+    # Issue #464: is_current_sessionも一緒に返る。このテストではセッションを
+    # 作っていないため(fetch_current_session_idがNone)全てFalseになる
     assert response.json() == {
         "matches": [
-            {"match_number": 1, "rank_after": 1.0, "league_changed": None},
-            {"match_number": 2, "rank_after": 2.0, "league_changed": "up"},
-            {"match_number": 3, "rank_after": 3.0, "league_changed": None},
+            {"match_number": 1, "rank_after": 1.0, "league_changed": None, "is_current_session": False},
+            {"match_number": 2, "rank_after": 2.0, "league_changed": "up", "is_current_session": False},
+            {"match_number": 3, "rank_after": 3.0, "league_changed": None, "is_current_session": False},
         ]
     }
+
+
+def test_rank_history_marks_matches_of_the_current_session(tmp_path: Path, monkeypatch):
+    """Issue #464: 今回の配信セッションの試合だけis_current_sessionがTrueになる。
+
+    判定の基準は統計タイルの「配信開始時」と同じfetch_current_session_id()で、
+    グラフ上の境界と統計タイルの数値が必ず一致するようにしている。
+    """
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    previous_session = db.create_session(conn)
+    for i in range(2):
+        _save_match_result(
+            conn,
+            MatchResult(result="win", rank_before=i, rank_after=i + 1, league_changed=None, detected_at=now_jst()),
+            session_id=previous_session,
+        )
+    current_session = db.create_session(conn)
+    _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=2, rank_after=3, league_changed=None, detected_at=now_jst()),
+        session_id=current_session,
+    )
+    conn.close()
+
+    matches = TestClient(create_app(db_path)).get("/api/rank-history").json()["matches"]
+
+    assert [m["is_current_session"] for m in matches] == [False, False, True]
+
+
+def test_rank_history_marks_nothing_when_current_session_has_no_confirmed_match(tmp_path: Path, monkeypatch):
+    """配信開始直後(今回のセッションでまだランクが確定していない)は全点False。"""
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    previous_session = db.create_session(conn)
+    _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=1, rank_after=2, league_changed=None, detected_at=now_jst()),
+        session_id=previous_session,
+    )
+    db.create_session(conn)  # 今回の配信。まだ試合は無い
+    conn.close()
+
+    matches = TestClient(create_app(db_path)).get("/api/rank-history").json()["matches"]
+
+    assert [m["is_current_session"] for m in matches] == [False]
 
 
 def test_rank_history_skips_matches_without_rank_after(tmp_path: Path, monkeypatch):
@@ -439,14 +489,24 @@ def test_rank_history_counts_only_confirmed_ranked_matches(tmp_path: Path, monke
     assert [(m["match_number"], m["rank_after"]) for m in matches] == [(2, 40.2), (3, 40.3)]
 
 
-def _continuous_history(values: list[float], league_changed: list = None, first_match_number: int = 1) -> list[dict]:
-    """_render_rank_graph_svgに渡す単純なhistoryのテストデータ。"""
+def _continuous_history(
+    values: list[float],
+    league_changed: list = None,
+    first_match_number: int = 1,
+    session_from: Optional[int] = None,
+) -> list[dict]:
+    """_render_rank_graph_svgに渡す単純なhistoryのテストデータ。
+
+    `session_from`(Issue #464)はこの添字以降を「今回の配信セッションの試合」とする。
+    省略時は全点がFalseで、目印の出ない従来どおりの描画になる。
+    """
     league_changed_values = league_changed if league_changed is not None else [None] * len(values)
     return [
         {
             "match_number": first_match_number + i,
             "rank_after": value,
             "league_changed": league_changed_values[i],
+            "is_current_session": session_from is not None and i >= session_from,
         }
         for i, value in enumerate(values)
     ]
@@ -539,6 +599,77 @@ def test_render_rank_graph_svg_with_flat_values_does_not_divide_by_zero():
     svg = _render_rank_graph_svg(history)
 
     assert svg.count("<circle") == 3
+
+
+# --- Issue #464: 今回の配信セッションの試合だけ色を変える ---
+
+
+def _polylines(svg: str) -> list[str]:
+    return re.findall(r"<polyline[^>]*>", svg)
+
+
+def test_render_rank_graph_svg_without_current_session_keeps_single_line():
+    """今回の配信でまだランクが確定した試合が無ければ、従来どおり折れ線は1本のまま。"""
+    svg = _render_rank_graph_svg(_continuous_history([10, 11, 12, 13]))
+
+    assert len(_polylines(svg)) == 1
+    assert "rank-graph-line-session" not in svg
+    assert "rank-graph-point-session" not in svg
+    # 分けない場合はインラインのanimation-duration自体を付けない(従来と同じ出力)
+    assert "animation-duration" not in svg
+
+
+def test_render_rank_graph_svg_splits_line_at_the_session_boundary():
+    """今回の配信ぶんだけ別クラスの折れ線にする。境界をまたぐ線分も今回側に含める。"""
+    svg = _render_rank_graph_svg(_continuous_history([10, 11, 12, 13, 14], session_from=3))
+
+    lines = _polylines(svg)
+    assert len(lines) == 2
+    assert 'class="rank-graph-line"' in lines[0]
+    assert 'class="rank-graph-line rank-graph-line-session"' in lines[1]
+    # 過去側は先頭〜境界の点(添字0〜2)、今回側は境界の点を含めて3点(添字2〜4)
+    assert len(re.search(r'points="([^"]+)"', lines[0]).group(1).split()) == 3
+    assert len(re.search(r'points="([^"]+)"', lines[1]).group(1).split()) == 3
+
+
+def test_render_rank_graph_svg_marks_only_current_session_points():
+    """点の色分けは今回の配信の試合だけ。境界の直前の点は従来の色のまま。"""
+    svg = _render_rank_graph_svg(_continuous_history([10, 11, 12, 13, 14], session_from=3))
+
+    assert svg.count("rank-graph-point-session") == 2
+
+
+def test_render_rank_graph_svg_session_split_preserves_total_draw_duration():
+    """Issue #361の登場アニメーション(左から順に描く)を2本に分けても保つため、
+    各区間の長さの割合でanimation-duration/delayを割り振る。
+    """
+    svg = _render_rank_graph_svg(_continuous_history([10, 11, 12, 13, 14], session_from=3))
+
+    lines = _polylines(svg)
+    head_ms = int(re.search(r"animation-duration:(\d+)ms", lines[0]).group(1))
+    tail_ms = int(re.search(r"animation-duration:(\d+)ms", lines[1]).group(1))
+    tail_delay = int(re.search(r"animation-delay:(\d+)ms", lines[1]).group(1))
+
+    assert head_ms + tail_ms == _RANK_GRAPH_ENTRANCE_LINE_DRAW_MS
+    # 過去側を描き終えてから今回側の描画が始まる
+    assert tail_delay == head_ms
+
+
+def test_render_rank_graph_svg_when_every_point_is_in_the_current_session():
+    """表示範囲がすべて今回の配信の場合は、分割せず1本を今回側の色で描く。"""
+    svg = _render_rank_graph_svg(_continuous_history([10, 11, 12], session_from=0))
+
+    lines = _polylines(svg)
+    assert len(lines) == 1
+    assert "rank-graph-line-session" in lines[0]
+    assert svg.count("rank-graph-point-session") == 3
+
+
+def test_render_rank_graph_svg_single_point_in_session_does_not_divide_by_zero():
+    svg = _render_rank_graph_svg(_continuous_history([10], session_from=0))
+
+    assert len(_polylines(svg)) == 1
+    assert svg.count("rank-graph-point-session") == 1
 
 
 def test_render_rank_graph_svg_points_are_always_white_regardless_of_league_changed():
