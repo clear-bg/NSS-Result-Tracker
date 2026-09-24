@@ -101,27 +101,3 @@
 .rank-delta-outlier.rank-delta-lose {
     stroke: #ff4d4d;
 }
-
-/* Issue #463: 「全データ」と「外れ値を考慮」の切り替えをクロスフェードで見せる。
-   overlay-refresh.jsは<body>の中身を丸ごと差し替えるため、差し替え後の新しい要素に
-   対してキーフレームアニメーションを再生する形になる(古い要素は既に消えているので、
-   厳密な意味でのクロスフェードではなく新しい状態のフェードイン)。
-   signalモード(#361)がsvgのdata-epochの変化を見てクラスを付けてくれる。
-
-   対象は表示側によって実際に動く要素(ヒゲ・キャップ・外れ値の丸・平均マーカー)だけに
-   絞る。箱・中央値・目盛り・タイトルは両方の表示で同じ位置のため、一緒に点滅させると
-   グラフ全体がちらついて見えてしまう。 */
-@keyframes rank-delta-swap {
-    from { opacity: 0; }
-    to { opacity: 1; }
-}
-
-#rank-delta-svg.nss-animate-entrance .rank-delta-variable {
-    animation: rank-delta-swap 0.45s ease-out both;
-}
-
-@media (prefers-reduced-motion: reduce) {
-    #rank-delta-svg.nss-animate-entrance .rank-delta-variable {
-        animation: none;
-    }
-}

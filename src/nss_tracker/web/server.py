@@ -164,7 +164,6 @@ import colorsys
 import logging
 import math
 import sqlite3
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -240,19 +239,6 @@ _RANK_GRAPH_REFRESH_INTERVAL_MS = 500
 # こちらはローカルの自分のサーバーへのポーリングでクォータを消費しないため、
 # 短くして遅くなった分を取り戻す(ランク推移グラフの0.5秒と同じ考え方)
 _DIVE_TIME_REFRESH_INTERVAL_MS = 1000
-
-# Issue #463: ランク増減分布は「全データ」と「外れ値を考慮」をこの秒数ごとに
-# 交互に表示する。どちらを表示するかはサーバー側が壁時計から決める
-# (int(time / 秒数) % 2)。overlay-refresh.jsは<body>の中身を丸ごと差し替えるため、
-# クライアント側に独自タイマーを持たせると差し替えのたびに切り替え状態が
-# リセットされてしまうことによる
-_RANK_DELTA_TOGGLE_SECONDS = 5
-# 上記の切り替わりにポーリングが追いつくよう、このウィジェットだけ他ウィジェット
-# (既定5秒)より短くする。5秒周期に対して5秒間隔でポーリングすると、位相のずれ方に
-# よっては同じ状態を2回続けて取ったり片方を飛ばしたりするため。ローカルの自分の
-# サーバーへのポーリングなのでコストは無視できる(ランク推移グラフの0.5秒・
-# 「次に潜る時間」の1秒と同じ考え方)
-_RANK_DELTA_REFRESH_INTERVAL_MS = 1000
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -1189,7 +1175,6 @@ def _compute_box_stats(values: list[float]) -> Optional[dict]:
     - `whisker_min`/`whisker_max`: フェンスの内側に収まる実測値の最小・最大
       (外れ値を除いたヒゲの両端)
     - `outliers`: フェンスの外側にある実測値(昇順、重複はそのまま残す)
-    - `inlier_mean`: 外れ値を除いた平均(外れ値考慮側の平均マーカーに使う)
 
     箱(Q1〜Q3)・中央値は両方の表示で共通のため、切り替えても動かない。
     """
@@ -1216,7 +1201,6 @@ def _compute_box_stats(values: list[float]) -> Optional[dict]:
         "whisker_min": inliers[0],
         "whisker_max": inliers[-1],
         "outliers": outliers,
-        "inlier_mean": sum(inliers) / len(inliers),
     }
 
 
@@ -1269,55 +1253,22 @@ def _rank_delta_axis_max(stats_by_category: dict) -> float:
     return round((steps + 1) * _BOX_PLOT_X_TICK_STEP, 10)
 
 
-def _rank_delta_toggle_phase(stats_by_category: dict, now: Optional[float] = None) -> tuple[bool, int]:
-    """ランク増減分布の「全データ / 外れ値を考慮」の表示側とepochを返す(Issue #463)。
-
-    戻り値は`(外れ値を考慮した表示にするか, epoch)`。epochは`data-epoch`属性へ
-    そのまま埋め込み、overlay-refresh.jsのsignalモードが変化を検知してクロスフェードを
-    再生するための通し番号として使う(値自体に意味は無い。#361と同じ仕組み)。
-
-    表示側は壁時計から決める(`int(time / _RANK_DELTA_TOGGLE_SECONDS) % 2`)。
-    クライアント側に独自タイマーを持たせられないため(モジュール先頭の定数参照)。
-
-    **外れ値が両系列とも1件も無い場合は切り替えを止め、常に全データ側を返す**
-    (ユーザーとの相談で決定)。2つの状態が完全に同じ絵になるため、切り替え続けると
-    「何も変わらないのに5秒ごとに再描画される」だけになるため。このときepochは
-    0固定になり、signalモードも発火しない。
-    """
-    has_outliers = any(
-        stats is not None and stats["outliers"] for stats in stats_by_category.values()
-    )
-    if not has_outliers:
-        return False, 0
-    bucket = int((time.time() if now is None else now) // _RANK_DELTA_TOGGLE_SECONDS)
-    return bucket % 2 == 1, bucket
-
-
-def _render_rank_delta_box_plot_svg(
-    win_values: list[float], lose_values: list[float], now: Optional[float] = None
-) -> str:
+def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[float]) -> str:
     """勝ち試合の増加量・負け試合の減少量(絶対値)を、横向きの箱ひげ図2段でSVG描画する。
 
     JS・外部チャートライブラリは使わずサーバー側でSVGを組み立てる(#95と同じ方針)。
 
-    Issue #463: 「全データ(ヒゲ=最小〜最大、従来どおり)」と「外れ値を考慮
-    (ヒゲ=1.5×IQRの内側、外れ値は丸)」を`_RANK_DELTA_TOGGLE_SECONDS`ごとに
-    交互に描く。**横軸は常に全データの最大値から決めるため、どちらの表示でも
-    スケールは変わらない**(切り替えのたびに目盛りが変わってグラフ全体が
-    跳ねるのを避けるため、ユーザーとの相談で決定)。箱(Q1〜Q3)・中央値も共通のため、
-    実際に動くのはヒゲの両端・外れ値の丸・平均マーカーだけになる。
+    Issue #463: ヒゲは**1.5×IQRのフェンスの内側**までにし、フェンスの外側の実測値は
+    中抜きの丸で描く(Tukeyの箱ひげ図の標準的な作法)。**横軸はフェンスではなく
+    実データの最大値から決める**ため、外れ値の丸も必ず軸の内側に収まる。
 
-    `now`はテスト用に壁時計を固定するための引数(省略時は`time.time()`)。
+    平均マーカーは**外れ値を含めた全体の平均**を使う。外れ値を丸で表示していて
+    隠していない以上、「1試合あたり平均どれくらい動くか」は外れ値の試合も含めた値に
+    すべきという判断による(ユーザーとの相談で決定)。
     """
     width, height = _BOX_PLOT_VIEWBOX_WIDTH, _BOX_PLOT_VIEWBOX_HEIGHT
     stats_by_category = {"win": _compute_box_stats(win_values), "lose": _compute_box_stats(lose_values)}
-    show_outliers, epoch = _rank_delta_toggle_phase(stats_by_category, now)
-    # Issue #463: epochが変わった瞬間だけoverlay-refresh.jsがクラスを付け、
-    # rank_delta_distribution.css側でクロスフェードを再生する(#361と同じsignalモード)
-    svg_open = (
-        f'<svg id="rank-delta-svg" data-animate-on-change="signal" data-epoch="{epoch}" '
-        f'viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
-    )
+    svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
     # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
     # 一番背面に来るようにする
     panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-delta-panel" />'
@@ -1372,37 +1323,33 @@ def _render_rank_delta_box_plot_svg(
         if stats is None:
             continue
         box_top, box_bottom = row_center_y - box_height / 2, row_center_y + box_height / 2
-        # Issue #463: 箱(Q1〜Q3)・中央値は両方の表示で共通。ヒゲの両端と平均だけが
-        # 表示側によって変わる(外れ値考慮側はフェンスの内側の実測値・外れ値を
-        # 除いた平均を使う)
-        whisker_low = stats["whisker_min"] if show_outliers else stats["min"]
-        whisker_high = stats["whisker_max"] if show_outliers else stats["max"]
-        mean_value = stats["inlier_mean"] if show_outliers else stats["mean"]
+        # Issue #463: ヒゲはフェンスの内側の実測値まで(外れ値は別途丸で描く)。
+        # 平均は外れ値を含めた全体の平均を使う
         min_x, q1_x, median_x, q3_x, max_x, mean_x = (
-            x_at(whisker_low),
+            x_at(stats["whisker_min"]),
             x_at(stats["q1"]),
             x_at(stats["median"]),
             x_at(stats["q3"]),
-            x_at(whisker_high),
-            x_at(mean_value),
+            x_at(stats["whisker_max"]),
+            x_at(stats["mean"]),
         )
         css_class = f"rank-delta-{category}"
         # ひげ(最小〜第1四分位、第3四分位〜最大)+ 両端のキャップ
         rows_svg.append(
             f'<line x1="{min_x:.1f}" y1="{row_center_y:.1f}" x2="{q1_x:.1f}" y2="{row_center_y:.1f}" '
-            f'class="rank-delta-whisker rank-delta-variable {css_class}" />'
+            f'class="rank-delta-whisker {css_class}" />'
         )
         rows_svg.append(
             f'<line x1="{q3_x:.1f}" y1="{row_center_y:.1f}" x2="{max_x:.1f}" y2="{row_center_y:.1f}" '
-            f'class="rank-delta-whisker rank-delta-variable {css_class}" />'
+            f'class="rank-delta-whisker {css_class}" />'
         )
         rows_svg.append(
             f'<line x1="{min_x:.1f}" y1="{box_top:.1f}" x2="{min_x:.1f}" y2="{box_bottom:.1f}" '
-            f'class="rank-delta-cap rank-delta-variable {css_class}" />'
+            f'class="rank-delta-cap {css_class}" />'
         )
         rows_svg.append(
             f'<line x1="{max_x:.1f}" y1="{box_top:.1f}" x2="{max_x:.1f}" y2="{box_bottom:.1f}" '
-            f'class="rank-delta-cap rank-delta-variable {css_class}" />'
+            f'class="rank-delta-cap {css_class}" />'
         )
         # 箱(第1四分位〜第3四分位)
         rows_svg.append(
@@ -1417,16 +1364,14 @@ def _render_rank_delta_box_plot_svg(
         # 平均(丸マーカー)
         rows_svg.append(
             f'<circle cx="{mean_x:.1f}" cy="{row_center_y:.1f}" r="4" '
-            'class="rank-delta-mean rank-delta-variable" />'
+            'class="rank-delta-mean" />'
         )
-        # Issue #463: 外れ値(フェンスの外側の実測値)を中抜きの丸で描く。
-        # 全データ側では描かない
-        if show_outliers:
-            for outlier in stats["outliers"]:
-                rows_svg.append(
-                    f'<circle cx="{x_at(outlier):.1f}" cy="{row_center_y:.1f}" r="5" '
-                    f'class="rank-delta-outlier rank-delta-variable {css_class}" />'
-                )
+        # Issue #463: 外れ値(フェンスの外側の実測値)を中抜きの丸で描く
+        for outlier in stats["outliers"]:
+            rows_svg.append(
+                f'<circle cx="{x_at(outlier):.1f}" cy="{row_center_y:.1f}" r="5" '
+                f'class="rank-delta-outlier {css_class}" />'
+            )
 
     return f"{svg_open}{panel_svg}{title_svg}{''.join(axis_svg)}{''.join(rows_svg)}</svg>"
 
@@ -2282,8 +2227,7 @@ def create_app(db_path: Path) -> FastAPI:
         svg = _render_rank_delta_box_plot_svg(distribution["win"], distribution["lose"])
         context = {
             "svg": svg,
-            # Issue #463: 5秒周期の切り替えにポーリングが追いつくよう短くする
-            "refresh_interval_ms": _RANK_DELTA_REFRESH_INTERVAL_MS,
+            "refresh_interval_ms": _OVERLAY_REFRESH_INTERVAL_MS,
             "debug_bg_style": _overlay_debug_bg_style(request),
         }
         return _TEMPLATES.TemplateResponse(request, "overlay_rank_delta_distribution.html", context)
