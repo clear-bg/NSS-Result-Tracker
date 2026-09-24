@@ -355,15 +355,27 @@ def _fetch_rank_history(db_path: Path) -> list[dict]:
     rank_afterがNULLの試合を除いていたため、実際に描く点がNより少なくなっていた。
     各点のmatch_numberは、ランク確定済みの試合を最初の試合から通算で数えた番号
     (1始まり)で、横軸の目盛りにそのまま使う(Nを超えても左端が「1」に戻らない)。
+
+    Issue #464: 各点に`is_current_session`(今回の配信セッションの試合か)を持たせる。
+    グラフ上で今回の配信ぶんだけ色を変えるために使う(_render_rank_graph_svg参照)。
+    判定の基準は統計タイルの「配信開始時」(_fetch_rank_graph_summary)と同じ
+    `fetch_current_session_id()`で、両者が指す境界が必ず一致するようにしている。
+    今回の配信でまだランクが確定した試合が無ければ、全点がFalseになり目印も出ない。
     """
     limit = get_rank_graph_match_limit()
     conn = _connect(db_path)
     try:
         rows = fetch_confirmed_rank_matches(conn)
+        current_session_id = fetch_current_session_id(conn)
     finally:
         conn.close()
     history = [
-        {"match_number": number, "rank_after": row["rank_after"], "league_changed": row["league_changed"]}
+        {
+            "match_number": number,
+            "rank_after": row["rank_after"],
+            "league_changed": row["league_changed"],
+            "is_current_session": current_session_id is not None and row["session_id"] == current_session_id,
+        }
         for number, row in enumerate(rows, start=1)
     ]
     return history if limit is None else history[-limit:]
@@ -761,6 +773,7 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None, 
         )
 
     coords = [(x_at(point["match_number"]), y_at(point["rank_after"])) for point in history]
+    point_count = len(coords)
 
     polyline_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
     # Issue #313: エリアチャート化。折れ線と同じ座標列を使い、右端・左端からプロット
@@ -771,15 +784,43 @@ def _render_rank_graph_svg(history: list[dict], summary: Optional[dict] = None, 
     # stroke-dashoffsetの基準を1000に正規化する(rank_graph.cssのrank-graph-entrance-draw
     # 参照)。通常表示時(nss-animate-entranceクラス無し)はdasharray/dashoffsetとも
     # CSSで指定していないためこの属性自体は何も見た目に影響しない
-    line_svg = [f'<polyline points="{polyline_points}" class="rank-graph-line" pathLength="1000" />']
+    # Issue #464: 今回の配信の試合だけ折れ線・点の色を変える(どこからが今回の配信か
+    # 一目で分かるようにするため。複数案をArtifactで比較して決定)。境界をまたぐ線分
+    # (直前の試合から1試合目へ繋がる区間)も今回側の色にする。
+    #
+    # 登場アニメーション(#361)は「折れ線を左から_RANK_GRAPH_ENTRANCE_LINE_DRAW_MSかけて
+    # 描く」演出のため、2本に分けたあともその見え方を保つ必要がある。CSS側は両方に
+    # 同じアニメーションが当たるので、各区間の長さの割合でanimation-duration/delayを
+    # インラインstyleで割り振る(割合の基準は点のstaggerと同じ添字)。分けない場合は
+    # インラインstyle自体を付けず、従来と同じ出力にする
+    session_start_index = next((i for i, point in enumerate(history) if point.get("is_current_session")), None)
+    if session_start_index is None or point_count < 2:
+        line_svg = [f'<polyline points="{polyline_points}" class="rank-graph-line" pathLength="1000" />']
+    else:
+        split = max(session_start_index - 1, 0)
+        head_ratio = split / (point_count - 1)
+        head_ms = round(head_ratio * _RANK_GRAPH_ENTRANCE_LINE_DRAW_MS)
+        line_svg = []
+        if split > 0:
+            head_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords[: split + 1])
+            line_svg.append(
+                f'<polyline points="{head_points}" class="rank-graph-line" pathLength="1000" '
+                f'style="animation-duration:{head_ms}ms" />'
+            )
+        tail_points = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords[split:])
+        line_svg.append(
+            f'<polyline points="{tail_points}" class="rank-graph-line rank-graph-line-session" '
+            f'pathLength="1000" style="animation-duration:'
+            f'{_RANK_GRAPH_ENTRANCE_LINE_DRAW_MS - head_ms}ms;animation-delay:{head_ms}ms" />'
+        )
 
     # Issue #361: 登場アニメーション再生時、折れ線が実際にその点を通過するタイミングに
     # 合わせて各点をポップさせるため、点ごとにanimation-delayを均等分散させる
     # (_RANK_GRAPH_ENTRANCE_LINE_DRAW_MS参照)。通常表示時はanimation自体が発火しない
     # (rank_graph.css参照)ためこの属性も見た目に影響しない
-    point_count = len(coords)
     markers = [
-        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" class="rank-graph-point" '
+        f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" '
+        f'class="rank-graph-point{" rank-graph-point-session" if history[i].get("is_current_session") else ""}" '
         f'style="animation-delay:{round(i / (point_count - 1) * _RANK_GRAPH_ENTRANCE_LINE_DRAW_MS) if point_count > 1 else 0}ms" />'
         for i, (x, y) in enumerate(coords)
     ]
