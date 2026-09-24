@@ -1868,11 +1868,68 @@ def test_percentile_single_value():
 def test_compute_box_stats_returns_expected_summary():
     stats = _compute_box_stats([1, 2, 3, 4])
 
-    assert stats == {"min": 1, "q1": 1.75, "median": 2.5, "q3": 3.25, "max": 4, "mean": 2.5}
+    assert stats == {
+        "min": 1, "q1": 1.75, "median": 2.5, "q3": 3.25, "max": 4, "mean": 2.5,
+        # Issue #463: IQR=1.5 -> フェンスは[-0.5, 5.5]で全件が内側。
+        # ヒゲは最小〜最大と一致し、外れ値は0件になる
+        "whisker_min": 1, "whisker_max": 4, "outliers": [],
+    }
 
 
 def test_compute_box_stats_returns_none_for_empty_list():
     assert _compute_box_stats([]) is None
+
+
+def test_compute_box_stats_detects_outliers_with_tukey_fence():
+    """Issue #463: 実データ(勝ち76件)と同じ形。Q1=0.17 Q3=0.26 IQR=0.09 ->
+    フェンスは[0.035, 0.395]で、0.42/0.44/0.51が外れ値になる。
+    """
+    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.04, 0.37, 0.42, 0.44, 0.51]
+
+    stats = _compute_box_stats(values)
+
+    assert stats["outliers"] == [0.42, 0.44, 0.51]
+    assert stats["whisker_min"] == 0.04
+    assert stats["whisker_max"] == 0.37
+    # 箱と中央値は外れ値の有無に関係なく同じ(切り替えても動かない)
+    assert stats["q1"] == 0.17
+    assert stats["q3"] == 0.26
+    # 平均は外れ値を含めた全体の平均をそのまま使う(#463、ユーザーとの相談で決定)
+    assert stats["mean"] == sum(values) / len(values)
+
+
+# --- Issue #463: 外れ値を考慮した箱ひげ図(常時表示) ---
+
+
+def test_render_rank_delta_box_plot_svg_always_draws_outliers():
+    """外れ値は中抜きの丸で常に描く(全データ表示との切り替えは行わない)。"""
+    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
+
+    svg = _render_rank_delta_box_plot_svg(values, [])
+
+    assert svg.count("rank-delta-outlier") == 1
+
+
+def test_render_rank_delta_box_plot_svg_whisker_stops_at_the_fence():
+    """ヒゲはフェンスの内側の実測値(0.26)までで、外れ値(0.51)までは伸ばさない。"""
+    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
+    stats = _compute_box_stats(values)
+
+    assert stats["whisker_max"] == 0.26
+    assert stats["max"] == 0.51
+
+
+def test_render_rank_delta_box_plot_svg_axis_still_covers_outliers():
+    """Issue #463: 横軸はフェンスではなく実データの最大値から決めるため、
+    外れ値の丸も必ず軸の内側に収まる。
+    """
+    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
+
+    labels = re.compile(r'class="rank-delta-tick-label">([0-9.]+)<').findall(
+        _render_rank_delta_box_plot_svg(values, [])
+    )
+
+    assert labels[-1] == "0.6"
 
 
 def test_rank_delta_distribution_endpoint_separates_win_and_lose_and_excludes_draw(tmp_path: Path, monkeypatch):
@@ -1910,6 +1967,38 @@ def test_rank_delta_distribution_endpoint_separates_win_and_lose_and_excludes_dr
 
     assert response.status_code == 200
     assert response.json() == {"win": [2], "lose": [2]}
+
+
+def test_rank_delta_distribution_endpoint_excludes_player_shortage_matches(tmp_path: Path, monkeypatch):
+    """Issue #463: 味方が抜けて人数差があった試合(#462)は増減の分布から除外する。
+
+    ゲーム内容とは別の理由でゲージが動かなかった試合のため。合計ランク差が大きかった
+    ことによるΔ=0(フラグを立てていない試合)は従来どおり含める。
+    """
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    kept = _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=10, rank_after=12, league_changed=None, detected_at=now_jst()),
+    )
+    excluded = _save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=10, rank_after=10, league_changed=None, detected_at=now_jst()),
+    )
+    zero_delta_kept = _save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=10, rank_after=10, league_changed=None, detected_at=now_jst()),
+    )
+    db.update_match_fields(conn, excluded, player_shortage=True)
+    conn.close()
+
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/api/rank-delta-distribution")
+
+    assert kept and zero_delta_kept
+    assert response.json() == {"win": [2], "lose": [0]}
 
 
 def test_rank_delta_distribution_endpoint_scoped_to_current_session(tmp_path: Path, monkeypatch):
@@ -2022,7 +2111,8 @@ def test_render_rank_delta_box_plot_svg_draws_both_categories():
 
     assert svg.count('class="rank-delta-box rank-delta-win"') == 1
     assert svg.count('class="rank-delta-box rank-delta-lose"') == 1
-    assert svg.count('class="rank-delta-mean"') == 2
+    # Issue #463: クロスフェード用のrank-delta-variableが付くため前方一致で数える
+    assert svg.count('class="rank-delta-mean') == 2
     assert svg.count('class="rank-delta-median"') == 2
 
 
@@ -2036,7 +2126,8 @@ def test_render_rank_delta_box_plot_svg_handles_one_category_missing():
 def test_render_rank_delta_box_plot_svg_single_value_does_not_crash():
     svg = _render_rank_delta_box_plot_svg([2], [3])
 
-    assert svg.count('class="rank-delta-mean"') == 2
+    # Issue #463: クロスフェード用のrank-delta-variableが付くため前方一致で数える
+    assert svg.count('class="rank-delta-mean') == 2
 
 
 def test_overlay_rank_delta_distribution_page_links_transparent_background_stylesheet(tmp_path: Path, monkeypatch):

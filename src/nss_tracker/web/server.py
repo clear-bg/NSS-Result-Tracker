@@ -1111,6 +1111,12 @@ def _fetch_rank_delta_distribution(db_path: Path) -> dict:
     そのまま返すと、勝ちが正・負けが負の値になり単純な大小比較がしづらいため)。
     draw(引き分け)、rank_before/rank_afterのいずれかがNULLの試合は対象外。
     "session"指定時に配信セッションが1件も無い場合は両方とも空リストを返す。
+
+    Issue #463: **味方が抜けて人数差があった試合(matches.player_shortage、#462)は
+    集計から除外する。** ゲーム内容とは別の理由でゲージが動かなかった試合であり、
+    増減の分布に混ぜる意味が無いため(ユーザーとの相談で決定)。一方、合計ランク差が
+    大きかったことによるΔ=0は正当な試合結果なので含めたままにし、外れ値かどうかは
+    1.5×IQRの判定に任せる。
     """
     scope = get_rank_delta_distribution_scope()
     conn = _connect(db_path)
@@ -1129,6 +1135,8 @@ def _fetch_rank_delta_distribution(db_path: Path) -> dict:
     lose_deltas: list[float] = []
     for row in rows:
         if row["rank_before"] is None or row["rank_after"] is None:
+            continue
+        if row["player_shortage"]:
             continue
         delta = row["rank_after"] - row["rank_before"]
         if row["result"] == "win":
@@ -1157,17 +1165,42 @@ def _compute_box_stats(values: list[float]) -> Optional[dict]:
     """箱ひげ図に必要な統計値(最小・第1四分位・中央値・第3四分位・最大・平均)を返す。
 
     値が1件も無い場合はNoneを返す。
+
+    Issue #463: あわせて外れ値を考慮した表示に必要な値も返す。外れ値の判定は
+    **Tukeyの1.5×IQR**(`Q1 - 1.5×IQR`より下、`Q3 + 1.5×IQR`より上)で、箱ひげ図の
+    世界標準かつ試合数が増えても自動で追従するという理由で採用した(パーセンタイル
+    (5%〜95%)は常に一定割合が外れ値になってしまうため、固定閾値は帯が変わると
+    再調整が必要になるためいずれも不採用、ユーザーとの相談で決定):
+
+    - `whisker_min`/`whisker_max`: フェンスの内側に収まる実測値の最小・最大
+      (外れ値を除いたヒゲの両端)
+    - `outliers`: フェンスの外側にある実測値(昇順、重複はそのまま残す)
+
+    箱(Q1〜Q3)・中央値は両方の表示で共通のため、切り替えても動かない。
     """
     if not values:
         return None
     sorted_values = sorted(values)
+    q1 = _percentile(sorted_values, 25)
+    q3 = _percentile(sorted_values, 75)
+    iqr = q3 - q1
+    lower_fence, upper_fence = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    inliers = [v for v in sorted_values if lower_fence <= v <= upper_fence]
+    outliers = [v for v in sorted_values if v < lower_fence or v > upper_fence]
+    # 全件が外れ値になることは1.5×IQRの定義上ありえない(Q1〜Q3は必ずフェンスの
+    # 内側にあるため)が、念のためinliersが空の場合は全データ側にフォールバックする
+    if not inliers:
+        inliers, outliers = sorted_values, []
     return {
         "min": sorted_values[0],
-        "q1": _percentile(sorted_values, 25),
+        "q1": q1,
         "median": _percentile(sorted_values, 50),
-        "q3": _percentile(sorted_values, 75),
+        "q3": q3,
         "max": sorted_values[-1],
         "mean": sum(values) / len(values),
+        "whisker_min": inliers[0],
+        "whisker_max": inliers[-1],
+        "outliers": outliers,
     }
 
 
@@ -1224,15 +1257,23 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
     """勝ち試合の増加量・負け試合の減少量(絶対値)を、横向きの箱ひげ図2段でSVG描画する。
 
     JS・外部チャートライブラリは使わずサーバー側でSVGを組み立てる(#95と同じ方針)。
+
+    Issue #463: ヒゲは**1.5×IQRのフェンスの内側**までにし、フェンスの外側の実測値は
+    中抜きの丸で描く(Tukeyの箱ひげ図の標準的な作法)。**横軸はフェンスではなく
+    実データの最大値から決める**ため、外れ値の丸も必ず軸の内側に収まる。
+
+    平均マーカーは**外れ値を含めた全体の平均**を使う。外れ値を丸で表示していて
+    隠していない以上、「1試合あたり平均どれくらい動くか」は外れ値の試合も含めた値に
+    すべきという判断による(ユーザーとの相談で決定)。
     """
     width, height = _BOX_PLOT_VIEWBOX_WIDTH, _BOX_PLOT_VIEWBOX_HEIGHT
+    stats_by_category = {"win": _compute_box_stats(win_values), "lose": _compute_box_stats(lose_values)}
     svg_open = f'<svg viewBox="0 0 {width} {height}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">'
     # 配信画面に重ねたときの視認性対策(Issue #113)。他の要素より先に描画することで
     # 一番背面に来るようにする
     panel_svg = f'<rect x="0" y="0" width="{width}" height="{height}" rx="10" class="rank-delta-panel" />'
     title_svg = f'<text x="{width / 2}" y="36" text-anchor="middle" class="rank-delta-title">{_BOX_PLOT_TITLE}</text>'
 
-    stats_by_category = {"win": _compute_box_stats(win_values), "lose": _compute_box_stats(lose_values)}
     if stats_by_category["win"] is None and stats_by_category["lose"] is None:
         return (
             f"{svg_open}{panel_svg}{title_svg}"
@@ -1282,12 +1323,14 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
         if stats is None:
             continue
         box_top, box_bottom = row_center_y - box_height / 2, row_center_y + box_height / 2
+        # Issue #463: ヒゲはフェンスの内側の実測値まで(外れ値は別途丸で描く)。
+        # 平均は外れ値を含めた全体の平均を使う
         min_x, q1_x, median_x, q3_x, max_x, mean_x = (
-            x_at(stats["min"]),
+            x_at(stats["whisker_min"]),
             x_at(stats["q1"]),
             x_at(stats["median"]),
             x_at(stats["q3"]),
-            x_at(stats["max"]),
+            x_at(stats["whisker_max"]),
             x_at(stats["mean"]),
         )
         css_class = f"rank-delta-{category}"
@@ -1320,8 +1363,15 @@ def _render_rank_delta_box_plot_svg(win_values: list[float], lose_values: list[f
         )
         # 平均(丸マーカー)
         rows_svg.append(
-            f'<circle cx="{mean_x:.1f}" cy="{row_center_y:.1f}" r="4" class="rank-delta-mean" />'
+            f'<circle cx="{mean_x:.1f}" cy="{row_center_y:.1f}" r="4" '
+            'class="rank-delta-mean" />'
         )
+        # Issue #463: 外れ値(フェンスの外側の実測値)を中抜きの丸で描く
+        for outlier in stats["outliers"]:
+            rows_svg.append(
+                f'<circle cx="{x_at(outlier):.1f}" cy="{row_center_y:.1f}" r="5" '
+                f'class="rank-delta-outlier {css_class}" />'
+            )
 
     return f"{svg_open}{panel_svg}{title_svg}{''.join(axis_svg)}{''.join(rows_svg)}</svg>"
 

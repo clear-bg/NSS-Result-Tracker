@@ -86,3 +86,18 @@
     font-size: 32px;
     font-weight: bold;
 }
+
+/* Issue #463: 外れ値(1.5×IQRのフェンスの外側)を中抜きの丸で描く。系列の色は
+   ヒゲ・箱と同じものを使い、塗りを持たせないことで実測値の点だと分かるようにする */
+.rank-delta-outlier {
+    fill: none;
+    stroke-width: 2;
+}
+
+.rank-delta-outlier.rank-delta-win {
+    stroke: #4caf50;
+}
+
+.rank-delta-outlier.rank-delta-lose {
+    stroke: #ff4d4d;
+}
