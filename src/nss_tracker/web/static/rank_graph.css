@@ -39,6 +39,20 @@
     opacity: 0.14;
 }
 
+/* Issue #464: 今回の配信セッションの試合だけ色を変える(どこからが今回の配信か
+   一目で分かるようにするため)。縦線・帯・旗などの案とArtifactで比較した上で、
+   「線を増やさずに区間が分かる」という理由でこの案を選んだ(ユーザーとの相談で決定)。
+   色は既存の折れ線(青 #3987e5)・グリッド線(シアン #7dd3fc)と混ざらない暖色にする。
+   .rank-graph-line/.rank-graph-point と同じ詳細度のため、後に書いて上書きする。
+   登場アニメーション(#361)側は stroke/fill を指定しないので競合しない */
+.rank-graph-line-session {
+    stroke: #ffc247;
+}
+
+.rank-graph-point-session {
+    fill: #ffc247;
+}
+
 .rank-graph-empty {
     fill: #fff;
     font-family: sans-serif;
