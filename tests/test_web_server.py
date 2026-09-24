@@ -49,7 +49,6 @@ from nss_tracker.web.server import (
     _parse_hex_color,
     _percentile,
     _rank_delta_axis_max,
-    _rank_delta_toggle_phase,
     _rank_graph_x_axis_max,
     _rank_graph_x_tick_step,
     _rank_graph_x_tick_values,
@@ -1873,7 +1872,7 @@ def test_compute_box_stats_returns_expected_summary():
         "min": 1, "q1": 1.75, "median": 2.5, "q3": 3.25, "max": 4, "mean": 2.5,
         # Issue #463: IQR=1.5 -> フェンスは[-0.5, 5.5]で全件が内側。
         # ヒゲは最小〜最大と一致し、外れ値は0件になる
-        "whisker_min": 1, "whisker_max": 4, "outliers": [], "inlier_mean": 2.5,
+        "whisker_min": 1, "whisker_max": 4, "outliers": [],
     }
 
 
@@ -1895,98 +1894,42 @@ def test_compute_box_stats_detects_outliers_with_tukey_fence():
     # 箱と中央値は外れ値の有無に関係なく同じ(切り替えても動かない)
     assert stats["q1"] == 0.17
     assert stats["q3"] == 0.26
-    # 外れ値を除いた平均は全体の平均より小さくなる
-    assert stats["inlier_mean"] < stats["mean"]
+    # 平均は外れ値を含めた全体の平均をそのまま使う(#463、ユーザーとの相談で決定)
+    assert stats["mean"] == sum(values) / len(values)
 
 
-def test_compute_box_stats_inlier_mean_matches_mean_without_outliers():
-    stats = _compute_box_stats([0.20, 0.21, 0.22])
-
-    assert stats["outliers"] == []
-    assert stats["inlier_mean"] == stats["mean"]
+# --- Issue #463: 外れ値を考慮した箱ひげ図(常時表示) ---
 
 
-# --- Issue #463: 「全データ」と「外れ値を考慮」の5秒ごとの切り替え ---
-
-
-def _stats_with_outlier():
-    return _compute_box_stats([0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51])
-
-
-def test_rank_delta_toggle_phase_alternates_every_toggle_window():
-    """壁時計を_RANK_DELTA_TOGGLE_SECONDSで割ったバケツの偶奇で表示側が決まる。"""
-    stats = {"win": _stats_with_outlier(), "lose": None}
-    seconds = server_module._RANK_DELTA_TOGGLE_SECONDS
-
-    assert _rank_delta_toggle_phase(stats, now=0.0) == (False, 0)
-    assert _rank_delta_toggle_phase(stats, now=seconds) == (True, 1)
-    assert _rank_delta_toggle_phase(stats, now=seconds * 2) == (False, 2)
-    # 同じバケツの中では表示側もepochも変わらない(ポーリングのたびに点滅しない)
-    assert _rank_delta_toggle_phase(stats, now=seconds - 0.001) == (False, 0)
-
-
-def test_rank_delta_toggle_phase_stops_switching_without_outliers():
-    """Issue #463: 外れ値が1件も無いと2つの状態が同じ絵になるため、切り替えを止める。"""
-    stats = {"win": _compute_box_stats([0.20, 0.21, 0.22]), "lose": None}
-    seconds = server_module._RANK_DELTA_TOGGLE_SECONDS
-
-    assert _rank_delta_toggle_phase(stats, now=0.0) == (False, 0)
-    assert _rank_delta_toggle_phase(stats, now=seconds) == (False, 0)
-
-
-def test_rank_delta_toggle_phase_switches_when_only_one_series_has_outliers():
-    stats = {"win": None, "lose": _stats_with_outlier()}
-
-    assert _rank_delta_toggle_phase(stats, now=server_module._RANK_DELTA_TOGGLE_SECONDS)[0] is True
-
-
-def test_render_rank_delta_box_plot_svg_draws_outliers_only_in_outlier_view():
-    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
-    seconds = server_module._RANK_DELTA_TOGGLE_SECONDS
-
-    all_data = _render_rank_delta_box_plot_svg(values, [], now=0.0)
-    outlier_view = _render_rank_delta_box_plot_svg(values, [], now=seconds)
-
-    assert "rank-delta-outlier" not in all_data
-    assert outlier_view.count("rank-delta-outlier") == 1
-
-
-def test_render_rank_delta_box_plot_svg_keeps_axis_fixed_across_views():
-    """Issue #463: 横軸は常に全データの最大値から決める(切り替えでグラフが跳ねない)。"""
-    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
-    seconds = server_module._RANK_DELTA_TOGGLE_SECONDS
-
-    labels = re.compile(r'class="rank-delta-tick-label">([0-9.]+)<')
-    all_data = labels.findall(_render_rank_delta_box_plot_svg(values, [], now=0.0))
-    outlier_view = labels.findall(_render_rank_delta_box_plot_svg(values, [], now=seconds))
-
-    assert all_data == outlier_view
-    # 外れ値0.51を含む位置まで軸が伸びている
-    assert all_data[-1] == "0.6"
-
-
-def test_render_rank_delta_box_plot_svg_embeds_epoch_for_crossfade():
-    """Issue #463: overlay-refresh.jsのsignalモードが変化を検知するための属性。"""
-    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
-    seconds = server_module._RANK_DELTA_TOGGLE_SECONDS
-
-    svg = _render_rank_delta_box_plot_svg(values, [], now=seconds)
-
-    assert 'id="rank-delta-svg"' in svg
-    assert 'data-animate-on-change="signal"' in svg
-    assert 'data-epoch="1"' in svg
-
-
-def test_render_rank_delta_box_plot_svg_marks_changing_elements_for_crossfade():
-    """箱・中央値は両表示で共通なので、フェード対象(rank-delta-variable)に含めない。"""
+def test_render_rank_delta_box_plot_svg_always_draws_outliers():
+    """外れ値は中抜きの丸で常に描く(全データ表示との切り替えは行わない)。"""
     values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
 
-    svg = _render_rank_delta_box_plot_svg(values, [], now=0.0)
+    svg = _render_rank_delta_box_plot_svg(values, [])
 
-    assert 'class="rank-delta-whisker rank-delta-variable' in svg
-    assert 'class="rank-delta-mean rank-delta-variable"' in svg
-    assert "rank-delta-variable" not in svg.split('class="rank-delta-box')[1].split(">")[0]
-    assert "rank-delta-variable" not in svg.split('class="rank-delta-median')[1].split(">")[0]
+    assert svg.count("rank-delta-outlier") == 1
+
+
+def test_render_rank_delta_box_plot_svg_whisker_stops_at_the_fence():
+    """ヒゲはフェンスの内側の実測値(0.26)までで、外れ値(0.51)までは伸ばさない。"""
+    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
+    stats = _compute_box_stats(values)
+
+    assert stats["whisker_max"] == 0.26
+    assert stats["max"] == 0.51
+
+
+def test_render_rank_delta_box_plot_svg_axis_still_covers_outliers():
+    """Issue #463: 横軸はフェンスではなく実データの最大値から決めるため、
+    外れ値の丸も必ず軸の内側に収まる。
+    """
+    values = [0.17] * 20 + [0.22] * 20 + [0.26] * 20 + [0.51]
+
+    labels = re.compile(r'class="rank-delta-tick-label">([0-9.]+)<').findall(
+        _render_rank_delta_box_plot_svg(values, [])
+    )
+
+    assert labels[-1] == "0.6"
 
 
 def test_rank_delta_distribution_endpoint_separates_win_and_lose_and_excludes_draw(tmp_path: Path, monkeypatch):
@@ -2056,20 +1999,6 @@ def test_rank_delta_distribution_endpoint_excludes_player_shortage_matches(tmp_p
 
     assert kept and zero_delta_kept
     assert response.json() == {"win": [2], "lose": [0]}
-
-
-def test_rank_delta_distribution_overlay_polls_faster_than_other_widgets(tmp_path: Path, monkeypatch):
-    """Issue #463: 5秒ごとの切り替えにポーリングが追いつくよう短くしている。"""
-    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
-    db_path = tmp_path / "test.db"
-    db.connect(db_path).close()
-    client = TestClient(create_app(db_path))
-
-    response = client.get("/overlay/rank-delta-distribution")
-
-    assert response.status_code == 200
-    assert f'data-interval-ms="{server_module._RANK_DELTA_REFRESH_INTERVAL_MS}"' in response.text
-    assert server_module._RANK_DELTA_REFRESH_INTERVAL_MS < server_module._RANK_DELTA_TOGGLE_SECONDS * 1000
 
 
 def test_rank_delta_distribution_endpoint_scoped_to_current_session(tmp_path: Path, monkeypatch):
@@ -2345,10 +2274,9 @@ def test_overlay_refresh_script_supports_signal_mode_entrance_animation(tmp_path
     [
         "/overlay/goal-stats-winrate",
         "/overlay/match-log",
+        "/overlay/rank-delta-distribution",
         # Issue #419: /overlay/dive-timeは既定より短い間隔を使うため対象外
         # (test_overlay_dive_time_polls_faster_than_other_widgetsで別途検証する)
-        # Issue #463: /overlay/rank-delta-distributionも同じ理由で対象外
-        # (test_rank_delta_distribution_overlay_polls_faster_than_other_widgets)
     ],
 )
 def test_overlay_pages_include_refresh_script_with_default_interval(tmp_path: Path, path: str, monkeypatch):
