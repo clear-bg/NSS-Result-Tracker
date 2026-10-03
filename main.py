@@ -89,6 +89,7 @@ from nss_tracker.state.match_state import (
     _run_vs_screen_ocr,
 )
 from nss_tracker.timeutil import JST, now_jst
+from nss_tracker.virtual_camera_status import VirtualCameraMonitor
 from nss_tracker.web.runner import start_web_server_thread
 from nss_tracker.web.server import create_app
 from nss_tracker.youtube_chat import DiveTimeWatcher
@@ -379,6 +380,7 @@ def run(
     gauge_clip_recorder: RankEntryClipRecorder,
     rank_number_clip_recorder: RankEntryClipRecorder,
     blackout_watcher: Optional[BlackoutWatcher] = None,
+    virtual_camera_monitor: Optional[VirtualCameraMonitor] = None,
 ) -> None:
     prev_state = machine.current_state
     prev_in_match = machine.in_match
@@ -444,6 +446,12 @@ def run(
                     round(read_gap_seconds / expected_frame_interval_seconds),
                 )
             last_frame_read_at = now
+
+            # Issue #470: OBSの「仮想カメラ開始」の押し忘れに気づけるよう、届いた映像が
+            # 停止中のプレースホルダー画像のままかを監視する(virtual_camera_status.py参照)。
+            # 映像の有無は検知の一時停止とは無関係なため、一時停止の判定より前で行う
+            if virtual_camera_monitor is not None:
+                virtual_camera_monitor.observe(frame, now)
 
             # Issue #440: 他競技をプレイしている間、/adminから検知処理そのものを
             # 一時停止できる。reader.read()は止めず読み続けて捨てるだけにする
@@ -744,6 +752,7 @@ def main() -> None:
             gauge_clip_recorder,
             rank_number_clip_recorder,
             blackout_watcher,
+            VirtualCameraMonitor(),
         )
     finally:
         if dive_time_watcher is not None:
