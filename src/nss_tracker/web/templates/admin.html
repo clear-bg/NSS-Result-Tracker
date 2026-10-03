@@ -19,6 +19,9 @@
     </ul>
   </div>
   <div class="admin-col-settings">
+    {# Issue #470: OBSの「仮想カメラ開始」の押し忘れに気づけるようにする。中身は下のスクリプトが
+       /api/virtual-camera-statusをポーリングして書き換える(起動確認前は何も接続していないため出さない) #}
+    <div id="virtual-camera-status" class="admin-vcam" data-status="{{ virtual_camera_status }}" data-confirmed="{{ 'true' if startup_confirmed else 'false' }}" hidden></div>
     {% if status == "updated" %}
     <p class="admin-message admin-message-success">更新しました。</p>
     {% endif %}
@@ -98,6 +101,46 @@
   </div>
 </div>
 <script>
+// Issue #470: OBS Virtual Cameraから映像が届いているかを表示する。/adminは入力途中の
+// フォームを差し替えないよう全体の自動更新をしないため、この表示だけを書き換える。
+(function () {
+  var POLL_INTERVAL_MS = 2000;
+  var box = document.getElementById("virtual-camera-status");
+  if (!box) {
+    return;
+  }
+  var confirmed = box.getAttribute("data-confirmed") === "true";
+  var MESSAGES = {
+    inactive: "OBS Virtual Cameraから映像が来ていません。OBSの「仮想カメラ開始」を押してください(押せば再起動しなくても自動で検知を始めます)。",
+    active: "OBS Virtual Camera: 映像を受信しています。",
+    waiting: "OBS Virtual Camera: 映像を確認しています…"
+  };
+  function render(status) {
+    // 起動確認前は何も接続していないため、未判定("waiting")の間は出さない
+    if (!MESSAGES[status] || (status === "waiting" && !confirmed)) {
+      box.hidden = true;
+      return;
+    }
+    box.hidden = false;
+    box.className = "admin-vcam admin-vcam-" + status;
+    box.textContent = MESSAGES[status];
+  }
+  function poll() {
+    fetch("/api/virtual-camera-status", { cache: "no-store" })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (data) {
+          render(data.status);
+        }
+      })
+      .catch(function () {
+        // アプリ終了後などで取得できない間は、最後の表示のままにしておく
+      });
+  }
+  render(box.getAttribute("data-status"));
+  window.setInterval(poll, POLL_INTERVAL_MS);
+})();
+
 // Issue #444: 「その他の設定」の開閉状態を、更新ボタン送信後のリダイレクト(PRG)を
 // またいで維持する。記憶しないと、折りたたみ内の項目を直して送信するたびに閉じてしまう。
 (function () {

@@ -158,6 +158,13 @@ VS画面から実測した色をそのまま使うのではなく、`_normalize_
 分類は表示側でのみ行い、`detection/team_color.py`とDBには実測値をそのまま残す
 (後から帯を見直したくなったときに保存済みの値から再判定できるようにするため。
 「検知層はポリシーを持たず見えたものをそのまま報告する」という既存方針とも揃う)。
+
+Issue #470: `/admin`の配信設定欄の先頭に、OBS Virtual Cameraから実際の映像が届いて
+いるか(`virtual_camera_status.get_status()`)を表示する。「仮想カメラ開始」の押し忘れに
+ブラウザ側でも気づけるようにするため。Issue #379の「接続結果は`/admin`に表示せず
+ターミナルのログのみで確認する」という決め事を、この項目に限って覆したもの
+(ユーザーの要望)。`/admin`は入力途中のフォームを差し替えないよう全体の自動更新を
+しないため、この表示だけを`/api/virtual-camera-status`のポーリングで書き換える。
 """
 
 import colorsys
@@ -174,7 +181,15 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from nss_tracker import detection_pause, match_transition, match_warnings, rank_warnings, startup_gate, youtube_chat
+from nss_tracker import (
+    detection_pause,
+    match_transition,
+    match_warnings,
+    rank_warnings,
+    startup_gate,
+    virtual_camera_status,
+    youtube_chat,
+)
 from nss_tracker.config import (
     ConfigError,
     get_allowed_players,
@@ -1792,6 +1807,11 @@ def create_app(db_path: Path) -> FastAPI:
     def health() -> dict:
         return {"status": "ok"}
 
+    @app.get("/api/virtual-camera-status")
+    def api_virtual_camera_status():
+        """OBS Virtual Cameraから映像が届いているか(Issue #470、/adminの表示用)。"""
+        return {"status": virtual_camera_status.get_status()}
+
     @app.get("/api/matches/count")
     def matches_count() -> dict:
         return _fetch_matches_count(db_path)
@@ -1815,6 +1835,8 @@ def create_app(db_path: Path) -> FastAPI:
             # Issue #440: startup_gateの対象外の常時操作可能なトグルのため、
             # 起動確認済みかどうかに関わらずそのまま現在値を出す
             "detection_paused": detection_pause.is_paused(),
+            # Issue #470: 初期表示用。以降はadmin.htmlのスクリプトがポーリングで書き換える
+            "virtual_camera_status": virtual_camera_status.get_status(),
             "obs_scene_switching_confirmed": startup_gate.is_obs_scene_switching_confirmed(),
             "startup_confirmed": startup_gate.is_confirmed(),
             "status": status,

@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nss_tracker import match_transition, startup_gate
+from nss_tracker import match_transition, startup_gate, virtual_camera_status
 from nss_tracker.database import db
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.web import server as server_module
@@ -4879,3 +4879,27 @@ def test_rank_entry_shows_match_id_above_recorded_at(tmp_path: Path, monkeypatch
         '    addRow(info, "試合ID", clip.match_id);\n'
         '    addRow(info, "記録時刻", clip.detected_at_text);'
     ) in html
+
+
+def test_api_virtual_camera_status_reflects_current_status(tmp_path: Path, monkeypatch):
+    """Issue #470: /adminの表示がポーリングで使う、仮想カメラの状態のAPI。"""
+    db_path = tmp_path / "test.db"
+    client = TestClient(create_app(db_path))
+
+    monkeypatch.setattr(virtual_camera_status, "_status", "inactive")
+    assert client.get("/api/virtual-camera-status").json() == {"status": "inactive"}
+
+    monkeypatch.setattr(virtual_camera_status, "_status", "active")
+    assert client.get("/api/virtual-camera-status").json() == {"status": "active"}
+
+
+def test_admin_renders_virtual_camera_status_placeholder(tmp_path: Path, monkeypatch):
+    """Issue #470: 初期表示の状態をdata属性で渡し、スクリプトがそれを描画する。"""
+    monkeypatch.setattr(virtual_camera_status, "_status", "inactive")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    html = client.get("/admin").text
+
+    assert 'id="virtual-camera-status"' in html
+    assert 'data-status="inactive"' in html
+    assert 'data-confirmed="false"' in html
