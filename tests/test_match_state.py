@@ -322,45 +322,6 @@ def test_dropped_match_without_match_end_confirmation_stays_info(monkeypatch, ca
     assert [record for record in caplog.records if record.levelname == "WARNING"] == []
 
 
-def test_banner_roi_stats_logged_only_after_match_end_confirmation(monkeypatch, caplog):
-    """Issue #423: 閾値の再較正に使う実測値を「試合終了」確認後の区間だけDEBUGに残す。"""
-    screen = {"match_end": False}
-    _stub_all_detections(monkeypatch)
-    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: screen["match_end"])
-    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
-
-    machine = MatchStateMachine(now_fn=FakeClock(), match_end_confirm_seconds=1)
-    # BANNER_ROISが収まる実解像度のフレームでないと実測値を採れない
-    frame = np.full((1080, 1920, 3), 40, dtype=np.uint8)
-
-    with caplog.at_level("DEBUG", logger="nss_tracker.state"):
-        machine.process_frame(frame)
-        assert "試合終了後のバナーROI実測" not in caplog.text, "確認前は出さない"
-        screen["match_end"] = True
-        for _ in range(2):
-            machine.process_frame(frame)
-
-    assert "試合終了後のバナーROI実測" in caplog.text
-    assert "H=" in caplog.text and "hue_std=" in caplog.text
-
-
-def test_banner_roi_stats_log_is_throttled_while_value_is_unchanged(monkeypatch, caplog):
-    """Issue #423: 値が動かない間は出し続けない(Issue #384のゲージログと同じ考え方)。"""
-    _stub_all_detections(monkeypatch)
-    monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: True)
-    monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
-
-    machine = MatchStateMachine(now_fn=FakeClock(), match_end_confirm_seconds=1)
-    frame = np.full((1080, 1920, 3), 40, dtype=np.uint8)
-
-    with caplog.at_level("DEBUG", logger="nss_tracker.state"):
-        for _ in range(10):
-            machine.process_frame(frame)
-
-    logged = [record for record in caplog.records if "試合終了後のバナーROI実測" in record.message]
-    assert len(logged) == 1, f"同じ値が続く間は1回だけのはず(実際は{len(logged)}回)"
-
-
 def test_goal_detection_logs_scorer_and_assist_at_info_level(monkeypatch, caplog):
     """Issue #86: ゴール検知した瞬間に、許可リストの判定結果によらず得点者・
     アシスト名と記録対象かどうかの見込みをINFOレベルで出すことを確認する。

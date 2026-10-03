@@ -99,9 +99,9 @@ def test_classify_banner(fixtures_dir, filename, expected):
     assert classify_banner(frame) == expected
 
 
-# Issue #431/#423の再較正を守るための回帰テスト。実フレーム
-# (clips/banner_debug_frames/)はfixtures/と同じく.gitignore対象で、CIにも
-# クローン直後の環境にも存在しないため、実測した色で塗った合成フレームを使う。
+# Issue #431/#423の再較正を守るための回帰テスト。再較正に使った実フレーム
+# (調査用に保存していたもの。Issue #469で保存の仕組みごと削除済み)は
+# CIにもクローン直後の環境にも存在しないため、実測した色で塗った合成フレームを使う。
 # 負けバナーの帯はほぼ無彩色の暗いグレーで、BANNER_ROIS内の生のBGRは
 # ローカル録画(85,79,71)とVirtual Camera(85,79,73)で2階調しか違わないのに、
 # 色相・彩度はこの差だけで閾値をまたいでしまう(詳細はdetection/banner.pyの
