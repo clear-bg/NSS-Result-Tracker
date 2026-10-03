@@ -166,7 +166,19 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 - `confirm_start()`側にも同じ選択済み条件のチェック(`startup_gate.can_confirm_start()`)を持たせている(フォームをバイパスして直接POSTされた場合の防御)
 - `--video`指定時(動画ファイルでの配線確認)もこのゲートを同じように通過する必要がある(特別扱いしない)
 - 確認完了は起動シーケンスのゲートであり、一度確認完了したらそのプロセスの生存中(=そのセッション中)は再度要求しない
-- 接続結果(OBS接続成功/失敗・YouTube連携成功/失敗)は`/admin`上には表示せず、従来通りターミナルのログ出力のみで確認する(ユーザー確認済み、追加のUI実装は行わない)
+- 接続結果(OBS接続成功/失敗・YouTube連携成功/失敗)は`/admin`上には表示せず、従来通りターミナルのログ出力のみで確認する(ユーザー確認済み、追加のUI実装は行わない)。**例外としてOBS Virtual Cameraの受信状態だけは`/admin`に表示する**(Issue #470、下記「OBS仮想カメラの押し忘れ警告」節参照)
+
+### OBS仮想カメラの押し忘れ警告(`virtual_camera_status.py`、Issue #470)
+
+OBSの「仮想カメラ開始」を押し忘れたまま起動すると、試合が1つも記録されないまま配信が終わってしまうため、ターミナルと`/admin`の両方に警告を出す。
+
+- **停止中の仮想カメラは「映像が来ない」のではなく、OBSのプレースホルダー画像(OBSロゴ+カメラ禁止アイコン)を通常のフレームレートで流し続ける**(2026-10-03に実機で確認。ffmpegは正常に起動し、フレームも60fpsで届く)。そのため検知は画像の中身で行う。`detection/virtual_camera.py`の`is_virtual_camera_placeholder()`が、プレースホルダー内のほぼ単色な6領域の平均色がすべて実測値と一致するかで判定する(`config/detection.toml`の`[virtual_camera]`)。fixtures/screenshots全36枚・fixtures/videos全8,751フレーム(5フレームおき)で誤検知0件を確認済み
+  - プレースホルダー画像の実物はOBSのロゴを含むためリポジトリに置かず、テストは実測色で塗った合成フレームで行う
+  - OBSのバージョンアップでプレースホルダーのデザインが変わると判定が常にFalseになる(警告が出なくなるだけで、検知・記録には影響しない)。その場合は停止中の仮想カメラから1フレーム取得して測り直す
+- `main.py`のメインループが毎フレーム`VirtualCameraMonitor.observe()`を呼ぶ。プレースホルダーが5秒続いたらWARNINGを出し、映像が来ない間は30秒ごとに出し直す(DEBUGレベルで動かしているとログが流れ続けるため)。実際の映像が届いたらINFOで知らせる。仮想カメラを開始すれば再起動なしでそのまま検知が始まる
+- 映像の有無は検知の一時停止(Issue #440)と無関係なため、一時停止中も監視は続ける
+- `/admin`の配信設定欄の先頭に受信状態を表示する(停止中=赤枠で強調、受信中=緑、確認中=灰色。起動確認前は何も接続していないため出さない)。`/admin`は入力途中のフォームを差し替えないよう全体の自動更新をしないため、この表示だけを`/api/virtual-camera-status`の2秒ごとのポーリングで書き換える
+- **未確認**: OBS自体が起動していない場合も同じプレースホルダーが流れるか(OBSを閉じて確かめていない)。配信中に仮想カメラを止めた場合は、過去にffmpegが終了して検知ループごと止まった例がある(2026-09-05)
 
 ### 他競技プレイ中の検知一時停止(`detection_pause.py`、Issue #440)
 
@@ -502,21 +514,22 @@ Issue #339(得点/アシスト・勝率ウィジェットの見た目見直し)�
 src/
 └── nss_tracker/
     ├── capture/            # ffmpegサブプロセス起動・生フレームの継続読み取り/バッファリング
-    ├── detection/          # 画像解析ロジック(banner.py: 勝敗バナー判定, rank_ocr.py: ランクOCR, motion.py: ピクセル差分監視, match_end.py: 「試合終了」バナー検知, matchmaking.py: VS画面検知, vs_rank.py: VS画面ランクOCR, team_color.py: チームカラー検知)
+    ├── detection/          # 画像解析ロジック(banner.py: 勝敗バナー判定, rank_ocr.py: ランクOCR, motion.py: ピクセル差分監視, match_end.py: 「試合終了」バナー検知, matchmaking.py: VS画面検知, vs_rank.py: VS画面ランクOCR, team_color.py: チームカラー検知, virtual_camera.py: OBS仮想カメラのプレースホルダー画像検知)
     ├── detection_config.py # detection/配下のROI・色閾値をconfig/detection.tomlから読み込むローダー
     ├── state/              # 試合の状態遷移(バナー表示→ランクアニメ→確定→暗転→マッチング)の管理
     ├── database/           # SQLiteへの読み書き
     ├── obs_control.py      # obs-websocket経由のOBSシーン自動切り替え(Issue #83)
     ├── rank_warnings.py    # 手動入力されたランク値の矛盾検出(Issue #407、DB/Webに依存しない純粋な判定)
+    ├── virtual_camera_status.py # OBS仮想カメラから実際の映像が届いているかの監視(Issue #470)
     ├── youtube_chat.py     # YouTube Liveチャット連動「次に潜る時間」検知(Issue #265)
     └── web/                # 配信画面向けダッシュボード(server.py: FastAPIアプリ, runner.py: 別スレッドでのuvicorn起動, templates/: Jinja2テンプレート, static/: CSS等の静的ファイル)
 ```
 
-- `detection/`は当面`banner.py` / `rank_ocr.py` / `motion.py` / `league_change.py` / `goal.py` / `match_end.py` / `matchmaking.py` / `vs_rank.py` / `team_color.py`のフラット構成とする。追加OCRなど将来の機能追加が必要になった段階で、その都度サブディレクトリに整理し直してよい(先回りして細分化しない)
+- `detection/`は当面`banner.py` / `rank_ocr.py` / `motion.py` / `league_change.py` / `goal.py` / `match_end.py` / `matchmaking.py` / `vs_rank.py` / `team_color.py` / `virtual_camera.py`のフラット構成とする。追加OCRなど将来の機能追加が必要になった段階で、その都度サブディレクトリに整理し直してよい(先回りして細分化しない)
 
 ### 検知パラメータ(ROI・色閾値)のconfig化
 
-- `detection/`配下の各モジュール(上記9ファイル全て)が持つROI・HSV色閾値・ピクセル差分閾値、および`state/match_state.py`の検知閾値は、ルート直下`config/detection.toml`(git追跡対象、デフォルト値入り)から読み込む。読み込みは`src/nss_tracker/detection_config.py`の`get_detection_value(section, key, default)`が担当し、各モジュールのモジュールレベル定数の初期化時に1回呼ばれる
+- `detection/`配下の各モジュール(上記10ファイル全て)が持つROI・HSV色閾値・ピクセル差分閾値、および`state/match_state.py`の検知閾値は、ルート直下`config/detection.toml`(git追跡対象、デフォルト値入り)から読み込む。読み込みは`src/nss_tracker/detection_config.py`の`get_detection_value(section, key, default)`が担当し、各モジュールのモジュールレベル定数の初期化時に1回呼ばれる
 - `config/detection.toml`はモジュールごとに`[banner]` / `[rank_ocr]` / `[league_change]` / `[goal]` / `[motion]` / `[matchmaking]` / `[vs_rank]` / `[team_color]` / `[match_end]` / `[match_state]`のテーブルを持つ。ファイル自体が無い、またはテーブル・キーが無い場合は各モジュール側のPythonデフォルト値(=元々ハードコードされていた値)にフォールバックする
   - Issue #388以前は`state/match_state.py`の`DEFAULT_BANNER_CONFIRM_FRAMES`等のフレーム数系デフォルト値を対象外としていた(`main.py`が実際のfpsに応じて動的に再計算して上書きするため、素の値を外に出すと二重管理になるという理由、Issue #49参照)。Issue #388でこれらのデバウンス閾値をすべて実時間(秒)ベースに変更し、fps依存の再計算自体が不要になったため、この除外は撤廃し`[match_state]`の対象に含めた(下記「MatchStateMachineのデバウンス閾値」節参照)。`StabilityMonitor`(ピクセル差分ベースの安定監視、Issue #388の対象外)の`stable_frames_required`は引き続き`main.py`側でfpsに応じて計算しており対象外のまま
 - fixture実測に基づく閾値決定の根拠コメントは、詳細を失わないよう各detectionモジュールのPython定数側に残す(config/detection.toml側は簡潔なコメントのみ)
