@@ -71,7 +71,7 @@
         </select>
       </div>
       <details class="admin-details" id="admin-optional-settings">
-        <summary>その他の設定(4項目)</summary>
+        <summary>その他の設定(5項目)</summary>
         <div class="admin-field">
           <label for="allowed_players">許可リスト(得点・アシストを記録する対象のプレイヤー名、カンマ区切り)</label>
           <input type="text" id="allowed_players" name="allowed_players" value="{{ settings.ALLOWED_PLAYERS }}">
@@ -93,6 +93,14 @@
           <select id="rank_delta_distribution_scope" name="rank_delta_distribution_scope">
             <option value="session" {% if settings.RANK_DELTA_DISTRIBUTION_SCOPE == "session" %}selected{% endif %}>session(現在の配信セッションのみ)</option>
             <option value="all" {% if settings.RANK_DELTA_DISTRIBUTION_SCOPE == "all" %}selected{% endif %}>all(累計・全期間)</option>
+          </select>
+        </div>
+        <div class="admin-field">
+          <label for="log_level">ログレベル(ターミナル・ログファイルの両方に、再起動なしで反映されます)</label>
+          <select id="log_level" name="log_level">
+            {% for level, description in [("DEBUG", "調査用。待機中も数秒ごとにログが流れる"), ("INFO", "普段の運用向け。試合の節目と警告のみ"), ("WARNING", "警告とエラーのみ"), ("ERROR", "エラーのみ")] %}
+            <option value="{{ level }}" {% if settings.NSS_TRACKER_LOG_LEVEL|upper == level %}selected{% endif %}>{{ level }}({{ description }})</option>
+            {% endfor %}
           </select>
         </div>
       </details>

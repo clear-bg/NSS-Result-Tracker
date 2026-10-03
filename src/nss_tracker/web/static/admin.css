@@ -128,7 +128,7 @@ h2 {
     margin: 4px 0 14px;
 }
 
-/* めったに触らない4項目は既定で折りたたむ。開閉状態はadmin.html側のスクリプトが
+/* めったに触らない5項目(Issue #472でログレベルを追加)は既定で折りたたむ。開閉状態はadmin.html側のスクリプトが
    localStorageに保存し、送信後のリダイレクトをまたいで維持する */
 .admin-details {
     border-top: 1px solid #e3e6ea;
