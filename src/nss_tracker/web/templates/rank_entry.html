@@ -292,6 +292,52 @@
     return { tier: String(tier), fraction: String(hundredths - tier * 100).padStart(2, "0") };
   }
 
+  // Issue #474: 入力欄の現在値を0.01単位(deltaHundredths)で増減した結果を返す。
+  // 小数部は送信時と同じく「小数点以下の桁をそのまま並べたもの」として読む
+  // ("5"なら.50、"05"なら.05)。整数同士で計算して繰り上がり・繰り下がりを
+  // 帯番号へ反映し、小数部は常に2桁へ0埋めする(type="number"の既定の増減だと
+  // "05"が"6"になり、送信時に.60として扱われてしまうため)
+  function stepRankParts(tierText, fractionText, deltaHundredths) {
+    const tier = parseInt(tierText, 10);
+    const digits = fractionText.trim();
+    const fraction = digits === "" ? 0 : Math.round(parseFloat("0." + digits) * 100);
+    const total = (isNaN(tier) ? 0 : tier) * 100 + (isNaN(fraction) ? 0 : fraction) + deltaHundredths;
+    const nextTier = Math.floor(total / 100);
+    return { tier: String(nextTier), fraction: String(total - nextTier * 100).padStart(2, "0") };
+  }
+
+  // Issue #474: 増減ボタンを長押ししている間、actionを繰り返し呼ぶ。押した瞬間に
+  // 1回、REPEAT_DELAY_MS押し続けたら以後REPEAT_INTERVAL_MSごとに呼ぶ。
+  // キーボード(Enter/Space)で押した場合はclickだけが届くため(event.detailが0)、
+  // その場合のみclickで1回呼ぶ(マウスではpointerdownと二重にならないようにする)
+  const REPEAT_DELAY_MS = 400;
+  const REPEAT_INTERVAL_MS = 50;
+  function attachRepeatingPress(button, action) {
+    let delayTimer = null;
+    let repeatTimer = null;
+    function stop() {
+      clearTimeout(delayTimer);
+      clearInterval(repeatTimer);
+      delayTimer = null;
+      repeatTimer = null;
+    }
+    button.addEventListener("pointerdown", function (event) {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      stop();
+      action();
+      delayTimer = setTimeout(function () {
+        repeatTimer = setInterval(action, REPEAT_INTERVAL_MS);
+      }, REPEAT_DELAY_MS);
+    });
+    ["pointerup", "pointerleave", "pointercancel", "blur"].forEach(function (type) {
+      button.addEventListener(type, stop);
+    });
+    button.addEventListener("click", function (event) {
+      if (event.detail === 0) action();
+    });
+  }
+
   function addRow(container, label, value, extraClass) {
     const row = document.createElement("div");
     row.className = "rank-entry-match-row" + (extraClass ? " " + extraClass : "");
@@ -477,34 +523,60 @@
       el.addEventListener("input", function () { userSelected = true; });
     });
 
+    // Issue #474: ボタン・↑↓キー・ホイールの増減はすべてここを通す。
+    // 増減した場合も、キー入力と同じく定期更新でこの試合から離れないようにする
+    function stepBy(deltaHundredths) {
+      const parts = stepRankParts(tierInput.value, fractionInput.value, deltaHundredths);
+      tierInput.value = parts.tier;
+      fractionInput.value = parts.fraction;
+      userSelected = true;
+    }
+
     // Issue #457: 帯番号は自動検知どおりで合っていることが多く、直す場合も
     // ±1で足りるため、キー入力せずに増減できる上下ボタンを添える
-    // (上限・下限は設けない、ユーザーとの相談で決定)
-    const tierField = document.createElement("div");
-    tierField.className = "rank-entry-tier-field";
-    tierField.appendChild(tierInput);
-    const steppers = document.createElement("span");
-    steppers.className = "rank-entry-tier-steppers";
-    [["▲", 1], ["▼", -1]].forEach(function (pair) {
-      const stepButton = document.createElement("button");
-      stepButton.type = "button";
-      stepButton.className = "rank-entry-tier-step";
-      stepButton.textContent = pair[0];
-      stepButton.addEventListener("click", function () {
-        const current = parseInt(tierInput.value, 10);
-        tierInput.value = String((isNaN(current) ? 0 : current) + pair[1]);
-        userSelected = true;
+    // (上限・下限は設けない、ユーザーとの相談で決定)。
+    // Issue #474: 小数部にも同じボタンを添え、0.01ずつ増減する。どちらも長押しで
+    // 連続して増減する(推定値から0.2〜0.3ずれる試合もあり、1回ずつでは数十回押すため)
+    function buildStepField(input, unitHundredths) {
+      const field = document.createElement("div");
+      field.className = "rank-entry-tier-field";
+      field.appendChild(input);
+      const steppers = document.createElement("span");
+      steppers.className = "rank-entry-tier-steppers";
+      [["▲", 1], ["▼", -1]].forEach(function (pair) {
+        const stepButton = document.createElement("button");
+        stepButton.type = "button";
+        stepButton.className = "rank-entry-tier-step";
+        stepButton.textContent = pair[0];
+        attachRepeatingPress(stepButton, function () { stepBy(pair[1] * unitHundredths); });
+        steppers.appendChild(stepButton);
       });
-      steppers.appendChild(stepButton);
+      field.appendChild(steppers);
+      return field;
+    }
+
+    // Issue #474: 小数部の↑↓キー・ホイールは、type="number"の既定の増減を使わず
+    // ボタンと同じ増減にする(既定だと"05"が"6"になり.60として送信されるため)。
+    // ホイールはこの欄にフォーカスがあるときだけ奪い、それ以外はページのスクロールに任せる
+    fractionInput.addEventListener("keydown", function (event) {
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        event.preventDefault();
+        stepBy(event.key === "ArrowUp" ? 1 : -1);
+      }
     });
-    tierField.appendChild(steppers);
-    inputRow.appendChild(tierField);
+    fractionInput.addEventListener("wheel", function (event) {
+      if (document.activeElement !== fractionInput || event.deltaY === 0) return;
+      event.preventDefault();
+      stepBy(event.deltaY < 0 ? 1 : -1);
+    }, { passive: false });
+
+    inputRow.appendChild(buildStepField(tierInput, 100));
 
     const decimalPoint = document.createElement("span");
     decimalPoint.className = "rank-entry-decimal-point";
     decimalPoint.textContent = ".";
     inputRow.appendChild(decimalPoint);
-    inputRow.appendChild(fractionInput);
+    inputRow.appendChild(buildStepField(fractionInput, 1));
 
     form.appendChild(inputRow);
 
