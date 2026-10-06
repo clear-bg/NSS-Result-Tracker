@@ -67,20 +67,23 @@ rank_beforeの読み取り誤差を通じて)直前の試合の正しかった�
 配信ごとに調整する値ではないため`/admin`の編集対象には含めない。
 
 `ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・
-`RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`の5項目のみ、
-Webダッシュボードの管理画面(`/admin`、`web/server.py`参照)からGUIで更新できる
-(Issue #129、`OBS_SCENE_SWITCHING_ENABLED`はIssue #248で追加)。この5項目は
-検知ループを再起動しなくても次に参照されたタイミングから即座に反映される
+`RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`・`NSS_TRACKER_LOG_LEVEL`の
+6項目のみ、Webダッシュボードの管理画面(`/admin`、`web/server.py`参照)からGUIで更新できる
+(Issue #129、`OBS_SCENE_SWITCHING_ENABLED`はIssue #248、`NSS_TRACKER_LOG_LEVEL`はIssue #472で追加)。
+この6項目は検知ループを再起動しなくても次に参照されたタイミングから即座に反映される
 (get_allowed_players/get_goal_record_mode/get_rank_graph_match_limit/
 get_rank_delta_distribution_scope/get_obs_scene_switching_enabledがいずれも
-呼び出しのたびにos.environを読み直す実装のため)。`update_editable_settings`は
+呼び出しのたびにos.environを読み直す実装のため。ログレベルだけは起動時に一度
+ロガーへ設定する値のため、`/admin`の更新処理がその場でロガーのレベルを差し替える)。`update_editable_settings`は
 os.environと`.env`ファイルの両方を更新する(`.env`側も更新するのは、次回起動時
-にも同じ値を引き継ぐため)。この5項目を選んだ理由は、配信中に調整したくなり得る値
-(出演者・記録方針・グラフの表示範囲・シーン自動切替の要否)に絞ったため。
+にも同じ値を引き継ぐため)。この6項目を選んだ理由は、配信中に調整したくなり得る値
+(出演者・記録方針・グラフの表示範囲・シーン自動切替の要否・ログの量)に絞ったため。
+ログレベルは、調査中はDEBUGで動かしたい一方、普段はターミナルを静かにして
+仮想カメラ未起動の警告(Issue #470)等を見やすくしたいため、再起動なしで切り替えられるようにした。
 キャプチャ設定やOBS接続情報等は配信開始前に一度決めれば十分なため対象外とした。
 
 `get_room_type`/`set_room_type`(Issue #358)は野良/専用部屋の現在設定を保持するが、
-上記5項目とは異なり`.env`へ永続化しない(モジュールレベル変数のみで完結する)。
+上記6項目とは異なり`.env`へ永続化しない(モジュールレベル変数のみで完結する)。
 Issue #379で、アプリ起動のたびに`"random"`へ自動的にリセットする方式から、
 起動のたびに未選択(`None`)へリセットし`/admin`で明示的に選び直すまで起動確認ゲート
 (`startup_gate.py`)を通過できない方式へ変更した(「起動できたことに満足して
@@ -168,15 +171,19 @@ def get_frame_read_timeout_seconds() -> float:
     return float(_require_env("FRAME_READ_TIMEOUT_SECONDS"))
 
 
-def get_log_level_name() -> str:
-    """ログレベル名を取得する。未設定・不正な値の場合はConfigErrorを送出する。"""
-    value = _require_env("NSS_TRACKER_LOG_LEVEL").upper()
+def _validate_log_level_name(raw: str) -> str:
+    value = raw.upper()
     if value not in _VALID_LOG_LEVEL_NAMES:
         raise ConfigError(
             f"NSS_TRACKER_LOG_LEVELの値が不正です: {value}"
             f"({'/'.join(_VALID_LOG_LEVEL_NAMES)}のいずれかを指定してください)"
         )
     return value
+
+
+def get_log_level_name() -> str:
+    """ログレベル名を取得する。未設定・不正な値の場合はConfigErrorを送出する。"""
+    return _validate_log_level_name(_require_env("NSS_TRACKER_LOG_LEVEL"))
 
 
 def get_log_level() -> int:
@@ -370,18 +377,19 @@ _EDITABLE_ENV_KEYS = (
     "RANK_GRAPH_MATCH_LIMIT",
     "RANK_DELTA_DISTRIBUTION_SCOPE",
     "OBS_SCENE_SWITCHING_ENABLED",
+    "NSS_TRACKER_LOG_LEVEL",
 )
 
 
 def get_editable_settings() -> dict[str, str]:
-    """管理画面(/admin)で表示・編集する対象5項目の現在値を返す。"""
+    """管理画面(/admin)で表示・編集する対象6項目の現在値を返す。"""
     return {key: os.environ.get(key, "") for key in _EDITABLE_ENV_KEYS}
 
 
 def update_editable_settings(values: dict[str, str]) -> None:
     """管理画面(/admin)からの更新をos.environ・.envの両方に反映する。
 
-    キーは_EDITABLE_ENV_KEYSの5つ全てが必須。ALLOWED_PLAYERS以外は各get_xxx()と
+    キーは_EDITABLE_ENV_KEYSの6つ全てが必須。ALLOWED_PLAYERS以外は各get_xxx()と
     同じバリデーション関数を通し、いずれか1つでも不正ならConfigErrorを送出して
     何も更新しない(部分適用を避けるため、書き込み前に全項目を検証する)。
     ALLOWED_PLAYERSはカンマ区切りの自由記述でフォーマット上の制約が無いため
@@ -391,6 +399,7 @@ def update_editable_settings(values: dict[str, str]) -> None:
     _validate_rank_graph_match_limit(values["RANK_GRAPH_MATCH_LIMIT"])
     _validate_rank_delta_distribution_scope(values["RANK_DELTA_DISTRIBUTION_SCOPE"])
     _validate_obs_scene_switching_enabled(values["OBS_SCENE_SWITCHING_ENABLED"])
+    _validate_log_level_name(values["NSS_TRACKER_LOG_LEVEL"])
 
     dotenv_path = find_dotenv()
     for key in _EDITABLE_ENV_KEYS:
@@ -400,7 +409,7 @@ def update_editable_settings(values: dict[str, str]) -> None:
 
 _VALID_ROOM_TYPES = ("random", "private")
 
-# Issue #358/#379: 野良/専用部屋の現在設定。_EDITABLE_ENV_KEYSの5項目と異なり.envには
+# Issue #358/#379: 野良/専用部屋の現在設定。_EDITABLE_ENV_KEYSの6項目と異なり.envには
 # 永続化しない(切り替え忘れたまま前回配信の設定を引き継ぐリスクを避けるため、
 # アプリ起動のたびに必ず未選択(None)にリセットし、/adminで明示的に選び直すまで
 # 起動確認ゲート(startup_gate.py)を通過できないようにする運用。以前は'random'に

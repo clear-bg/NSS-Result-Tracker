@@ -146,3 +146,16 @@ MATCH_END_HUE_RANGE = [75, 92]
 MATCH_END_SAT_MIN = 90
 MATCH_END_VAL_MIN = 150
 MATCH_END_HUE_STD_MAX = 12.0
+
+[virtual_camera]
+# Issue #470: 停止中のOBS Virtual Cameraが流すプレースホルダー画像の判定。
+# 各行は[x1, y1, x2, y2, B, G, R](領域と、その領域の平均色の実測値)
+PLACEHOLDER_SAMPLES = [
+    [860, 430, 890, 460, 24, 21, 24],
+    [945, 140, 975, 150, 255, 253, 255],
+    [1600, 40, 1760, 100, 82, 40, 32],
+    [80, 420, 280, 520, 107, 46, 35],
+    [160, 1000, 400, 1060, 48, 24, 25],
+    [890, 860, 920, 900, 143, 141, 143],
+]
+PLACEHOLDER_COLOR_TOLERANCE = 15.0

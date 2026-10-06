@@ -63,7 +63,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     呼び、finallyでweb_handle.stop()を呼ぶこと)だけを軽量に検証する。
     """
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, rank_number_clip_recorder, blackout_watcher=None: None)
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, rank_number_clip_recorder, blackout_watcher=None, virtual_camera_monitor=None: None)
     # Issue #379: main()は/admin側の「確認完了」ボタンが押されるまでOBS/YouTube接続の
     # 手前でブロックする。ここでは実際のブラウザ操作を伴わないよう待ち自体は無効化しつつ、
     # 呼ばれたこと自体(配線が壊れていないこと)はspyで確認する
@@ -119,7 +119,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
 def test_main_continues_when_browser_cannot_be_opened(monkeypatch, tmp_path):
     """Issue #129: ブラウザが無い環境等で設定画面の自動起動に失敗しても、アプリ全体は止めない。"""
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, rank_number_clip_recorder, blackout_watcher=None: None)
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, rank_number_clip_recorder, blackout_watcher=None, virtual_camera_monitor=None: None)
     # Issue #379: main()は/admin側の「確認完了」ボタンが押されるまでOBS/YouTube接続の
     # 手前でブロックするため、ここではその待ち自体を検証対象外として無効化する
     monkeypatch.setattr(main.startup_gate, "wait_for_confirmation", lambda: None)
@@ -947,3 +947,39 @@ def test_run_does_not_record_clip_for_unranked_match(monkeypatch, tmp_path):
     assert finished_frames is None
     assert not list((tmp_path / "rank_entry_clips").glob("*.mp4"))
     assert not clip_recorder.is_recording
+
+
+def test_run_observes_virtual_camera_even_while_detection_is_paused(monkeypatch, tmp_path):
+    """Issue #470: 映像が来ているかの監視は検知の一時停止(Issue #440)とは無関係なため、
+    一時停止中も毎フレーム行うことを確認する(一時停止中は状態機械には一切触れない)。
+    """
+    monkeypatch.setattr(main, "_warmup_ocr_engines", lambda: None)
+    monkeypatch.setattr(main.detection_pause, "is_paused", lambda: True)
+
+    observed = []
+
+    class _SpyMonitor:
+        def observe(self, frame, now):
+            observed.append(frame)
+
+    recorders = [
+        RankEntryClipRecorder(output_dir=tmp_path / name, target_sample_fps=10.0)
+        for name in ("rank_entry_clips", "rank_gauge_clips", "rank_number_clips")
+    ]
+    conn = sqlite3.connect(":memory:")
+    try:
+        main.run(
+            _ListReader([_BRIGHT_FRAME, _BLACK_FRAME, _BRIGHT_FRAME]),
+            _ScriptedMachine([]),
+            conn,
+            None,
+            None,
+            10.0,
+            *recorders,
+            None,
+            _SpyMonitor(),
+        )
+    finally:
+        conn.close()
+
+    assert len(observed) == 3

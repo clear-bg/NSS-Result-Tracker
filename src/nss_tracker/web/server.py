@@ -26,7 +26,7 @@ html/bodyの背景を明示的に`transparent`にする。CSSで背景色を何�
 背後の他の部品を隠してしまう)。値確認用の`/`ページはOBSへの配置を想定していない
 (通常のブラウザで見る用)ため、この透過スタイルは適用しない。
 
-Issue #129: `/admin`は配信中に調整したくなり得る5項目(ALLOWED_PLAYERS・
+Issue #129: `/admin`は配信中に調整したくなり得る項目(ALLOWED_PLAYERS・
 GOAL_RECORD_MODE・RANK_GRAPH_MATCH_LIMIT・RANK_DELTA_DISTRIBUTION_SCOPE・
 OBS_SCENE_SWITCHING_ENABLED(Issue #248)、`config.py`の`_EDITABLE_ENV_KEYS`参照)
 をブラウザから編集する管理画面。`/`と同様にOBSへの配置を想定しないため
@@ -78,7 +78,7 @@ Issue #259: 全`/overlay/xxx`ページは、クエリパラメータ`?debug_bg=1
 影響しない。`/admin`のoverlayリンク一覧(#257)はこのパラメータ付きのURLにすることで、
 通常のブラウザで開いても白文字(overlay.cssのcolor: #fff)が読めるようにする。
 
-Issue #358: `/admin`には上記5項目とは別に野良/専用部屋の切り替えがある。
+Issue #358: `/admin`には上記の項目とは別に野良/専用部屋の切り替えがある。
 `config.get_room_type`/`set_room_type`は`.env`へ永続化せずプロセス起動のたびに
 リセットされる値のため、保存先は`_EDITABLE_ENV_KEYS`とは別のままだが、フォーム
 自体はIssue #410で1つに統合した(当初は`/admin/room-type`への独立したPOSTだった。
@@ -158,6 +158,13 @@ VS画面から実測した色をそのまま使うのではなく、`_normalize_
 分類は表示側でのみ行い、`detection/team_color.py`とDBには実測値をそのまま残す
 (後から帯を見直したくなったときに保存済みの値から再判定できるようにするため。
 「検知層はポリシーを持たず見えたものをそのまま報告する」という既存方針とも揃う)。
+
+Issue #470: `/admin`の配信設定欄の先頭に、OBS Virtual Cameraから実際の映像が届いて
+いるか(`virtual_camera_status.get_status()`)を表示する。「仮想カメラ開始」の押し忘れに
+ブラウザ側でも気づけるようにするため。Issue #379の「接続結果は`/admin`に表示せず
+ターミナルのログのみで確認する」という決め事を、この項目に限って覆したもの
+(ユーザーの要望)。`/admin`は入力途中のフォームを差し替えないよう全体の自動更新を
+しないため、この表示だけを`/api/virtual-camera-status`のポーリングで書き換える。
 """
 
 import colorsys
@@ -174,11 +181,20 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from nss_tracker import detection_pause, match_transition, match_warnings, rank_warnings, startup_gate, youtube_chat
+from nss_tracker import (
+    detection_pause,
+    match_transition,
+    match_warnings,
+    rank_warnings,
+    startup_gate,
+    virtual_camera_status,
+    youtube_chat,
+)
 from nss_tracker.config import (
     ConfigError,
     get_allowed_players,
     get_editable_settings,
+    get_log_level,
     get_rank_delta_distribution_scope,
     get_rank_graph_match_limit,
     get_room_type,
@@ -1792,6 +1808,11 @@ def create_app(db_path: Path) -> FastAPI:
     def health() -> dict:
         return {"status": "ok"}
 
+    @app.get("/api/virtual-camera-status")
+    def api_virtual_camera_status():
+        """OBS Virtual Cameraから映像が届いているか(Issue #470、/adminの表示用)。"""
+        return {"status": virtual_camera_status.get_status()}
+
     @app.get("/api/matches/count")
     def matches_count() -> dict:
         return _fetch_matches_count(db_path)
@@ -1815,6 +1836,8 @@ def create_app(db_path: Path) -> FastAPI:
             # Issue #440: startup_gateの対象外の常時操作可能なトグルのため、
             # 起動確認済みかどうかに関わらずそのまま現在値を出す
             "detection_paused": detection_pause.is_paused(),
+            # Issue #470: 初期表示用。以降はadmin.htmlのスクリプトがポーリングで書き換える
+            "virtual_camera_status": virtual_camera_status.get_status(),
             "obs_scene_switching_confirmed": startup_gate.is_obs_scene_switching_confirmed(),
             "startup_confirmed": startup_gate.is_confirmed(),
             "status": status,
@@ -1836,6 +1859,7 @@ def create_app(db_path: Path) -> FastAPI:
         rank_graph_match_limit: str = Form(...),
         rank_delta_distribution_scope: str = Form(...),
         obs_scene_switching_enabled: str = Form(""),
+        log_level: str = Form(""),
     ):
         """/adminの唯一のフォーム送信を処理する(Issue #410、モジュールdocstring参照)。
 
@@ -1871,8 +1895,10 @@ def create_app(db_path: Path) -> FastAPI:
             "RANK_GRAPH_MATCH_LIMIT": rank_graph_match_limit,
             "RANK_DELTA_DISTRIBUTION_SCOPE": rank_delta_distribution_scope,
             # 未選択の場合は現在値をそのまま渡し、この項目だけ変更しないまま他の4項目を更新する
-            # (update_editable_settingsは5項目すべてが必須のため、空文字列は渡せない)
+            # (update_editable_settingsは全項目が必須のため、空文字列は渡せない)
             "OBS_SCENE_SWITCHING_ENABLED": obs_scene_switching_enabled or old_values["OBS_SCENE_SWITCHING_ENABLED"],
+            # Issue #472: フォームには常に含まれるが、欠けていた場合は現在値のまま変えない
+            "NSS_TRACKER_LOG_LEVEL": log_level or old_values["NSS_TRACKER_LOG_LEVEL"],
         }
         try:
             update_editable_settings(new_values)
@@ -1888,6 +1914,13 @@ def create_app(db_path: Path) -> FastAPI:
             # 実際に変わった場合だけログを出すようにし、無関係な再送信のたびに
             # 5項目分の値がそのまま出力されるノイズを避ける
             _logger.info("設定画面(/admin)から設定を更新しました: %s -> %s", old_values, new_values)
+        if new_values["NSS_TRACKER_LOG_LEVEL"] != old_values["NSS_TRACKER_LOG_LEVEL"]:
+            # Issue #472: ログレベルは起動時にmain.pyが一度だけロガーへ設定する値のため、
+            # .envを書き換えるだけでは反映されない。その場でロガーのレベルを差し替える
+            # (ハンドラ側はレベルを持たないため、ターミナル・ログファイルの両方に効く)。
+            # 上の「設定を更新しました」ログを先に出してから差し替えるのは、WARNING以上へ
+            # 上げた場合にこの変更自体の記録が消えないようにするため
+            logging.getLogger("nss_tracker").setLevel(get_log_level())
 
         if room_type:
             old_room_type = get_room_type()

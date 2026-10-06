@@ -386,6 +386,7 @@ def test_get_editable_settings_returns_current_env_values(monkeypatch):
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "30")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
     monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
+    monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "DEBUG")
 
     assert get_editable_settings() == {
         "ALLOWED_PLAYERS": "Alice,Bob",
@@ -393,6 +394,7 @@ def test_get_editable_settings_returns_current_env_values(monkeypatch):
         "RANK_GRAPH_MATCH_LIMIT": "30",
         "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
         "OBS_SCENE_SWITCHING_ENABLED": "true",
+        "NSS_TRACKER_LOG_LEVEL": "DEBUG",
     }
 
 
@@ -402,7 +404,8 @@ def _write_env_file(path: Path) -> None:
         "GOAL_RECORD_MODE=all\n"
         "RANK_GRAPH_MATCH_LIMIT=all\n"
         "RANK_DELTA_DISTRIBUTION_SCOPE=all\n"
-        "OBS_SCENE_SWITCHING_ENABLED=true\n",
+        "OBS_SCENE_SWITCHING_ENABLED=true\n"
+        "NSS_TRACKER_LOG_LEVEL=DEBUG\n",
         encoding="utf-8",
     )
 
@@ -416,6 +419,7 @@ def test_update_editable_settings_updates_environ_and_env_file(tmp_path, monkeyp
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
     monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
+    monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "DEBUG")
 
     update_editable_settings(
         {
@@ -424,6 +428,7 @@ def test_update_editable_settings_updates_environ_and_env_file(tmp_path, monkeyp
             "RANK_GRAPH_MATCH_LIMIT": "10",
             "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
             "OBS_SCENE_SWITCHING_ENABLED": "false",
+            "NSS_TRACKER_LOG_LEVEL": "INFO",
         }
     )
 
@@ -433,6 +438,7 @@ def test_update_editable_settings_updates_environ_and_env_file(tmp_path, monkeyp
         "RANK_GRAPH_MATCH_LIMIT": "10",
         "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
         "OBS_SCENE_SWITCHING_ENABLED": "false",
+        "NSS_TRACKER_LOG_LEVEL": "INFO",
     }
     persisted = dotenv_values(env_path)
     assert persisted["ALLOWED_PLAYERS"] == "NewName,Second"
@@ -440,6 +446,7 @@ def test_update_editable_settings_updates_environ_and_env_file(tmp_path, monkeyp
     assert persisted["RANK_GRAPH_MATCH_LIMIT"] == "10"
     assert persisted["RANK_DELTA_DISTRIBUTION_SCOPE"] == "session"
     assert persisted["OBS_SCENE_SWITCHING_ENABLED"] == "false"
+    assert persisted["NSS_TRACKER_LOG_LEVEL"] == "INFO"
 
 
 def test_update_editable_settings_raises_and_applies_nothing_when_one_value_invalid(tmp_path, monkeypatch):
@@ -451,6 +458,7 @@ def test_update_editable_settings_raises_and_applies_nothing_when_one_value_inva
     monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
     monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "all")
     monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
+    monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "DEBUG")
 
     with pytest.raises(ConfigError, match="GOAL_RECORD_MODE"):
         update_editable_settings(
@@ -460,6 +468,7 @@ def test_update_editable_settings_raises_and_applies_nothing_when_one_value_inva
                 "RANK_GRAPH_MATCH_LIMIT": "10",
                 "RANK_DELTA_DISTRIBUTION_SCOPE": "session",
                 "OBS_SCENE_SWITCHING_ENABLED": "false",
+                "NSS_TRACKER_LOG_LEVEL": "INFO",
             }
         )
 
@@ -470,9 +479,32 @@ def test_update_editable_settings_raises_and_applies_nothing_when_one_value_inva
         "RANK_GRAPH_MATCH_LIMIT": "all",
         "RANK_DELTA_DISTRIBUTION_SCOPE": "all",
         "OBS_SCENE_SWITCHING_ENABLED": "true",
+        "NSS_TRACKER_LOG_LEVEL": "DEBUG",
     }
     persisted = dotenv_values(env_path)
     assert persisted["ALLOWED_PLAYERS"] == "OldName"
+
+
+def test_update_editable_settings_rejects_invalid_log_level(tmp_path, monkeypatch):
+    """Issue #472: ログレベルも他の項目と同じく、不正な値なら何も反映しない。"""
+    env_path = tmp_path / ".env"
+    _write_env_file(env_path)
+    monkeypatch.setattr("nss_tracker.config.find_dotenv", lambda: str(env_path))
+    monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "DEBUG")
+
+    with pytest.raises(ConfigError, match="NSS_TRACKER_LOG_LEVEL"):
+        update_editable_settings(
+            {
+                "ALLOWED_PLAYERS": "OldName",
+                "GOAL_RECORD_MODE": "all",
+                "RANK_GRAPH_MATCH_LIMIT": "all",
+                "RANK_DELTA_DISTRIBUTION_SCOPE": "all",
+                "OBS_SCENE_SWITCHING_ENABLED": "true",
+                "NSS_TRACKER_LOG_LEVEL": "VERBOSE",
+            }
+        )
+
+    assert dotenv_values(env_path)["NSS_TRACKER_LOG_LEVEL"] == "DEBUG"
 
 
 def test_get_room_type_returns_current_value(monkeypatch):

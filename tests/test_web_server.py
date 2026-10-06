@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import threading
@@ -8,10 +9,11 @@ from typing import Optional
 
 import httpx
 import pytest
+from dotenv import dotenv_values
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nss_tracker import match_transition, startup_gate
+from nss_tracker import match_transition, startup_gate, virtual_camera_status
 from nss_tracker.database import db
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.web import server as server_module
@@ -2532,9 +2534,23 @@ def _write_admin_env_file(path: Path) -> None:
         "GOAL_RECORD_MODE=all\n"
         "RANK_GRAPH_MATCH_LIMIT=all\n"
         "RANK_DELTA_DISTRIBUTION_SCOPE=all\n"
-        "OBS_SCENE_SWITCHING_ENABLED=true\n",
+        "OBS_SCENE_SWITCHING_ENABLED=true\n"
+        "NSS_TRACKER_LOG_LEVEL=DEBUG\n",
         encoding="utf-8",
     )
+
+
+@pytest.fixture(autouse=True)
+def _restore_log_level(monkeypatch):
+    """Issue #472: /adminのPOSTはnss_trackerロガーのレベルをその場で差し替えるため、
+    テスト間で漏れないよう元に戻す。あわせて、.envの無いCIでも/adminのPOSTが
+    ログレベルの現在値(未送信時のフォールバック先)を持てるようにしておく。
+    """
+    monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "DEBUG")
+    package_logger = logging.getLogger("nss_tracker")
+    original_level = package_logger.level
+    yield
+    package_logger.setLevel(original_level)
 
 
 def test_admin_get_shows_current_settings(tmp_path: Path, monkeypatch):
@@ -2920,8 +2936,14 @@ def test_admin_get_collapses_only_rarely_changed_fields(tmp_path: Path, monkeypa
     response = client.get("/admin")
 
     details = _extract_admin_details_block(response.text)
-    assert "<summary>その他の設定(4項目)</summary>" in details
-    for collapsed in ("allowed_players", "goal_record_mode", "rank_graph_match_limit", "rank_delta_distribution_scope"):
+    assert "<summary>その他の設定(5項目)</summary>" in details
+    for collapsed in (
+        "allowed_players",
+        "goal_record_mode",
+        "rank_graph_match_limit",
+        "rank_delta_distribution_scope",
+        "log_level",
+    ):
         assert f'name="{collapsed}"' in details
     for always_visible in ("room_type", "obs_scene_switching_enabled", "detection_paused"):
         assert f'name="{always_visible}"' not in details
@@ -4879,3 +4901,61 @@ def test_rank_entry_shows_match_id_above_recorded_at(tmp_path: Path, monkeypatch
         '    addRow(info, "試合ID", clip.match_id);\n'
         '    addRow(info, "記録時刻", clip.detected_at_text);'
     ) in html
+
+
+def test_api_virtual_camera_status_reflects_current_status(tmp_path: Path, monkeypatch):
+    """Issue #470: /adminの表示がポーリングで使う、仮想カメラの状態のAPI。"""
+    db_path = tmp_path / "test.db"
+    client = TestClient(create_app(db_path))
+
+    monkeypatch.setattr(virtual_camera_status, "_status", "inactive")
+    assert client.get("/api/virtual-camera-status").json() == {"status": "inactive"}
+
+    monkeypatch.setattr(virtual_camera_status, "_status", "active")
+    assert client.get("/api/virtual-camera-status").json() == {"status": "active"}
+
+
+def test_admin_renders_virtual_camera_status_placeholder(tmp_path: Path, monkeypatch):
+    """Issue #470: 初期表示の状態をdata属性で渡し、スクリプトがそれを描画する。"""
+    monkeypatch.setattr(virtual_camera_status, "_status", "inactive")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    html = client.get("/admin").text
+
+    assert 'id="virtual-camera-status"' in html
+    assert 'data-status="inactive"' in html
+    assert 'data-confirmed="false"' in html
+
+
+def test_admin_get_shows_current_log_level(tmp_path: Path, monkeypatch):
+    """Issue #472: ログレベルは.envの現在値をプリフィルする(起動確認ゲートの対象外)。"""
+    monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "INFO")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    select_html = _extract_select_block(client.get("/admin").text, "log_level")
+
+    assert '<option value="INFO" selected>' in select_html
+    assert '<option value="DEBUG" selected>' not in select_html
+
+
+def test_admin_post_changes_log_level_immediately_and_persists(admin_client: TestClient, tmp_path: Path):
+    """Issue #472: 再起動しなくてもその場でロガーのレベルが変わり、.envにも残る。"""
+    package_logger = logging.getLogger("nss_tracker")
+    package_logger.setLevel(logging.DEBUG)
+
+    admin_client.post("/admin", data=_admin_form_data(log_level="INFO"))
+
+    assert package_logger.level == logging.INFO
+    assert os.environ["NSS_TRACKER_LOG_LEVEL"] == "INFO"
+    assert dotenv_values(tmp_path / ".env")["NSS_TRACKER_LOG_LEVEL"] == "INFO"
+
+
+def test_admin_post_without_log_level_keeps_current_level(admin_client: TestClient):
+    """Issue #472: ログレベルを送らなかった場合は現在値のまま変えない。"""
+    package_logger = logging.getLogger("nss_tracker")
+    package_logger.setLevel(logging.DEBUG)
+
+    admin_client.post("/admin", data=_admin_form_data())
+
+    assert package_logger.level == logging.DEBUG
+    assert os.environ["NSS_TRACKER_LOG_LEVEL"] == "DEBUG"

@@ -58,6 +58,34 @@ h1 {
     color: #b3261e;
 }
 
+/* Issue #470: OBS Virtual Cameraの状態表示。押し忘れ(inactive)は他のメッセージより
+   目立たせ、受信中・確認中は控えめにする */
+.admin-vcam {
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin: 0 0 16px;
+    font-size: 13px;
+}
+
+.admin-vcam-inactive {
+    padding: 12px 14px;
+    border: 2px solid #b3261e;
+    background: #fbe9e7;
+    color: #b3261e;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.admin-vcam-active {
+    background: #e6f4ea;
+    color: #1e7a34;
+}
+
+.admin-vcam-waiting {
+    background: #f1f3f4;
+    color: #5f6368;
+}
+
 h2 {
     font-size: 15px;
     margin: 0 0 8px;
@@ -100,7 +128,7 @@ h2 {
     margin: 4px 0 14px;
 }
 
-/* めったに触らない4項目は既定で折りたたむ。開閉状態はadmin.html側のスクリプトが
+/* めったに触らない5項目(Issue #472でログレベルを追加)は既定で折りたたむ。開閉状態はadmin.html側のスクリプトが
    localStorageに保存し、送信後のリダイレクトをまたいで維持する */
 .admin-details {
     border-top: 1px solid #e3e6ea;

@@ -115,13 +115,14 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 
 ### 配信中の設定変更GUI(`/admin`、Issue #129)
 
-`ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・`RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`の5項目(`config.py`の`_EDITABLE_ENV_KEYS`。5つ目はIssue #248で追加)のみ、配信中に調整したくなり得る値としてWebダッシュボードの管理画面(`/admin`)からGUIで編集できる。キャプチャ設定・OBS接続情報等、配信開始前に一度決めれば十分な値は対象外(`.env`の手動編集のまま)。対象項目の選定理由・バリデーション方式・`.env`同時更新の仕組みは`src/nss_tracker/config.py`のモジュールdocstring参照。
+`ALLOWED_PLAYERS`・`GOAL_RECORD_MODE`・`RANK_GRAPH_MATCH_LIMIT`・`RANK_DELTA_DISTRIBUTION_SCOPE`・`OBS_SCENE_SWITCHING_ENABLED`・`NSS_TRACKER_LOG_LEVEL`の6項目(`config.py`の`_EDITABLE_ENV_KEYS`。5つ目はIssue #248、6つ目はIssue #472で追加)のみ、配信中に調整したくなり得る値としてWebダッシュボードの管理画面(`/admin`)からGUIで編集できる。キャプチャ設定・OBS接続情報等、配信開始前に一度決めれば十分な値は対象外(`.env`の手動編集のまま)。対象項目の選定理由・バリデーション方式・`.env`同時更新の仕組みは`src/nss_tracker/config.py`のモジュールdocstring参照。
 
-`/admin`には上記5項目とは別に、野良/専用部屋の切り替え(Issue #358、下記「専用部屋の試合の区別」節参照)もある。こちらは`.env`に永続化しない別の仕組みのため`_EDITABLE_ENV_KEYS`には含めない(保存先は別のまま)が、フォーム自体はIssue #410で1つに統合した(下記「起動時の設定確認ゲート」節参照)。
+`/admin`には上記6項目とは別に、野良/専用部屋の切り替え(Issue #358、下記「専用部屋の試合の区別」節参照)もある。こちらは`.env`に永続化しない別の仕組みのため`_EDITABLE_ENV_KEYS`には含めない(保存先は別のまま)が、フォーム自体はIssue #410で1つに統合した(下記「起動時の設定確認ゲート」節参照)。
 
-- 別プロセスのネイティブGUI(tkinter等)は不採用とし、既存のFastAPI Webダッシュボード(同一プロセス内・別スレッド)に`/admin`ページを追加する方式にした(ユーザーとの相談で決定)。理由: 対象5項目は呼び出しのたびに`os.environ`を読み直す実装のため、同一プロセス内で直接書き換えれば検知ループの再起動なしに反映できる。別プロセスのGUIだとプロセス間で値を受け渡す仕組みが別途必要になる
+- 別プロセスのネイティブGUI(tkinter等)は不採用とし、既存のFastAPI Webダッシュボード(同一プロセス内・別スレッド)に`/admin`ページを追加する方式にした(ユーザーとの相談で決定)。理由: 対象項目は呼び出しのたびに`os.environ`を読み直す実装のため、同一プロセス内で直接書き換えれば検知ループの再起動なしに反映できる。別プロセスのGUIだとプロセス間で値を受け渡す仕組みが別途必要になる
 - `main.py`起動時に`/admin`のURLを既定ブラウザで自動的に開く(`webbrowser.open()`、失敗してもWARNINGログのみでアプリ全体は継続する)。視聴者向けオーバーレイページ(`/overlay/xxx`、透過背景)とは別パスにし、`/admin`自体は`overlay.css`を使わず通常のブラウザ表示として組む(`static/admin.css`)
 - 更新結果は`nss_tracker.web`ロガーでログに残す(成功=INFO、拒否=WARNING)
+- Issue #472: **ログレベル(`NSS_TRACKER_LOG_LEVEL`)も`/admin`から変更できる。** 調査中はDEBUGで動かしたい一方、普段はターミナルを静かにして仮想カメラ未起動の警告(Issue #470)等を見やすくしたいため。ログレベルだけは起動時に一度ロガーへ設定する値で`os.environ`を書き換えても反映されないため、`admin_update`が変更時にその場で`nss_tracker`ロガーのレベルを差し替える(ハンドラ側はレベルを持たないため、ターミナル・ログファイルの両方に効く)。他の項目と同じく`.env`にも書き込み、次回起動時も同じレベルで始まる。ターミナルだけINFOにしてファイルにはDEBUGを残す案もあったが、既存の`NSS_TRACKER_LOG_LEVEL`と同じ意味(両方に効く)のままにした
 - Issue #257: `/admin`には上記の設定フォームに加え、各`/overlay/xxx`ウィジェットへのリンク一覧(クリックで別タブが開く、iframeでのライブプレビューはスコープ外)も表示する。OBSのブラウザソースごとにURLが分かれているため、動作確認等で個別に開き直す手間を減らす目的。リンク先はテンプレートにハードコードせず、`web/server.py`の`_overlay_widget_links()`が実際に登録された`/overlay/xxx`ルート(`app.routes`)から機械的に収集する。表示ラベルのみ`_OVERLAY_WIDGET_LABELS`辞書で個別管理し、新しいoverlayルートを追加した際にラベルの追記を忘れるとアプリ起動時(`create_app()`呼び出し時)にRuntimeErrorで気づける設計にした
 - Issue #259: `/overlay/xxx`は`static/overlay.css`でOBS用に背景を`transparent`・文字色を白にしているため、通常のブラウザ(背景白)で開くと白文字が読めない。`/admin`のリンク一覧(#257)はこの問題を避けるため、リンク先URLに`?debug_bg=1`を付ける。overlay側のルートハンドラは`_overlay_debug_bg_style()`でこのクエリパラメータの**有無のみ**を見て(値そのものはHTML/CSSインジェクションを避けるため受け取らない)、付いていれば`<body>`に固定の黒背景inline styleを追加する。OBSのブラウザソースが実際に登録するURLにはこのパラメータを付けないため、配信時の見た目には一切影響しない。`overlay-refresh.js`(#104)は`<body>`のinnerHTMLしか差し替えないため、このinline styleは自動更新後も保持される
 
@@ -133,7 +134,7 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 - 右カラムの設定項目を**触る頻度で3グループ**に分ける。常時見える項目が3つに絞られ、性質の違う項目が隣り合わなくなるため、上記の誤操作対策も兼ねる
   - **起動時に決める**: 野良/専用部屋・OBSシーン自動切替(起動確認ゲート(Issue #379)の対象2項目)
   - **配信中に切り替える**: 他競技プレイ中の検知一時停止(Issue #440)。上のグループとは区切り線(`.admin-group-divider`)で分ける
-  - **その他の設定(4項目)**: 許可リスト・ゴール/アシストの記録方針・ランク推移グラフの対象範囲・ランク増減分布の集計対象。`<details>`で折りたたみ、**既定で閉じる**。Issue #129で「配信中に調整したくなり得る5項目」として選んだ経緯があるが、クリック1回で開けるため実害は小さいと判断した
+  - **その他の設定(5項目)**: 許可リスト・ゴール/アシストの記録方針・ランク推移グラフの対象範囲・ランク増減分布の集計対象・ログレベル(Issue #472で追加)。`<details>`で折りたたみ、**既定で閉じる**。Issue #129で「配信中に調整したくなり得る5項目」として選んだ経緯があるが、クリック1回で開けるため実害は小さいと判断した
 - **送信ボタンはフォーム最下部(折りたたみの下)に置く。** 折りたたみの上に置くと、開いて編集したときに「ボタンの下に入力欄がある」形になり、押すために上へ戻ることになるため
 - **折りたたみの開閉状態は`localStorage`(キー`nss-admin-optional-settings-open`)で記憶する**(`admin.html`内のインラインスクリプト)。折りたたみ内の項目を直して送信するとPRGリダイレクトでページが再読み込みされるため、記憶しないと毎回閉じてしまう。`/rank-entry`のIssue #428(クリップを切り替えても表示状態を維持する)と同じ理由。localStorageが使えない環境(プライベートウィンドウ等)では既定の閉じた状態で動作を続ける
 - 2カラムは`flex-wrap`で組んであり、ウィンドウが狭いとき(約648px未満)は自動的に縦積みに戻る。あわせて`.admin-field input/select`に`max-width: 100%`を付け、選択肢の文字列が長い`select`が縦積み時にカラムからはみ出してページ全体に横スクロールを出さないようにしている
@@ -145,7 +146,7 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 
 - `matches.room_type`(`TEXT NOT NULL DEFAULT 'random'`、`'random'`(野良) / `'private'`(専用部屋))を追加した(`database/db.py`の`_migrate_matches_add_room_type`)。既存データは全件`'random'`扱いになる(専用部屋の試合を遡って区別することはできない)
 - ランクが検出された試合(`match.rank_before`/`match.rank_after`のいずれかが非None)は、ブラウザ側の設定値によらず`save_match_result()`が必ず`room_type='random'`を強制する(切り替え忘れによる誤混入を防ぐ安全装置。ランクを賭けた対戦は仕組み上野良でしか成立しないため)
-- 「野良/専用部屋」の現在設定(`config.get_room_type`/`set_room_type`)は、既存の`/admin`編集可能5項目(`_EDITABLE_ENV_KEYS`)とは異なり`.env`に永続化しない。モジュールレベル変数のみで完結させ、アプリ起動のたびに必ずリセットされる。`/admin`のフォームはIssue #410で1つに統合され、`_EDITABLE_ENV_KEYS`の5項目と同じ送信(`POST /admin`)で切り替える(保存先が`.env`でない点は変わらない)。Issue #379で、リセット先を`'random'`(常に野良として起動)から未選択(`None`)へ変更した(下記「起動時の設定確認ゲート」参照。暗黙のデフォルト値自体が「起動できたことに満足して切り替えを忘れる」事故の温床だったため)
+- 「野良/専用部屋」の現在設定(`config.get_room_type`/`set_room_type`)は、既存の`/admin`編集可能6項目(`_EDITABLE_ENV_KEYS`)とは異なり`.env`に永続化しない。モジュールレベル変数のみで完結させ、アプリ起動のたびに必ずリセットされる。`/admin`のフォームはIssue #410で1つに統合され、`_EDITABLE_ENV_KEYS`の6項目と同じ送信(`POST /admin`)で切り替える(保存先が`.env`でない点は変わらない)。Issue #379で、リセット先を`'random'`(常に野良として起動)から未選択(`None`)へ変更した(下記「起動時の設定確認ゲート」参照。暗黙のデフォルト値自体が「起動できたことに満足して切り替えを忘れる」事故の温床だったため)
 - 切り替えタイミングは「セッション開始後、最初の試合を記録するまでの間」を想定。配信内で野良⇔専用部屋が混在するケースはスコープ外(将来必要になれば別途検討)
 - `web/server.py`の`_fetch_matches_count()`は、`session_id`を指定しない呼び出し(累計集計)にのみ`WHERE room_type = 'random'`を追加する。`session_id`指定時(配信セッション単位、`_fetch_winrate`の`session`側)は野良・専用部屋を問わずそのまま含める
 - Issue #422: 直近試合結果ログ(`/overlay/match-log`、`_fetch_match_log()`)は、**現在の`config.get_room_type()`と同じ`room_type`の試合だけ**を表示する。Issue #358時点では絞り込みを一切していなかったため、専用部屋で配信した翌回に野良へ切り替えると前回の専用部屋の勝敗バッジが残ったまま表示されていた(「その場の結果を見たい」という当初の意図は正しかったが、配信をまたいだ混入までは想定できていなかった)。野良と専用部屋で対象期間が異なる(ユーザーとの相談で決定):
@@ -161,12 +162,24 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 「システムを起動できたこと自体に満足してしまい、専用部屋で遊ぶ日でも`room_type`を`random`のまま起動しっぱなしにしてしまう」といった設定忘れを防ぐため、起動直後は`/admin`・`/rank-entry`のWebダッシュボードだけを開き、OBS Virtual Camera・OBS(obs-websocket)・YouTube連携への実際の接続は`/admin`のフォームを送信するまで一切行わない。
 
 - `main.py`は`webbrowser.open()`で`/admin`・`/rank-entry`を自動的に開いた直後、`startup_gate.wait_for_confirmation()`でブロックする(タイムアウトなし)。`/admin`のフォーム(`POST /admin`)が送信され`startup_gate.confirm_start()`が呼ばれるまで、`ObsSceneController`(OBS websocket接続)・`DiveTimeWatcher`(YouTube連携)の構築・起動を行わない。`FfmpegFrameReader`・`MatchStateMachine`の構築自体は接続を伴わない(実際にOBS Virtual Cameraへ接続するのは`run()`内の`reader.start()`)ため、このゲートより前のままでよい
-- 対象は`room_type`と`OBS_SCENE_SWITCHING_ENABLED`の2項目。どちらも起動のたびに「未選択」から始まる(`admin.html`側で初期表示を空欄のプレースホルダーにする)。`OBS_SCENE_SWITCHING_ENABLED`以外の4項目(`ALLOWED_PLAYERS`等)は今回困っている実例が無いため対象外とし、従来通り`.env`の現在値をプリフィルする
+- 対象は`room_type`と`OBS_SCENE_SWITCHING_ENABLED`の2項目。どちらも起動のたびに「未選択」から始まる(`admin.html`側で初期表示を空欄のプレースホルダーにする)。`OBS_SCENE_SWITCHING_ENABLED`以外の5項目(`ALLOWED_PLAYERS`等)は今回困っている実例が無いため対象外とし、従来通り`.env`の現在値をプリフィルする
 - **Issue #410: `/admin`のフォームは1つ・送信先も`POST /admin`のみ**(`web/server.py`の`admin_update`)。当初は「野良/専用部屋」「配信中の設定」「起動確認」の3フォーム・3エンドポイント(`POST /admin/room-type`・`POST /admin`・`POST /admin/confirm-start`)に分かれており、起動のたびに3回送信する必要があったため統合した。送信ボタンは常に押せる状態で、上記2項目のいずれかが未選択なら**その項目の直下にエラーを表示**して起動確認だけを保留する。このとき選択済みの項目の反映自体は行う(片方だけ選んで送信した場合に、選んだ方をやり直さずに済むようにするため)。Issue #379時点の「機械的に押してしまうリスクを下げるためボタン自体をdisabledにし、エラー表示で弾く方式は採らない」という判断は、この統合にあたり意図的に覆した(ユーザーとの相談で決定)。未選択のまま接続が始まらない点は変わらない
 - `confirm_start()`側にも同じ選択済み条件のチェック(`startup_gate.can_confirm_start()`)を持たせている(フォームをバイパスして直接POSTされた場合の防御)
 - `--video`指定時(動画ファイルでの配線確認)もこのゲートを同じように通過する必要がある(特別扱いしない)
 - 確認完了は起動シーケンスのゲートであり、一度確認完了したらそのプロセスの生存中(=そのセッション中)は再度要求しない
-- 接続結果(OBS接続成功/失敗・YouTube連携成功/失敗)は`/admin`上には表示せず、従来通りターミナルのログ出力のみで確認する(ユーザー確認済み、追加のUI実装は行わない)
+- 接続結果(OBS接続成功/失敗・YouTube連携成功/失敗)は`/admin`上には表示せず、従来通りターミナルのログ出力のみで確認する(ユーザー確認済み、追加のUI実装は行わない)。**例外としてOBS Virtual Cameraの受信状態だけは`/admin`に表示する**(Issue #470、下記「OBS仮想カメラの押し忘れ警告」節参照)
+
+### OBS仮想カメラの押し忘れ警告(`virtual_camera_status.py`、Issue #470)
+
+OBSの「仮想カメラ開始」を押し忘れたまま起動すると、試合が1つも記録されないまま配信が終わってしまうため、ターミナルと`/admin`の両方に警告を出す。
+
+- **停止中の仮想カメラは「映像が来ない」のではなく、OBSのプレースホルダー画像(OBSロゴ+カメラ禁止アイコン)を通常のフレームレートで流し続ける**(2026-10-03に実機で確認。ffmpegは正常に起動し、フレームも60fpsで届く)。そのため検知は画像の中身で行う。`detection/virtual_camera.py`の`is_virtual_camera_placeholder()`が、プレースホルダー内のほぼ単色な6領域の平均色がすべて実測値と一致するかで判定する(`config/detection.toml`の`[virtual_camera]`)。fixtures/screenshots全36枚・fixtures/videos全8,751フレーム(5フレームおき)で誤検知0件を確認済み
+  - プレースホルダー画像の実物はOBSのロゴを含むためリポジトリに置かず、テストは実測色で塗った合成フレームで行う
+  - OBSのバージョンアップでプレースホルダーのデザインが変わると判定が常にFalseになる(警告が出なくなるだけで、検知・記録には影響しない)。その場合は停止中の仮想カメラから1フレーム取得して測り直す
+- `main.py`のメインループが毎フレーム`VirtualCameraMonitor.observe()`を呼ぶ。プレースホルダーが5秒続いたらWARNINGを出し、映像が来ない間は30秒ごとに出し直す(DEBUGレベルで動かしているとログが流れ続けるため)。実際の映像が届いたらINFOで知らせる。仮想カメラを開始すれば再起動なしでそのまま検知が始まる
+- 映像の有無は検知の一時停止(Issue #440)と無関係なため、一時停止中も監視は続ける
+- `/admin`の配信設定欄の先頭に受信状態を表示する(停止中=赤枠で強調、受信中=緑、確認中=灰色。起動確認前は何も接続していないため出さない)。`/admin`は入力途中のフォームを差し替えないよう全体の自動更新をしないため、この表示だけを`/api/virtual-camera-status`の2秒ごとのポーリングで書き換える
+- 2026-10-03〜04の実機確認: **配信中に仮想カメラを止めた場合**もプレースホルダーに切り替わり、同じ警告が出る(開始し直せばそのまま復帰する)。一方、**配信中にOBS自体を閉じた場合**はffmpegが終了し、`ffmpegプロセスが終了し、フレームが取得できなくなりました`(ERROR)で検知ループごと止まる(この扱いは現状のままとする、ユーザーとの相談で決定)。OBSを起動していない状態でアプリを起動した場合の挙動は未確認
 
 ### 他競技プレイ中の検知一時停止(`detection_pause.py`、Issue #440)
 
@@ -386,7 +399,7 @@ DB層は長らく「`rank_before_ocr`が非NULLかどうか」を「ランクを
   - あわせて`rank_entry_clips.py`の`MAX_DURATION_SECONDS`を60秒→18秒に短縮した(「クリップ開始→暗転検知」は正常に検知できた13試合で2.9〜13.0秒)。上限に達した際は**フレームの追加だけを止め、録画状態とバッファはmatch_idが判明するまで保持する**(`_finalize()`はクリップ開始から3.1〜36.5秒とばらつき25試合中13試合が18秒より遅いため、旧実装の「上限到達時にクリップごと破棄してリセットする」経路を残したまま上限を短くすると、その13試合のクリップが1本も残らず手動入力自体が成立しなくなる)
 - OBSへの接続は配信演出のための付加機能であり、検知・DB記録という本来の機能とは独立している。OBS未起動・obs-websocket無効・パスワード不一致などで接続に失敗しても、アプリ全体を止める理由にはならないため、`obs_control.ObsSceneController`は接続・シーン切替のいずれの失敗もWARNINGログを出したうえで動作を継続する(以降のシーン切替は無効化されたまま)設計にした
 - Issue #247: 配信用ダッシュボードのウィジェットはOBSの「ブラウザ」ソースとして表示しているが、ブラウザソースは一度読み込んだきり保持されるため、本アプリ(Webサーバー)を再起動してもOBS側で手動更新しない限り表示が復帰しない問題があった。接続成功直後に1回だけ、`.env`の`OBS_BROWSER_SOURCE_NAMES`(カンマ区切り、使わない場合は`none`)で指定したソースそれぞれに対し、obs-websocketの`PressInputPropertiesButton`(`press_input_properties_button(name, "refreshnocache")`)を呼んで自動的に再読み込みする。1つのソースの更新失敗は他のソースの更新を妨げない(個別にWARNINGログ)
-- Issue #248: 配信によっては手動でシーンを操作したい場合があるため、`.env`の`OBS_SCENE_SWITCHING_ENABLED`(`true`/`false`、`/admin`から変更可能な5項目の1つ、上記「配信中の設定変更GUI」参照)でシーン自動切替のON/OFFを切り替えられる。`false`にしてもOBSへの接続自体(シーン名の事前確認・Issue #247のブラウザソース再読み込みを含む)は維持したまま、`set_in_match`呼び出し時の`set_current_program_scene`だけをスキップする(接続を切らないことで、無効化中もブラウザソースの表示は最新に保たれる)。値は呼び出しのたびに`.env`から再読み込みするため、配信中に切り替えても検知ループの再起動は不要
+- Issue #248: 配信によっては手動でシーンを操作したい場合があるため、`.env`の`OBS_SCENE_SWITCHING_ENABLED`(`true`/`false`、`/admin`から変更可能な6項目の1つ、上記「配信中の設定変更GUI」参照)でシーン自動切替のON/OFFを切り替えられる。`false`にしてもOBSへの接続自体(シーン名の事前確認・Issue #247のブラウザソース再読み込みを含む)は維持したまま、`set_in_match`呼び出し時の`set_current_program_scene`だけをスキップする(接続を切らないことで、無効化中もブラウザソースの表示は最新に保たれる)。値は呼び出しのたびに`.env`から再読み込みするため、配信中に切り替えても検知ループの再起動は不要
 
 ### ランク推移グラフの表示範囲と横軸(Issue #436)
 
@@ -502,21 +515,22 @@ Issue #339(得点/アシスト・勝率ウィジェットの見た目見直し)�
 src/
 └── nss_tracker/
     ├── capture/            # ffmpegサブプロセス起動・生フレームの継続読み取り/バッファリング
-    ├── detection/          # 画像解析ロジック(banner.py: 勝敗バナー判定, rank_ocr.py: ランクOCR, motion.py: ピクセル差分監視, match_end.py: 「試合終了」バナー検知, matchmaking.py: VS画面検知, vs_rank.py: VS画面ランクOCR, team_color.py: チームカラー検知)
+    ├── detection/          # 画像解析ロジック(banner.py: 勝敗バナー判定, rank_ocr.py: ランクOCR, motion.py: ピクセル差分監視, match_end.py: 「試合終了」バナー検知, matchmaking.py: VS画面検知, vs_rank.py: VS画面ランクOCR, team_color.py: チームカラー検知, virtual_camera.py: OBS仮想カメラのプレースホルダー画像検知)
     ├── detection_config.py # detection/配下のROI・色閾値をconfig/detection.tomlから読み込むローダー
     ├── state/              # 試合の状態遷移(バナー表示→ランクアニメ→確定→暗転→マッチング)の管理
     ├── database/           # SQLiteへの読み書き
     ├── obs_control.py      # obs-websocket経由のOBSシーン自動切り替え(Issue #83)
     ├── rank_warnings.py    # 手動入力されたランク値の矛盾検出(Issue #407、DB/Webに依存しない純粋な判定)
+    ├── virtual_camera_status.py # OBS仮想カメラから実際の映像が届いているかの監視(Issue #470)
     ├── youtube_chat.py     # YouTube Liveチャット連動「次に潜る時間」検知(Issue #265)
     └── web/                # 配信画面向けダッシュボード(server.py: FastAPIアプリ, runner.py: 別スレッドでのuvicorn起動, templates/: Jinja2テンプレート, static/: CSS等の静的ファイル)
 ```
 
-- `detection/`は当面`banner.py` / `rank_ocr.py` / `motion.py` / `league_change.py` / `goal.py` / `match_end.py` / `matchmaking.py` / `vs_rank.py` / `team_color.py`のフラット構成とする。追加OCRなど将来の機能追加が必要になった段階で、その都度サブディレクトリに整理し直してよい(先回りして細分化しない)
+- `detection/`は当面`banner.py` / `rank_ocr.py` / `motion.py` / `league_change.py` / `goal.py` / `match_end.py` / `matchmaking.py` / `vs_rank.py` / `team_color.py` / `virtual_camera.py`のフラット構成とする。追加OCRなど将来の機能追加が必要になった段階で、その都度サブディレクトリに整理し直してよい(先回りして細分化しない)
 
 ### 検知パラメータ(ROI・色閾値)のconfig化
 
-- `detection/`配下の各モジュール(上記9ファイル全て)が持つROI・HSV色閾値・ピクセル差分閾値、および`state/match_state.py`の検知閾値は、ルート直下`config/detection.toml`(git追跡対象、デフォルト値入り)から読み込む。読み込みは`src/nss_tracker/detection_config.py`の`get_detection_value(section, key, default)`が担当し、各モジュールのモジュールレベル定数の初期化時に1回呼ばれる
+- `detection/`配下の各モジュール(上記10ファイル全て)が持つROI・HSV色閾値・ピクセル差分閾値、および`state/match_state.py`の検知閾値は、ルート直下`config/detection.toml`(git追跡対象、デフォルト値入り)から読み込む。読み込みは`src/nss_tracker/detection_config.py`の`get_detection_value(section, key, default)`が担当し、各モジュールのモジュールレベル定数の初期化時に1回呼ばれる
 - `config/detection.toml`はモジュールごとに`[banner]` / `[rank_ocr]` / `[league_change]` / `[goal]` / `[motion]` / `[matchmaking]` / `[vs_rank]` / `[team_color]` / `[match_end]` / `[match_state]`のテーブルを持つ。ファイル自体が無い、またはテーブル・キーが無い場合は各モジュール側のPythonデフォルト値(=元々ハードコードされていた値)にフォールバックする
   - Issue #388以前は`state/match_state.py`の`DEFAULT_BANNER_CONFIRM_FRAMES`等のフレーム数系デフォルト値を対象外としていた(`main.py`が実際のfpsに応じて動的に再計算して上書きするため、素の値を外に出すと二重管理になるという理由、Issue #49参照)。Issue #388でこれらのデバウンス閾値をすべて実時間(秒)ベースに変更し、fps依存の再計算自体が不要になったため、この除外は撤廃し`[match_state]`の対象に含めた(下記「MatchStateMachineのデバウンス閾値」節参照)。`StabilityMonitor`(ピクセル差分ベースの安定監視、Issue #388の対象外)の`stable_frames_required`は引き続き`main.py`側でfpsに応じて計算しており対象外のまま
 - fixture実測に基づく閾値決定の根拠コメントは、詳細を失わないよう各detectionモジュールのPython定数側に残す(config/detection.toml側は簡潔なコメントのみ)
