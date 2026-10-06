@@ -4850,13 +4850,67 @@ def test_rank_entry_tier_steppers_change_value_by_one(tmp_path: Path, monkeypatc
     """整数部の上下ボタンは押すたびに1ずつ増減する(上限・下限は設けない)。"""
     html = _rank_entry_page(tmp_path, monkeypatch)
 
-    assert '[["\u25b2", 1], ["\u25bc", -1]].forEach(function (pair) {' in html
-    assert "tierInput.value = String((isNaN(current) ? 0 : current) + pair[1]);" in html
-    # 増減ボタンでも、以後の定期更新でこの試合から勝手に離れないようにする
+    assert '[["▲", 1], ["▼", -1]].forEach(function (pair) {' in html
+    assert "inputRow.appendChild(buildStepField(tierInput, 100));" in html
+
+
+# --- Issue #474: 小数部にも増減ボタンを付け、長押しで連続増減できるようにする ---
+
+
+def test_rank_entry_fraction_steppers_change_value_by_hundredth(tmp_path: Path, monkeypatch):
+    """小数部の上下ボタンは0.01ずつ増減する(整数部と同じ見た目のボタンを共用する)。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "inputRow.appendChild(buildStepField(fractionInput, 1));" in html
+    assert "attachRepeatingPress(stepButton, function () { stepBy(pair[1] * unitHundredths); });" in html
+
+
+def test_rank_entry_step_keeps_fraction_two_digits_and_carries_into_tier(tmp_path: Path, monkeypatch):
+    """増減は0.01単位の整数で計算し、繰り上がり・繰り下がりを帯番号へ反映し、
+    小数部は常に2桁へ0埋めする("05"が"6"になって.60として送信される不具合の防止)。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "function stepRankParts(tierText, fractionText, deltaHundredths) {" in html
+    # 小数部は送信時と同じく「小数点以下の桁をそのまま並べたもの」として読む
+    assert 'Math.round(parseFloat("0." + digits) * 100)' in html
+    assert "const nextTier = Math.floor(total / 100);" in html
+    assert 'fraction: String(total - nextTier * 100).padStart(2, "0")' in html
+
+
+def test_rank_entry_step_marks_user_selected(tmp_path: Path, monkeypatch):
+    """増減した場合も、定期更新でこの試合から勝手に離れないようにする。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
     assert (
-        "        tierInput.value = String((isNaN(current) ? 0 : current) + pair[1]);\n"
-        "        userSelected = true;"
+        "      fractionInput.value = parts.fraction;\n"
+        "      userSelected = true;"
     ) in html
+
+
+def test_rank_entry_fraction_arrow_keys_and_wheel_use_same_step(tmp_path: Path, monkeypatch):
+    """小数部の↑↓キー・ホイールはtype=numberの既定の増減を使わず、ボタンと同じ増減にする。"""
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert 'fractionInput.addEventListener("keydown", function (event) {' in html
+    assert 'stepBy(event.key === "ArrowUp" ? 1 : -1);' in html
+    assert 'fractionInput.addEventListener("wheel", function (event) {' in html
+    # ホイールはこの欄にフォーカスがあるときだけ奪う(それ以外はページのスクロールに任せる)
+    assert "if (document.activeElement !== fractionInput || event.deltaY === 0) return;" in html
+    assert "}, { passive: false });" in html
+
+
+def test_rank_entry_step_buttons_repeat_while_pressed(tmp_path: Path, monkeypatch):
+    """増減ボタンは長押しで連続して増減し、離す・外れると止まる。
+
+    キーボード(Enter/Space)で押した場合はclickだけが届くため、clickはdetailが0の
+    ときだけ反応させ、マウス操作でpointerdownと二重に増減しないようにする。
+    """
+    html = _rank_entry_page(tmp_path, monkeypatch)
+
+    assert "function attachRepeatingPress(button, action) {" in html
+    assert "repeatTimer = setInterval(action, REPEAT_INTERVAL_MS);" in html
+    assert '["pointerup", "pointerleave", "pointercancel", "blur"].forEach(function (type) {' in html
+    assert "if (event.detail === 0) action();" in html
 
 
 def test_rank_entry_copy_button_fills_both_inputs(tmp_path: Path, monkeypatch):
