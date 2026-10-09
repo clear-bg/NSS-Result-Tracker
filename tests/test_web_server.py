@@ -4291,11 +4291,8 @@ def test_health_check_post_match_delete_removes_match_and_cascades(tmp_path: Pat
 def test_health_check_post_match_delete_removes_clip_files(tmp_path: Path, monkeypatch):
     client, db_path = _setup_health_check(tmp_path, monkeypatch)
     gauge_clips_dir = tmp_path / "gauge_clips"
-    number_clips_dir = tmp_path / "number_clips"
     monkeypatch.setattr(server_module, "GAUGE_CLIPS_DIR", gauge_clips_dir)
-    monkeypatch.setattr(server_module, "RANK_NUMBER_CLIPS_DIR", number_clips_dir)
     gauge_clips_dir.mkdir()
-    number_clips_dir.mkdir()
     conn = db.connect(db_path)
     match_id = db.save_match_result(conn, _unranked_match())
     conn.close()
@@ -4303,14 +4300,11 @@ def test_health_check_post_match_delete_removes_clip_files(tmp_path: Path, monke
     clip_path.write_bytes(b"dummy")
     gauge_clip_path = gauge_clips_dir / f"{match_id}.mp4"
     gauge_clip_path.write_bytes(b"dummy")
-    number_clip_path = number_clips_dir / f"{match_id}.mp4"
-    number_clip_path.write_bytes(b"dummy")
 
     client.post("/health-check/match/delete", data={"match_id": match_id})
 
     assert not clip_path.exists()
     assert not gauge_clip_path.exists()
-    assert not number_clip_path.exists()
 
 
 def test_health_check_post_match_delete_rejects_missing_match(tmp_path: Path, monkeypatch):
@@ -4488,49 +4482,40 @@ def test_admin_links_to_health_check(tmp_path: Path):
     assert 'href="/health-check"' in response.text
 
 
-# --- Issue #417: ランク数値拡大クリップ(3本目) ---
+# --- Issue #477: ランク数値拡大クリップ(Issue #417/#428)を削除した ---
 
 
-def test_rank_entry_clips_api_marks_has_number_clip_when_present(tmp_path: Path, monkeypatch):
+def _rank_entry_page(tmp_path: Path, monkeypatch) -> str:
+    """クリップが1件ある状態で/rank-entryを開き、HTMLを返す。"""
     clips_dir = tmp_path / "clips"
-    number_dir = tmp_path / "number_clips"
     monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
-    monkeypatch.setattr(server_module, "RANK_NUMBER_CLIPS_DIR", number_dir)
     clips_dir.mkdir()
-    number_dir.mkdir()
     db_path = tmp_path / "test.db"
     conn = db.connect(db_path)
-    with_number = _save_confirmed_match(conn, _warning_match("win", 42.20), 42.40)
-    without_number = _save_confirmed_match(conn, _warning_match("lose", 42.40), 42.18)
+    match_id = _save_confirmed_match(conn, _warning_match("win", 42.20), 42.40)
     conn.close()
-    (clips_dir / f"{with_number}.mp4").write_bytes(b"dummy")
-    (clips_dir / f"{without_number}.mp4").write_bytes(b"dummy")
-    (number_dir / f"{with_number}.mp4").write_bytes(b"dummy")
+    (clips_dir / f"{match_id}.mp4").write_bytes(b"dummy")
+
+    return TestClient(create_app(db_path)).get("/rank-entry").text
+
+
+def test_rank_entry_clips_api_no_longer_reports_number_clip(tmp_path: Path, monkeypatch):
+    clips_dir = tmp_path / "clips"
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
+    clips_dir.mkdir()
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = _save_confirmed_match(conn, _warning_match("win", 42.20), 42.40)
+    conn.close()
+    (clips_dir / f"{match_id}.mp4").write_bytes(b"dummy")
     client = TestClient(create_app(db_path))
 
-    clips = {clip["match_id"]: clip for clip in client.get("/api/rank-entry-clips").json()["clips"]}
+    clips = client.get("/api/rank-entry-clips").json()["clips"]
 
-    assert clips[with_number]["has_number_clip"] is True
-    assert clips[without_number]["has_number_clip"] is False
-
-
-def test_rank_entry_number_clip_file_serves_existing_file(tmp_path: Path, monkeypatch):
-    number_dir = tmp_path / "number_clips"
-    monkeypatch.setattr(server_module, "RANK_NUMBER_CLIPS_DIR", number_dir)
-    number_dir.mkdir()
-    (number_dir / "7.mp4").write_bytes(b"dummy")
-    client = TestClient(create_app(tmp_path / "test.db"))
-
-    response = client.get("/rank-entry/number-clips/7.mp4")
-
-    assert response.status_code == 200
-    assert response.content == b"dummy"
+    assert "has_number_clip" not in clips[0]
 
 
-def test_rank_entry_number_clip_file_404_when_missing(tmp_path: Path, monkeypatch):
-    number_dir = tmp_path / "number_clips"
-    monkeypatch.setattr(server_module, "RANK_NUMBER_CLIPS_DIR", number_dir)
-    number_dir.mkdir()
+def test_rank_entry_number_clip_route_is_removed(tmp_path: Path):
     client = TestClient(create_app(tmp_path / "test.db"))
 
     response = client.get("/rank-entry/number-clips/7.mp4")
@@ -4538,78 +4523,15 @@ def test_rank_entry_number_clip_file_404_when_missing(tmp_path: Path, monkeypatc
     assert response.status_code == 404
 
 
-# --- Issue #428: ランク数値拡大クリップを既定で非表示にし、ボタンで切り替える ---
-
-
-def _rank_entry_page(tmp_path: Path, monkeypatch) -> str:
-    """クリップが1件ある状態で/rank-entryを開き、HTMLを返す。"""
-    clips_dir = tmp_path / "clips"
-    number_dir = tmp_path / "number_clips"
-    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", clips_dir)
-    monkeypatch.setattr(server_module, "RANK_NUMBER_CLIPS_DIR", number_dir)
-    clips_dir.mkdir()
-    number_dir.mkdir()
-    db_path = tmp_path / "test.db"
-    conn = db.connect(db_path)
-    match_id = _save_confirmed_match(conn, _warning_match("win", 42.20), 42.40)
-    conn.close()
-    (clips_dir / f"{match_id}.mp4").write_bytes(b"dummy")
-    (number_dir / f"{match_id}.mp4").write_bytes(b"dummy")
-
-    return TestClient(create_app(db_path)).get("/rank-entry").text
-
-
-def test_rank_entry_page_has_number_clip_toggle_button(tmp_path: Path, monkeypatch):
-    """Issue #428: 常時表示をやめ、ボタンで出し入れする。"""
+def test_rank_entry_page_has_no_number_clip_column(tmp_path: Path, monkeypatch):
     html = _rank_entry_page(tmp_path, monkeypatch)
 
-    assert 'id="rank-entry-number-toggle"' in html
-    assert "ランク数値拡大を表示" in html
+    assert "rank-entry-number" not in html
+    assert "numberVideo" not in html
+    assert "ランク数値拡大" not in html
 
 
-def test_rank_entry_number_column_is_hidden_by_default(tmp_path: Path, monkeypatch):
-    """Issue #428: 既定は非表示(=全画面クリップが全幅に広がり、バッジが読める)。
-
-    トグルの状態を保持する変数がfalseで始まり、applyNumberColumn()がそれを見て
-    列の表示とsrcの設定を決めることをHTML(インラインJS)側で確認する。
-    """
-    html = _rank_entry_page(tmp_path, monkeypatch)
-
-    assert "let numberColumnShown = false;" in html
-    assert "if (clip.has_number_clip && numberColumnShown) {" in html
-
-
-def test_rank_entry_number_column_state_survives_clip_switching(tmp_path: Path, monkeypatch):
-    """Issue #428: クリップを切り替えても表示状態を維持する。
-
-    selectClip()が試合を切り替えるたびにapplyNumberColumn()を呼び、その中で
-    numberColumnShownを参照するため、トグルの状態が引き継がれる。
-    """
-    html = _rank_entry_page(tmp_path, monkeypatch)
-
-    assert "function applyNumberColumn(clip)" in html
-    assert "applyNumberColumn(clip);" in html
-    # 旧実装(トグルを見ずにクリップの有無だけで常時表示していた分岐)が残っていないこと
-    assert "if (clip.has_number_clip) {" not in html
-
-
-def test_rank_entry_number_toggle_is_hidden_when_clip_is_missing(tmp_path: Path, monkeypatch):
-    """Issue #428: この機能の導入前に録画された試合では、押しても何も起きないボタンを出さない。"""
-    html = _rank_entry_page(tmp_path, monkeypatch)
-
-    assert 'numberToggle.style.display = hasNumberClip ? "" : "none";' in html
-
-
-def test_rank_entry_css_defines_number_toggle_style(tmp_path: Path):
-    """Issue #428: ボタンのスタイルが静的ファイル側に用意されていること。"""
-    client = TestClient(create_app(tmp_path / "test.db"))
-
-    css = client.get("/static/rank_entry.css").text
-
-    assert ".rank-entry-number-toggle {" in css
-
-
-# --- Issue #448: 3本のクリップを1本のシークバーで同時に操作する ---
+# --- Issue #448: 全画面・ゲージ拡大の2本を1本のシークバーで同時に操作する ---
 
 
 def test_rank_entry_page_has_seek_mode_toggle_button(tmp_path: Path, monkeypatch):
@@ -4628,7 +4550,7 @@ def test_rank_entry_page_defaults_to_unified_seek_mode(tmp_path: Path, monkeypat
 
 
 def test_rank_entry_gauge_seek_forwards_to_others_only_when_unified(tmp_path: Path, monkeypatch):
-    """ゲージのシークバーを動かすと、統一モードのときだけ全画面・帯番号拡大の
+    """ゲージのシークバーを動かすと、統一モードのときだけ全画面の
     再生位置を同じ割合(currentTime / duration)へ転送する。転送はgaugeSeekInputの
     "input"イベント(ユーザー操作のみで発火)に載せるため、再生中の自動更新
     (timeupdate)では発火しない。
@@ -4641,15 +4563,13 @@ def test_rank_entry_gauge_seek_forwards_to_others_only_when_unified(tmp_path: Pa
 
 
 def test_rank_entry_seek_mode_toggle_hides_other_seek_bars_when_unified(tmp_path: Path, monkeypatch):
-    """統一モードでは全画面・帯番号拡大のシークバーを隠し、再生ボタン・時刻表示は
+    """統一モードでは全画面のシークバーを隠し、再生ボタン・時刻表示は
     残す(どちらも各動画で独立して動く、モジュールdocstring参照)。
     """
     html = _rank_entry_page(tmp_path, monkeypatch)
 
     assert "videoSeekInput.classList.toggle(\"rank-entry-video-seek-hidden\", unifiedSeekMode);" in html
-    assert "numberSeekInput.classList.toggle(\"rank-entry-video-seek-hidden\", unifiedSeekMode);" in html
     assert "videoSeekInput.disabled = unifiedSeekMode;" in html
-    assert "numberSeekInput.disabled = unifiedSeekMode;" in html
 
 
 def test_rank_entry_seek_mode_toggle_resyncs_on_return_to_unified(tmp_path: Path, monkeypatch):
@@ -4664,17 +4584,6 @@ def test_rank_entry_seek_mode_toggle_resyncs_on_return_to_unified(tmp_path: Path
         "    applySeekMode();\n"
         "    if (unifiedSeekMode) {"
     ) in html
-
-
-def test_rank_entry_number_column_syncs_to_gauge_position_when_revealed(tmp_path: Path, monkeypatch):
-    """非表示の間はダウンロードを避けて位置合わせをしていない分、表示ボタンを
-    押した瞬間にゲージ動画の現在位置(割合)へ合わせておく(Issue #448)。
-    """
-    html = _rank_entry_page(tmp_path, monkeypatch)
-
-    assert "const fraction = currentGaugeFraction();" in html
-    assert '"loadedmetadata",' in html
-    assert "{ once: true }" in html
 
 
 def test_rank_entry_css_defines_seek_mode_toggle_style(tmp_path: Path):
