@@ -17,11 +17,10 @@ import pytest
 from conftest import requires_video_fixtures
 from nss_tracker import config
 from nss_tracker.database import db
-from nss_tracker.detection.rank_ocr import GAUGE_ROI_ENLARGED, RANK_NUMBER_CLIP_ROI
+from nss_tracker.detection.rank_ocr import GAUGE_ROI_ENLARGED
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.rank_entry_clips import (
     GAUGE_TARGET_WIDTH,
-    RANK_NUMBER_TARGET_WIDTH,
     RankEntryClipRecorder,
 )
 from nss_tracker.state.match_state import MatchResult, VsScreenEvent
@@ -63,7 +62,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     呼び、finallyでweb_handle.stop()を呼ぶこと)だけを軽量に検証する。
     """
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, rank_number_clip_recorder, blackout_watcher=None, virtual_camera_monitor=None: None)
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, blackout_watcher=None, virtual_camera_monitor=None: None)
     # Issue #379: main()は/admin側の「確認完了」ボタンが押されるまでOBS/YouTube接続の
     # 手前でブロックする。ここでは実際のブラウザ操作を伴わないよう待ち自体は無効化しつつ、
     # 呼ばれたこと自体(配線が壊れていないこと)はspyで確認する
@@ -119,7 +118,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
 def test_main_continues_when_browser_cannot_be_opened(monkeypatch, tmp_path):
     """Issue #129: ブラウザが無い環境等で設定画面の自動起動に失敗しても、アプリ全体は止めない。"""
     monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
-    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, rank_number_clip_recorder, blackout_watcher=None, virtual_camera_monitor=None: None)
+    monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, blackout_watcher=None, virtual_camera_monitor=None: None)
     # Issue #379: main()は/admin側の「確認完了」ボタンが押されるまでOBS/YouTube接続の
     # 手前でブロックするため、ここではその待ち自体を検証対象外として無効化する
     monkeypatch.setattr(main.startup_gate, "wait_for_confirmation", lambda: None)
@@ -258,11 +257,6 @@ def test_run_wires_capture_state_and_database(videos_dir, monkeypatch, tmp_path)
         gauge_clip_recorder = RankEntryClipRecorder(
             output_dir=tmp_path / "rank_gauge_clips", target_width=GAUGE_TARGET_WIDTH, crop_roi=GAUGE_ROI_ENLARGED
         )
-        rank_number_clip_recorder = RankEntryClipRecorder(
-            output_dir=tmp_path / "rank_number_clips",
-            target_width=RANK_NUMBER_TARGET_WIDTH,
-            crop_roi=RANK_NUMBER_CLIP_ROI,
-        )
         main.run(
             reader,
             machine,
@@ -272,7 +266,6 @@ def test_run_wires_capture_state_and_database(videos_dir, monkeypatch, tmp_path)
             fps,
             clip_recorder,
             gauge_clip_recorder,
-            rank_number_clip_recorder,
         )
 
         rows = db.fetch_all_matches(conn)
@@ -364,11 +357,6 @@ def test_run_notifies_match_transition_only_on_true_to_false(monkeypatch, tmp_pa
         gauge_clip_recorder = RankEntryClipRecorder(
             output_dir=tmp_path / "rank_gauge_clips", target_width=GAUGE_TARGET_WIDTH, crop_roi=GAUGE_ROI_ENLARGED
         )
-        rank_number_clip_recorder = RankEntryClipRecorder(
-            output_dir=tmp_path / "rank_number_clips",
-            target_width=RANK_NUMBER_TARGET_WIDTH,
-            crop_roi=RANK_NUMBER_CLIP_ROI,
-        )
 
         main.run(
             _FakeReader(len(in_match_sequence)),
@@ -379,7 +367,6 @@ def test_run_notifies_match_transition_only_on_true_to_false(monkeypatch, tmp_pa
             30.0,
             clip_recorder,
             gauge_clip_recorder,
-            rank_number_clip_recorder,
         )
 
         assert set_in_match_calls == [True, False, True]
@@ -453,11 +440,6 @@ def test_run_resets_vs_rank_snapshot_only_on_true_to_false(monkeypatch, tmp_path
         gauge_clip_recorder = RankEntryClipRecorder(
             output_dir=tmp_path / "rank_gauge_clips", target_width=GAUGE_TARGET_WIDTH, crop_roi=GAUGE_ROI_ENLARGED
         )
-        rank_number_clip_recorder = RankEntryClipRecorder(
-            output_dir=tmp_path / "rank_number_clips",
-            target_width=RANK_NUMBER_TARGET_WIDTH,
-            crop_roi=RANK_NUMBER_CLIP_ROI,
-        )
 
         main.run(
             _FakeReader(len(in_match_sequence)),
@@ -468,7 +450,6 @@ def test_run_resets_vs_rank_snapshot_only_on_true_to_false(monkeypatch, tmp_path
             30.0,
             clip_recorder,
             gauge_clip_recorder,
-            rank_number_clip_recorder,
         )
 
         snapshot = db.fetch_latest_vs_rank_snapshot(conn, session_id=session_id)
@@ -547,11 +528,6 @@ def test_run_skips_process_frame_while_detection_paused(monkeypatch, tmp_path):
         gauge_clip_recorder = RankEntryClipRecorder(
             output_dir=tmp_path / "rank_gauge_clips", target_width=GAUGE_TARGET_WIDTH, crop_roi=GAUGE_ROI_ENLARGED
         )
-        rank_number_clip_recorder = RankEntryClipRecorder(
-            output_dir=tmp_path / "rank_number_clips",
-            target_width=RANK_NUMBER_TARGET_WIDTH,
-            crop_roi=RANK_NUMBER_CLIP_ROI,
-        )
 
         main.run(
             _FakeReader(pause_sequence),
@@ -562,7 +538,6 @@ def test_run_skips_process_frame_while_detection_paused(monkeypatch, tmp_path):
             30.0,
             clip_recorder,
             gauge_clip_recorder,
-            rank_number_clip_recorder,
         )
 
         # 一時停止中の2フレーム分はスキップされ、再開後の2フレームだけ処理される
@@ -640,11 +615,6 @@ def test_run_drains_blackout_watcher_while_detection_paused(monkeypatch, tmp_pat
         gauge_clip_recorder = RankEntryClipRecorder(
             output_dir=tmp_path / "rank_gauge_clips", target_width=GAUGE_TARGET_WIDTH, crop_roi=GAUGE_ROI_ENLARGED
         )
-        rank_number_clip_recorder = RankEntryClipRecorder(
-            output_dir=tmp_path / "rank_number_clips",
-            target_width=RANK_NUMBER_TARGET_WIDTH,
-            crop_roi=RANK_NUMBER_CLIP_ROI,
-        )
 
         main.run(
             _FakeReader(3),
@@ -655,7 +625,6 @@ def test_run_drains_blackout_watcher_while_detection_paused(monkeypatch, tmp_pat
             30.0,
             clip_recorder,
             gauge_clip_recorder,
-            rank_number_clip_recorder,
             blackout_watcher=_FakeBlackoutWatcher(),
         )
 
@@ -754,9 +723,6 @@ def test_run_writes_clip_even_when_match_id_arrives_after_max_duration(monkeypat
         gauge_clip_recorder = RankEntryClipRecorder(
             output_dir=tmp_path / "rank_gauge_clips", target_sample_fps=10.0, max_duration_seconds=0.3
         )
-        rank_number_clip_recorder = RankEntryClipRecorder(
-            output_dir=tmp_path / "rank_number_clips", target_sample_fps=10.0, max_duration_seconds=0.3
-        )
 
         main.run(
             _FakeReader(frame_count),
@@ -767,7 +733,6 @@ def test_run_writes_clip_even_when_match_id_arrives_after_max_duration(monkeypat
             10.0,
             clip_recorder,
             gauge_clip_recorder,
-            rank_number_clip_recorder,
         )
 
         if clip_recorder._last_encode_thread is not None:
@@ -858,7 +823,7 @@ def _run_scripted(monkeypatch, tmp_path, script, frames):
 
     recorders = [
         RankEntryClipRecorder(output_dir=tmp_path / name, target_sample_fps=10.0)
-        for name in ("rank_entry_clips", "rank_gauge_clips", "rank_number_clips")
+        for name in ("rank_entry_clips", "rank_gauge_clips")
     ]
     clip_recorder = recorders[0]
     finished = {}
@@ -964,7 +929,7 @@ def test_run_observes_virtual_camera_even_while_detection_is_paused(monkeypatch,
 
     recorders = [
         RankEntryClipRecorder(output_dir=tmp_path / name, target_sample_fps=10.0)
-        for name in ("rank_entry_clips", "rank_gauge_clips", "rank_number_clips")
+        for name in ("rank_entry_clips", "rank_gauge_clips")
     ]
     conn = sqlite3.connect(":memory:")
     try:

@@ -534,24 +534,8 @@ def test_default_max_clips_is_50():
     assert rank_entry_clips.DEFAULT_MAX_CLIPS == 50
 
 
-def test_rank_number_clip_roi_contains_both_badge_sizes():
-    """Issue #417: ランク数値拡大クリップのROIは、コンパクト表示・拡大表示の
-    どちらの数値ROIも余裕を持って包む必要がある(片方でも欠けると読めなくなる)。
+def test_max_duration_is_60_seconds():
+    """Issue #476: 結果画面に長く留まると暗転が遅れ、18秒ではランク変動の途中で
+    クリップが切れていたため60秒に戻した(実配信で上限に達した7試合は16.0〜107.2秒)。
     """
-    from nss_tracker.detection.rank_ocr import (
-        RANK_NUMBER_CLIP_ROI,
-        RANK_NUMBER_ROI_COMPACT,
-        RANK_NUMBER_ROI_ENLARGED,
-    )
-
-    clip_x1, clip_y1, clip_x2, clip_y2 = RANK_NUMBER_CLIP_ROI
-    for roi in (RANK_NUMBER_ROI_COMPACT, RANK_NUMBER_ROI_ENLARGED):
-        x1, y1, x2, y2 = roi
-        # 数値ROIの外側にマージンが残っていること(ピルの縁まで含めるため)
-        assert clip_x1 < x1 and clip_y1 < y1
-        assert clip_x2 > x2 and clip_y2 > y2
-
-
-def test_rank_number_clip_dir_is_separate_from_other_clips():
-    assert rank_entry_clips.RANK_NUMBER_CLIPS_DIR != rank_entry_clips.DEFAULT_CLIPS_DIR
-    assert rank_entry_clips.RANK_NUMBER_CLIPS_DIR != rank_entry_clips.GAUGE_CLIPS_DIR
+    assert rank_entry_clips.MAX_DURATION_SECONDS == 60.0

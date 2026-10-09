@@ -227,7 +227,7 @@ from nss_tracker.database.db import (
     save_rank_warning_ack,
     update_match_fields,
 )
-from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR, RANK_NUMBER_CLIPS_DIR
+from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR
 
 _WEB_DIR = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=_WEB_DIR / "templates")
@@ -1616,7 +1616,6 @@ def _build_rank_entry_clip_info(
     index: int,
     has_clip: bool,
     has_gauge_clip: bool = False,
-    has_number_clip: bool = False,
     warnings: Optional[list[dict]] = None,
 ) -> dict:
     return {
@@ -1632,9 +1631,6 @@ def _build_rank_entry_clip_info(
         # 存在するかどうか。画面全体クリップより後から追加した機能のため、
         # 導入前に生成された試合や、まだエンコードが終わっていない試合ではFalseになりうる
         "has_gauge_clip": has_gauge_clip,
-        # Issue #417: 帯番号だけを拡大したクリップ。ゲージ動画と同じく、
-        # 導入前に録画された試合ではFalseになりうる
-        "has_number_clip": has_number_clip,
         # Issue #446: ランクを賭けた試合か(VS画面で自分のランクバッジを読めたか)。
         # rank_beforeがNULLで入力フォームを出せない理由が「直前の試合がまだ未確定」
         # (rank_stakedが1、待てば解消する)なのか「そもそもランクを賭けていない試合」
@@ -1677,7 +1673,6 @@ def _build_rank_entry_context(db_path: Path) -> dict:
         pending_count = fetch_pending_manual_rank_match_count(conn)
         clip_ids = _list_clip_match_ids(DEFAULT_CLIPS_DIR)
         gauge_clip_ids = set(_list_clip_match_ids(GAUGE_CLIPS_DIR))
-        number_clip_ids = set(_list_clip_match_ids(RANK_NUMBER_CLIPS_DIR))
         clips = []
         for match_id in clip_ids:
             row = fetch_match(conn, match_id)
@@ -1690,7 +1685,6 @@ def _build_rank_entry_context(db_path: Path) -> dict:
                     len(clips),
                     has_clip=True,
                     has_gauge_clip=match_id in gauge_clip_ids,
-                    has_number_clip=match_id in number_clip_ids,
                     warnings=_build_rank_warnings(conn, row),
                 )
             )
@@ -2132,7 +2126,7 @@ def create_app(db_path: Path) -> FastAPI:
             return RedirectResponse(f"/health-check?error={quote(str(exc))}", status_code=303)
         finally:
             conn.close()
-        for clips_dir in (DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR, RANK_NUMBER_CLIPS_DIR):
+        for clips_dir in (DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR):
             (clips_dir / f"{match_id}.mp4").unlink(missing_ok=True)
         _logger.info("健全性チェック(/health-check)から試合を削除しました: match_id=%d", match_id)
         return RedirectResponse("/health-check?status=match-deleted", status_code=303)
@@ -2180,13 +2174,6 @@ def create_app(db_path: Path) -> FastAPI:
     @app.get("/rank-entry/gauge-clips/{match_id}.mp4")
     def rank_entry_gauge_clip_file(match_id: int):
         clip_path = GAUGE_CLIPS_DIR / f"{match_id}.mp4"
-        if not clip_path.is_file():
-            raise HTTPException(status_code=404, detail="クリップが見つかりません")
-        return FileResponse(clip_path, media_type="video/mp4")
-
-    @app.get("/rank-entry/number-clips/{match_id}.mp4")
-    def rank_entry_number_clip_file(match_id: int):
-        clip_path = RANK_NUMBER_CLIPS_DIR / f"{match_id}.mp4"
         if not clip_path.is_file():
             raise HTTPException(status_code=404, detail="クリップが見つかりません")
         return FileResponse(clip_path, media_type="video/mp4")

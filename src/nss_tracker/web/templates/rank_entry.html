@@ -22,12 +22,6 @@
 <div class="rank-entry-layout">
   <div class="rank-entry-left" id="rank-entry-left"></div>
   <div class="rank-entry-right">
-    {# Issue #428: ランク数値拡大クリップは既定で非表示にし、このボタンで出し入れする。
-       常時表示すると全画面クリップが2カラムに割られて小さくなり、かえって
-       ランクバッジが読みづらくなるため #}
-    <p class="rank-entry-number-toggle-row">
-      <button type="button" id="rank-entry-number-toggle" class="rank-entry-number-toggle">ランク数値拡大を表示</button>
-    </p>
     <div class="rank-entry-videos">
       <div class="rank-entry-video-column">
         <div class="rank-entry-video-wrap rank-entry-video-wrap-main">
@@ -49,17 +43,6 @@
           <button type="button" id="rank-entry-seek-mode-toggle" class="rank-entry-seek-mode-toggle">個別シークに切替</button>
         </div>
         <div id="rank-entry-clip-selector" class="rank-entry-clip-selector"></div>
-      </div>
-      <div class="rank-entry-video-column" id="rank-entry-number-column">
-        <p class="rank-entry-number-label">ランク数値拡大</p>
-        <div class="rank-entry-video-wrap rank-entry-video-wrap-number">
-          <video id="rank-entry-number-video" class="rank-entry-number-video" muted playsinline></video>
-        </div>
-        <div class="rank-entry-video-controls">
-          <button type="button" id="rank-entry-number-video-play-btn" class="rank-entry-video-play-btn">&#9654;</button>
-          <input type="range" id="rank-entry-number-video-seek" class="rank-entry-video-seek" min="0" max="1000" value="0">
-          <span id="rank-entry-number-video-time" class="rank-entry-video-time">0:00 / 0:00</span>
-        </div>
       </div>
     </div>
   </div>
@@ -86,23 +69,12 @@
   const gaugeVideo = document.getElementById("rank-entry-gauge-video");
   const gaugeVideoWrap = document.querySelector(".rank-entry-video-wrap-gauge");
   const gaugeLabel = document.querySelector(".rank-entry-gauge-label");
-  // Issue #417: 帯番号だけを拡大した3本目のクリップ
-  const numberVideo = document.getElementById("rank-entry-number-video");
-  const numberColumn = document.getElementById("rank-entry-number-column");
-  const numberToggle = document.getElementById("rank-entry-number-toggle");
-  // Issue #448: 統一シークの主役はゲージ動画の行。全画面・帯番号拡大側の
+  // Issue #448: 統一シークの主役はゲージ動画の行。全画面側の
   // シークバーは統一モード中だけ隠す(再生ボタン・時刻表示はどちらのモードでも
   // 個別に動く。詳細はモジュール末尾のsyncOthersToGaugeFraction参照)
   const videoSeekInput = document.getElementById("rank-entry-video-seek");
   const gaugeSeekInput = document.getElementById("rank-entry-gauge-video-seek");
-  const numberSeekInput = document.getElementById("rank-entry-number-video-seek");
   const seekModeToggle = document.getElementById("rank-entry-seek-mode-toggle");
-  // Issue #428: ランク数値拡大クリップを表示中かどうか。既定は非表示。
-  // selectClip()が別の試合へ切り替わるたびに表示状態を設定し直すため、状態を
-  // ここに持たせて尊重させる(持たせないと、クリップを選び直すたびに非表示へ
-  // 戻ってしまう)。複数の試合を続けて確認するときに押し直さずに済ませるのが目的。
-  // ページを開き直したときは既定の非表示に戻る
-  let numberColumnShown = false;
   const selector = document.getElementById("rank-entry-clip-selector");
   const left = document.getElementById("rank-entry-left");
   let selectedMatchId = null;
@@ -211,22 +183,14 @@
     { passive: true }
   );
 
-  const resetNumberVideoControls = attachCustomControls(
-    numberVideo,
-    document.getElementById("rank-entry-number-video-play-btn"),
-    numberSeekInput,
-    document.getElementById("rank-entry-number-video-time")
-  );
-
-  // Issue #448: 3本のクリップを1本のシークバーで同時に操作する。主役は
+  // Issue #448: 2本のクリップを1本のシークバーで同時に操作する。主役は
   // ゲージ動画の行(一番よく見る動画のため、既存の行をそのまま使い新しい行を
   // 増やさない、ユーザーとの相談で決定)。既定は統一シーク(true)。
-  // numberColumnShownと同じパターンでJS変数に保持し、クリップ切り替えでは
-  // 維持、ページ再読み込みでは既定(統一)に戻す。
+  // JS変数に保持し、クリップ切り替えでは維持、ページ再読み込みでは既定(統一)に戻す。
   //
-  // 再生(▶)ボタンは統一しない: 全画面クリップは8fps、ゲージ・帯番号拡大クリップは
+  // 再生(▶)ボタンは統一しない: 全画面クリップは8fps、ゲージクリップは
   // 30fpsとサンプリングfpsが異なり、実時間の長さはほぼ一致するが完全な一致は
-  // 保証されない(実測で1秒前後ズレることがある)。3本の同時再生を厳密に同期
+  // 保証されない(実測で1秒前後ズレることがある)。2本の同時再生を厳密に同期
   // させる仕組み(ドリフト補正等)は過剰な複雑化と判断し、シーク位置(スクラブ)の
   // 割合(currentTime / duration)だけを合わせる。この割合はgaugeSeekInputの
   // "input"イベント(ユーザーがスライダーを動かしたときのみ発火し、再生中の
@@ -243,16 +207,11 @@
     if (isFinite(video.duration) && video.duration > 0) {
       video.currentTime = fraction * video.duration;
     }
-    if (isFinite(numberVideo.duration) && numberVideo.duration > 0) {
-      numberVideo.currentTime = fraction * numberVideo.duration;
-    }
   }
 
   function applySeekMode() {
     videoSeekInput.classList.toggle("rank-entry-video-seek-hidden", unifiedSeekMode);
     videoSeekInput.disabled = unifiedSeekMode;
-    numberSeekInput.classList.toggle("rank-entry-video-seek-hidden", unifiedSeekMode);
-    numberSeekInput.disabled = unifiedSeekMode;
     seekModeToggle.textContent = unifiedSeekMode ? "個別シークに切替" : "統一シークに戻す";
   }
 
@@ -744,59 +703,9 @@
         gaugeVideoWrap.style.display = "none";
         gaugeVideo.removeAttribute("src");
       }
-      // Issue #417: ゲージ動画と同じ理由(定期更新のたびにsrcを再設定すると
-      // 読み込みが中断され続ける)で、このガードの内側に入れる
-      applyNumberColumn(clip);
     }
     renderSelector();
   }
-
-  function applyNumberColumn(clip) {
-    // Issue #428: クリップが存在し、かつトグルで表示中のときだけ列を出して読み込む。
-    // 非表示のままsrcを設定すると、見えていない動画のダウンロードが毎回走るため
-    resetNumberVideoControls();
-    if (clip.has_number_clip && numberColumnShown) {
-      numberColumn.style.display = "";
-      numberVideo.src = "/rank-entry/number-clips/" + clip.match_id + ".mp4?t=" + Date.now();
-      if (unifiedSeekMode) {
-        // Issue #448: 非表示の間はダウンロードを避けるため位置を合わせずにいた分、
-        // 表示した瞬間にゲージ動画の現在位置(割合)へ合わせておく。読み込み前は
-        // durationが定まらずcurrentTimeを設定しても効果が無いため、
-        // loadedmetadataを待って一度だけ行う
-        const fraction = currentGaugeFraction();
-        numberVideo.addEventListener(
-          "loadedmetadata",
-          function () {
-            if (isFinite(numberVideo.duration) && numberVideo.duration > 0) {
-              numberVideo.currentTime = fraction * numberVideo.duration;
-            }
-          },
-          { once: true }
-        );
-      }
-    } else {
-      // 列ごと隠す(見出しと動画だけ隠すと、空の再生コントロールが残るため)
-      numberColumn.style.display = "none";
-      numberVideo.removeAttribute("src");
-    }
-    updateNumberToggle(clip.has_number_clip);
-  }
-
-  function updateNumberToggle(hasNumberClip) {
-    // Issue #428: この機能の導入前に録画された試合はクリップ自体が無いため、
-    // 押しても何も起きないボタンを出さない
-    numberToggle.style.display = hasNumberClip ? "" : "none";
-    numberToggle.textContent = numberColumnShown ? "ランク数値拡大を隠す" : "ランク数値拡大を表示";
-    numberToggle.setAttribute("aria-expanded", numberColumnShown ? "true" : "false");
-  }
-
-  numberToggle.addEventListener("click", function () {
-    numberColumnShown = !numberColumnShown;
-    const clip = findClip(selectedMatchId);
-    if (clip) {
-      applyNumberColumn(clip);
-    }
-  });
 
   function refresh() {
     fetch("/api/rank-entry-clips")
@@ -813,10 +722,6 @@
           gaugeVideo.removeAttribute("src");
           gaugeLabel.style.display = "none";
           gaugeVideoWrap.style.display = "none";
-          resetNumberVideoControls();
-          numberVideo.removeAttribute("src");
-          numberColumn.style.display = "none";
-          updateNumberToggle(false);
           selectedMatchId = null;
           return;
         }
