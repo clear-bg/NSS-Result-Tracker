@@ -534,6 +534,13 @@ def test_default_max_clips_is_50():
     assert rank_entry_clips.DEFAULT_MAX_CLIPS == 50
 
 
+def test_max_duration_is_60_seconds():
+    """Issue #476: 結果画面に長く留まると暗転が遅れ、18秒ではランク変動の途中で
+    クリップが切れていたため60秒に戻した(実配信で上限に達した7試合は16.0〜107.2秒)。
+    """
+    assert rank_entry_clips.MAX_DURATION_SECONDS == 60.0
+
+
 def test_rank_number_clip_roi_contains_both_badge_sizes():
     """Issue #417: ランク数値拡大クリップのROIは、コンパクト表示・拡大表示の
     どちらの数値ROIも余裕を持って包む必要がある(片方でも欠けると読めなくなる)。
