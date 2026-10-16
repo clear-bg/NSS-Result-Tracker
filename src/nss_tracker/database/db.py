@@ -181,6 +181,11 @@ CREATE TABLE IF NOT EXISTS matches (
                                      -- Δ=0(ランク増減ゼロ)になる2つの理由のうち「味方が抜けて3人」を
                                      -- 「合計ランク差が大きい」と区別するために使う(rank_warnings.pyの
                                      -- ルールJの抑止、およびランク増減分布の集計除外)
+    excluded INTEGER NOT NULL DEFAULT 0, -- 1=記録対象外(試合そのものが無かったものとして扱う)。Issue #479。
+                                     -- レッグバンドモード等、いつもの記録に含めたくない試合を
+                                     -- /rank-entry・/health-checkから人間が立てる。勝率・ランク
+                                     -- 推移・rank_beforeチェーン等の集計からはすべて除外するが、
+                                     -- 行自体とgoalsは削除せず残す(set_match_excluded参照)
     created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601, JST)
     updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601, JST)
 );
@@ -468,6 +473,22 @@ def _migrate_matches_add_player_shortage(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_matches_add_excluded(conn: sqlite3.Connection) -> None:
+    """Issue #479: 既存DBファイルのmatchesテーブルにexcluded列を追加する。
+
+    DEFAULT付きのNOT NULL列追加のため、ALTER TABLE ADD COLUMNだけで済む。既存行は
+    全て0(記録対象)になり、触らなければ従来と全く同じ挙動になる。新規DBでは
+    _SCHEMA自体に既にexcluded列を含むため、この関数は無害にreturnする。
+    """
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    if any(c["name"] == "excluded" for c in columns):
+        return
+
+    logger.info("matchesテーブルにexcluded列を追加しています(既存行は全て0=記録対象扱い)")
+    conn.execute("ALTER TABLE matches ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+
+
 def _repair_missing_rank_before(conn: sqlite3.Connection) -> None:
     """rank_stakedが1なのにrank_beforeがNULLのままの行を、直前の「ランクを賭けた
     試合」の確定済みrank_afterで埋める(Issue #446、_migrate_matches_add_rank_stakedから
@@ -526,6 +547,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     _migrate_matches_add_league_change_label_detected(conn)
     _migrate_matches_add_rank_staked(conn)
     _migrate_matches_add_player_shortage(conn)
+    _migrate_matches_add_excluded(conn)
     logger.info("DBに接続しました: %s", Path(db_path).resolve())
     return conn
 
@@ -593,7 +615,9 @@ def _maybe_correct_previous_match_rank_after(conn: sqlite3.Connection, current_r
         return
     if current_rank_before is None:
         return
-    row = conn.execute("SELECT id, rank_after FROM matches ORDER BY id DESC LIMIT 1").fetchone()
+    row = conn.execute(
+        "SELECT id, rank_after FROM matches WHERE excluded = 0 ORDER BY id DESC LIMIT 1"
+    ).fetchone()
     if row is None:
         return
     previous_rank_after = row["rank_after"]
@@ -637,7 +661,7 @@ def _warn_if_skipped_match_had_league_change_label(
     """
     query = (
         "SELECT id, league_change_label_detected FROM matches "
-        "WHERE id > ? AND rank_staked = 0 AND league_change_label_detected IS NOT NULL"
+        "WHERE id > ? AND rank_staked = 0 AND excluded = 0 AND league_change_label_detected IS NOT NULL"
     )
     params: tuple = (after_id,)
     if before_id is not None:
@@ -691,7 +715,7 @@ def _resolve_rank_before(
     if not rank_staked:
         return None
     row = conn.execute(
-        "SELECT id, rank_after FROM matches WHERE rank_staked = 1 ORDER BY id DESC LIMIT 1"
+        "SELECT id, rank_after FROM matches WHERE rank_staked = 1 AND excluded = 0 ORDER BY id DESC LIMIT 1"
     ).fetchone()
     if row is None:
         return _round_rank(rank_before_ocr) if rank_before_ocr is not None else None
@@ -718,7 +742,7 @@ def _backfill_next_rank_before(conn: sqlite3.Connection, confirmed_match_id: int
     while True:
         row = conn.execute(
             "SELECT id, rank_before, rank_after FROM matches "
-            "WHERE id > ? AND rank_staked = 1 ORDER BY id ASC LIMIT 1",
+            "WHERE id > ? AND rank_staked = 1 AND excluded = 0 ORDER BY id ASC LIMIT 1",
             (after_id,),
         ).fetchone()
         if row is None or row["rank_before"] is not None:
@@ -761,7 +785,7 @@ def _force_overwrite_next_rank_before(conn: sqlite3.Connection, corrected_match_
     """
     row = conn.execute(
         "SELECT id, rank_before, rank_after FROM matches "
-        "WHERE id > ? AND rank_staked = 1 ORDER BY id ASC LIMIT 1",
+        "WHERE id > ? AND rank_staked = 1 AND excluded = 0 ORDER BY id ASC LIMIT 1",
         (corrected_match_id,),
     ).fetchone()
     if row is None:
@@ -902,10 +926,12 @@ def save_manual_rank_after(conn: sqlite3.Connection, match_id: int, rank_after: 
     既に確定済みの場合に連動が効かない)。
     """
     row = conn.execute(
-        "SELECT rank_before, rank_staked, rank_after FROM matches WHERE id = ?", (match_id,)
+        "SELECT rank_before, rank_staked, rank_after, excluded FROM matches WHERE id = ?", (match_id,)
     ).fetchone()
     if row is None:
         raise ValueError(f"matches.id={match_id} が見つかりません")
+    if row["excluded"]:
+        raise ValueError(f"matches.id={match_id} は記録対象外の試合です(先に対象外を解除してください)")
     if not row["rank_staked"]:
         raise ValueError(f"matches.id={match_id} はランクを賭けていない試合です(rank_stakedが0)")
     rank_before = row["rank_before"]
@@ -1042,6 +1068,98 @@ def delete_match(conn: sqlite3.Connection, match_id: int) -> None:
     logger.info("matches.id=%d を削除しました", match_id)
 
 
+def _relink_rank_before(conn: sqlite3.Connection, target_id: int) -> None:
+    """target_id(ランクを賭けた・記録対象の試合)のrank_beforeを、直前の「ランクを
+    賭けた・記録対象の試合」のrank_afterから張り直す(Issue #479)。
+
+    記録対象外の切り替えでチェーンの並びが変わったときに使う。値の決め方は
+    _resolve_rank_beforeと同じ(直前が無ければ自身のrank_before_ocr、直前が未確定
+    ならNULL)。ただしtarget自身のrank_afterが確定済みの場合は、rank_beforeを
+    NULLへ戻すことはしない(確定済みの試合のΔが計算できなくなるため)。値を
+    張り替える場合は_force_overwrite_next_rank_beforeと同じくWARNINGを出す。
+    """
+    target = conn.execute(
+        "SELECT id, rank_before, rank_before_ocr, rank_after FROM matches WHERE id = ?", (target_id,)
+    ).fetchone()
+    previous = conn.execute(
+        "SELECT id, rank_after FROM matches WHERE id < ? AND rank_staked = 1 AND excluded = 0 "
+        "ORDER BY id DESC LIMIT 1",
+        (target_id,),
+    ).fetchone()
+    if previous is None:
+        new_rank_before = _round_rank(target["rank_before_ocr"])
+    else:
+        new_rank_before = previous["rank_after"]
+    if new_rank_before == target["rank_before"]:
+        return
+    if new_rank_before is None and target["rank_after"] is not None:
+        logger.warning(
+            "matches.id=%d は直前の試合(id=%s)が未確定のためrank_beforeを張り直せませんでした"
+            "(rank_afterが確定済み(%s)のため、現在のrank_before=%sのまま残します。要手動確認)",
+            target_id,
+            previous["id"] if previous is not None else None,
+            target["rank_after"],
+            target["rank_before"],
+        )
+        return
+    conn.execute(
+        "UPDATE matches SET rank_before = ?, updated_at = ? WHERE id = ?",
+        (new_rank_before, now_jst().isoformat(), target_id),
+    )
+    conn.commit()
+    logger.info(
+        "matches.id=%d のrank_beforeを、記録対象外の切り替えに伴い%sから%sへ張り直しました",
+        target_id,
+        target["rank_before"],
+        new_rank_before,
+    )
+    if target["rank_after"] is not None:
+        logger.warning(
+            "matches.id=%d は既にrank_afterが確定済み(%s)のままrank_beforeのみ張り直したため、"
+            "league_changedの判定基準が古いrank_beforeのままになっている可能性があります(要手動確認)",
+            target_id,
+            target["rank_after"],
+        )
+
+
+def set_match_excluded(conn: sqlite3.Connection, match_id: int, excluded: bool) -> None:
+    """試合を記録対象外にする/対象外を解除する(Issue #479)。
+
+    記録対象外の試合は**試合そのものが無かったもの**として扱う。勝率・直近試合結果
+    ログ・ランク推移グラフ・ランク増減分布・手動入力待ちの件数・rank_beforeチェーン
+    など、matchesを集計・参照する箇所はすべてexcluded = 0で絞り込む。一方、行自体と
+    goals(得点者・アシスト)は削除せずそのまま残す(ユーザー要望。delete_match()との
+    違いはここ)。
+
+    切り替えるとrank_beforeチェーンの並びが変わるため、その場で張り直す:
+
+    - 対象外にした場合: 直後の「ランクを賭けた・記録対象の試合」のrank_beforeを、
+      この試合を飛ばした直前の試合のrank_afterで張り直す(レッグバンドモード等で
+      未確定のまま止まっていたチェーンがこれで流れる)
+    - 対象外を解除した場合: この試合自身(ランクを賭けた試合なら)と、その直後の
+      試合のrank_beforeを、この試合を挟んだ並びで張り直す
+    """
+    row = conn.execute("SELECT id, excluded, rank_staked FROM matches WHERE id = ?", (match_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"matches.id={match_id} が見つかりません")
+    if bool(row["excluded"]) == excluded:
+        return
+    conn.execute(
+        "UPDATE matches SET excluded = ?, updated_at = ? WHERE id = ?",
+        (1 if excluded else 0, now_jst().isoformat(), match_id),
+    )
+    conn.commit()
+    logger.info("matches.id=%d を%sしました", match_id, "記録対象外に" if excluded else "記録対象に戻")
+    if not excluded and row["rank_staked"]:
+        _relink_rank_before(conn, match_id)
+    following = conn.execute(
+        "SELECT id FROM matches WHERE id > ? AND rank_staked = 1 AND excluded = 0 ORDER BY id ASC LIMIT 1",
+        (match_id,),
+    ).fetchone()
+    if following is not None:
+        _relink_rank_before(conn, following["id"])
+
+
 def fetch_oldest_pending_manual_rank_match(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
     """rank_after未確定(手動入力待ち)の試合のうち、最も古い1件を返す(Issue #306)。
 
@@ -1057,7 +1175,8 @@ def fetch_oldest_pending_manual_rank_match(conn: sqlite3.Connection) -> Optional
     呼び出し側(web/server.py)でrank_beforeがNoneの場合の表示を用意している。
     """
     return conn.execute(
-        "SELECT * FROM matches WHERE rank_staked = 1 AND rank_after IS NULL ORDER BY id ASC LIMIT 1"
+        "SELECT * FROM matches WHERE rank_staked = 1 AND excluded = 0 AND rank_after IS NULL "
+        "ORDER BY id ASC LIMIT 1"
     ).fetchone()
 
 
@@ -1068,7 +1187,7 @@ def fetch_pending_manual_rank_match_count(conn: sqlite3.Connection) -> int:
     (fetch_oldest_pending_manual_rank_matchと同じ絞り込み条件)。
     """
     row = conn.execute(
-        "SELECT COUNT(*) AS count FROM matches WHERE rank_staked = 1 AND rank_after IS NULL"
+        "SELECT COUNT(*) AS count FROM matches WHERE rank_staked = 1 AND excluded = 0 AND rank_after IS NULL"
     ).fetchone()
     return row["count"]
 
@@ -1102,9 +1221,11 @@ def fetch_recent_matches(
     ログ(/overlay/match-log)が、配信をまたいで野良と専用部屋の結果を混ぜて表示して
     しまうのを防ぐために使う(絞り込み方の詳細はweb/server.pyの_fetch_match_log参照)。
     いずれも省略時は絞り込まない。
+
+    Issue #479: 記録対象外(excluded)の試合は常に含めない。
     """
     query = "SELECT * FROM matches"
-    conditions = []
+    conditions = ["excluded = 0"]
     params: list = []
     if room_type is not None:
         conditions.append("room_type = ?")
@@ -1112,8 +1233,7 @@ def fetch_recent_matches(
     if session_id is not None:
         conditions.append("session_id = ?")
         params.append(session_id)
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
+    query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY id DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, tuple(params)).fetchall()
@@ -1129,7 +1249,7 @@ def fetch_confirmed_rank_matches(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     明示するために残している。
     """
     return conn.execute(
-        "SELECT * FROM matches WHERE rank_after IS NOT NULL AND room_type = 'random' ORDER BY id"
+        "SELECT * FROM matches WHERE rank_after IS NOT NULL AND room_type = 'random' AND excluded = 0 ORDER BY id"
     ).fetchall()
 
 
@@ -1138,7 +1258,9 @@ def fetch_latest_rank_after(conn: sqlite3.Connection) -> Optional[float]:
 
     配信セッションで絞り込まない全期間のうち最新の1件。該当が1件も無ければNoneを返す。
     """
-    row = conn.execute("SELECT rank_after FROM matches WHERE rank_after IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+    row = conn.execute(
+        "SELECT rank_after FROM matches WHERE rank_after IS NOT NULL AND excluded = 0 ORDER BY id DESC LIMIT 1"
+    ).fetchone()
     return row["rank_after"] if row is not None else None
 
 
@@ -1148,16 +1270,18 @@ def fetch_max_rank_after(conn: sqlite3.Connection) -> Optional[float]:
     RANK_GRAPH_MATCH_LIMITによるグラフの表示範囲とは独立に、DB全体から集計する
     (ユーザー確認済み)。該当が1件も無ければNoneを返す。
     """
-    row = conn.execute("SELECT MAX(rank_after) AS max_rank FROM matches").fetchone()
+    row = conn.execute("SELECT MAX(rank_after) AS max_rank FROM matches WHERE excluded = 0").fetchone()
     return row["max_rank"]
 
 
 def fetch_matches_for_session(conn: sqlite3.Connection, session_id: int) -> list[sqlite3.Row]:
     """指定した配信セッションに属する試合を記録順(id昇順)で取得する。
 
-    Issue #101(勝敗別ランク増減分布)向け。
+    Issue #101(勝敗別ランク増減分布)向け。記録対象外(excluded、Issue #479)の試合は含めない。
     """
-    return conn.execute("SELECT * FROM matches WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()
+    return conn.execute(
+        "SELECT * FROM matches WHERE session_id = ? AND excluded = 0 ORDER BY id", (session_id,)
+    ).fetchall()
 
 
 def save_goal(
@@ -1291,8 +1415,12 @@ def fetch_next_match(conn: sqlite3.Connection, match_id: int) -> Optional[sqlite
     ランクを賭けたかどうかで絞り込まないのは、次の試合が「ランクを賭けない試合」
     だった場合もVS画面自体は表示され、自分のバッジが読めていれば照合に使えるため
     (読めていなければ呼び出し元がルールごとスキップする)。
+
+    Issue #479: 記録対象外(excluded)の試合は飛ばす(試合そのものが無かったものとして扱うため)。
     """
-    return conn.execute("SELECT * FROM matches WHERE id > ? ORDER BY id ASC LIMIT 1", (match_id,)).fetchone()
+    return conn.execute(
+        "SELECT * FROM matches WHERE id > ? AND excluded = 0 ORDER BY id ASC LIMIT 1", (match_id,)
+    ).fetchone()
 
 
 def fetch_rank_warning_acks(conn: sqlite3.Connection, match_id: int) -> frozenset[str]:
