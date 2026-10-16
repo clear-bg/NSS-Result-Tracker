@@ -403,3 +403,22 @@ h1 {
     font-size: 13px;
     padding: 16px 8px;
 }
+
+/* Issue #479: 記録対象外にした試合。一覧には残すが、集計に含めないことが分かるよう薄く出す */
+.hc-match-excluded .hc-time,
+.hc-match-excluded .hc-result,
+.hc-match-excluded .hc-ranks,
+.hc-match-excluded .hc-delta {
+    opacity: 0.45;
+}
+
+.hc-excluded-tag {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: #e4e4e4;
+    color: #555;
+    white-space: nowrap;
+    justify-self: start;
+}
+

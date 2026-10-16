@@ -205,6 +205,7 @@ from nss_tracker.config import (
 from nss_tracker.database.db import (
     connect as _connect_and_migrate,
     delete_match,
+    set_match_excluded,
     delete_rank_warning_ack,
     fetch_all_matches,
     fetch_all_sessions,
@@ -283,12 +284,14 @@ def _fetch_matches_count(db_path: Path, session_id: Optional[int] = None) -> dic
             "SUM(CASE WHEN result = 'draw' THEN 1 ELSE 0 END) AS draw "
             "FROM matches"
         )
+        # Issue #479: 記録対象外の試合は試合そのものが無かったものとして数えない
+        query += " WHERE excluded = 0"
         params: tuple = ()
         if session_id is not None:
-            query += " WHERE session_id = ?"
+            query += " AND session_id = ?"
             params = (session_id,)
         else:
-            query += " WHERE room_type = 'random'"
+            query += " AND room_type = 'random'"
         row = conn.execute(query, params).fetchone()
     finally:
         conn.close()
@@ -1193,7 +1196,7 @@ def _fetch_rank_delta_distribution(db_path: Path) -> dict:
     for row in rows:
         if row["rank_before"] is None or row["rank_after"] is None:
             continue
-        if row["player_shortage"]:
+        if row["player_shortage"] or row["excluded"]:
             continue
         delta = row["rank_after"] - row["rank_before"]
         if row["result"] == "win":
@@ -1639,6 +1642,8 @@ def _build_rank_entry_clip_info(
         # Issue #462: 味方が抜けて人数差があった試合か(手動フラグ)。
         # 入力フォームのチェックボックスの初期状態に使う
         "player_shortage": bool(row["player_shortage"]),
+        # Issue #479: 記録対象外(試合そのものが無かったものとして扱う)にした試合か
+        "excluded": bool(row["excluded"]),
         # Issue #407: 入力値の矛盾の警告(rank_afterが未確定の試合では常に空)
         "warnings": warnings or [],
     }
@@ -1685,7 +1690,8 @@ def _build_rank_entry_context(db_path: Path) -> dict:
                     len(clips),
                     has_clip=True,
                     has_gauge_clip=match_id in gauge_clip_ids,
-                    warnings=_build_rank_warnings(conn, row),
+                    # Issue #479: 記録対象外の試合は入力不要なので警告も出さない
+                    warnings=[] if row["excluded"] else _build_rank_warnings(conn, row),
                 )
             )
         if not clips:
@@ -1734,7 +1740,11 @@ def _build_health_check_context(db_path: Path) -> dict:
             # サッカー以外の試合を誤って記録した可能性を検出する(match_warnings)。
             # rank_before/rank_afterがNoneの試合(ランクを賭けない試合)でも判定する
             # 必要があるため、_build_rank_warningsの早期returnとは独立して呼ぶ
-            warnings = _build_rank_warnings(conn, row, include_next_badge=True) + _build_match_warnings(conn, row)
+            # Issue #479: 記録対象外の試合は試合そのものが無かったものとして扱うため判定しない
+            if row["excluded"]:
+                warnings = []
+            else:
+                warnings = _build_rank_warnings(conn, row, include_next_badge=True) + _build_match_warnings(conn, row)
             if any(not warning["acknowledged"] for warning in warnings):
                 warned_count += 1
             rank_before = row["rank_before"]
@@ -1752,6 +1762,8 @@ def _build_health_check_context(db_path: Path) -> dict:
                     # Issue #462: 味方が抜けて人数差があった試合か(手動フラグ)。
                     # result/room_typeと同じく、ランクを賭けていない試合も含め常に編集可能
                     "player_shortage": bool(row["player_shortage"]),
+                    # Issue #479: 記録対象外。result/room_typeと同じく常に編集可能
+                    "excluded": bool(row["excluded"]),
                     "rank_before": rank_before,
                     "rank_after": rank_after,
                     "delta": (
@@ -1760,7 +1772,8 @@ def _build_health_check_context(db_path: Path) -> dict:
                     "league_changed": row["league_changed"],
                     # ランクを賭けていない試合(rank_stakedが0)は修正できない
                     # (save_manual_rank_afterがValueErrorを送出する、Issue #446)
-                    "editable": bool(row["rank_staked"]) and rank_before is not None,
+                    # Issue #479: 記録対象外の試合もsave_manual_rank_afterが拒否する
+                    "editable": bool(row["rank_staked"]) and not row["excluded"] and rank_before is not None,
                     "has_clip": row["id"] in clip_ids,
                     "warnings": warnings,
                 }
@@ -2005,6 +2018,31 @@ def create_app(db_path: Path) -> FastAPI:
         _logger.info("手動ランク入力(/rank-entry)からrank_afterを記録しました: match_id=%d rank_after=%s", match_id, rank_after_value)
         return RedirectResponse(f"/rank-entry?match_id={match_id}&status=saved", status_code=303)
 
+    @app.post("/rank-entry/exclude")
+    def rank_entry_exclude(match_id: int = Form(...), excluded: Optional[str] = Form(None)):
+        """試合を記録対象外にする/対象外を解除する(Issue #479)。
+
+        レッグバンドモード等、いつもの記録に含めたくない試合を、DBを手で触らずに
+        外せるようにする。ランク入力とは別のフォームにしている(対象外にする試合は
+        ランクを入力しないため)。未チェックのcheckboxは送信されないのでNoneで届く。
+        """
+        excluded_value = excluded is not None
+        conn = _connect(db_path)
+        try:
+            set_match_excluded(conn, match_id, excluded_value)
+        except ValueError as exc:
+            _logger.warning("手動ランク入力(/rank-entry)からの記録対象外の切り替えが拒否されました: %s", exc)
+            return RedirectResponse(f"/rank-entry?match_id={match_id}&error={quote(str(exc))}", status_code=303)
+        finally:
+            conn.close()
+        _logger.info(
+            "手動ランク入力(/rank-entry)から記録対象外を切り替えました: match_id=%d excluded=%s",
+            match_id,
+            excluded_value,
+        )
+        status = "excluded" if excluded_value else "included"
+        return RedirectResponse(f"/rank-entry?match_id={match_id}&status={status}", status_code=303)
+
     @app.get("/health-check")
     def health_check(request: Request, status: Optional[str] = None, error: Optional[str] = None):
         """DB全体のランク記録の矛盾を一覧表示する(Issue #408)。
@@ -2078,6 +2116,7 @@ def create_app(db_path: Path) -> FastAPI:
         result: str = Form(...),
         room_type: str = Form(...),
         player_shortage: Optional[str] = Form(None),
+        excluded: Optional[str] = Form(None),
     ):
         """一覧から直接result/room_type/player_shortageを修正する(Issue #442、#462)。
 
@@ -2088,13 +2127,19 @@ def create_app(db_path: Path) -> FastAPI:
         Issue #462: 「味方が抜けて人数差あり」を追加した。クリップが残っていない
         過去の試合もここから立てられる(`/rank-entry`はクリップのある試合しか開けない)。
         未チェックのcheckboxは送信されないのでNoneで届く。
+
+        Issue #479: 「記録対象外」も同じフォームで切り替える。クリップの無い
+        ランクを賭けない試合(レッグバンドモードの試合の一部等)はここからしか
+        立てられない。rank_beforeチェーンの張り直しは`db.set_match_excluded()`が担う。
         """
         shortage_value = player_shortage is not None
+        excluded_value = excluded is not None
         conn = _connect(db_path)
         try:
             update_match_fields(
                 conn, match_id, result=result, room_type=room_type, player_shortage=shortage_value
             )
+            set_match_excluded(conn, match_id, excluded_value)
         except ValueError as exc:
             _logger.warning("健全性チェック(/health-check)からの試合修正が拒否されました: %s", exc)
             return RedirectResponse(f"/health-check?error={quote(str(exc))}", status_code=303)
@@ -2102,11 +2147,12 @@ def create_app(db_path: Path) -> FastAPI:
             conn.close()
         _logger.info(
             "健全性チェック(/health-check)から試合を修正しました: "
-            "match_id=%d result=%s room_type=%s player_shortage=%s",
+            "match_id=%d result=%s room_type=%s player_shortage=%s excluded=%s",
             match_id,
             result,
             room_type,
             shortage_value,
+            excluded_value,
         )
         return RedirectResponse("/health-check?status=match-updated", status_code=303)
 

@@ -580,7 +580,8 @@ class RankEntryClipRecorder:
             for path in clip_files[:excess]:
                 match_id = int(path.stem)
                 row = db.fetch_match(conn, match_id)
-                if row is not None and row["rank_staked"] and row["rank_after"] is None:
+                # Issue #479: 記録対象外にした試合は入力する必要が無いため、未確定でも削除してよい
+                if row is not None and row["rank_staked"] and not row["excluded"] and row["rank_after"] is None:
                     # Issue #389: rank_beforeチェーンを塞いでいる可能性がある未確定
                     # 試合のクリップは、max_clips件を超えていても削除せず残す
                     pending_kept += 1

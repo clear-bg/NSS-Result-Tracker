@@ -4922,3 +4922,69 @@ def test_admin_post_without_log_level_keeps_current_level(admin_client: TestClie
 
     assert package_logger.level == logging.DEBUG
     assert os.environ["NSS_TRACKER_LOG_LEVEL"] == "DEBUG"
+
+
+def test_rank_entry_exclude_post_toggles_excluded(tmp_path: Path):
+    """Issue #479: /rank-entryのチェックボックスから記録対象外を切り替えられる。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(
+        conn,
+        MatchResult(result="win", rank_before=3.81, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.post(
+        "/rank-entry/exclude", data={"match_id": str(match_id), "excluded": "on"}, follow_redirects=False
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/rank-entry?match_id={match_id}&status=excluded"
+    conn = db.connect(db_path)
+    assert db.fetch_match(conn, match_id)["excluded"] == 1
+    assert db.fetch_pending_manual_rank_match_count(conn) == 0
+    conn.close()
+
+    response = client.post("/rank-entry/exclude", data={"match_id": str(match_id)}, follow_redirects=False)
+
+    assert response.headers["location"] == f"/rank-entry?match_id={match_id}&status=included"
+    conn = db.connect(db_path)
+    assert db.fetch_match(conn, match_id)["excluded"] == 0
+    conn.close()
+
+
+def test_matches_count_ignores_excluded_matches(tmp_path: Path):
+    """Issue #479: 記録対象外の試合は勝率の集計(累計・今回とも)に数えない。"""
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    session_id = db.create_session(conn)
+    kept = _save_unranked_match(conn, "win", session_id=session_id)
+    excluded = _save_unranked_match(conn, "lose", session_id=session_id)
+    db.set_match_excluded(conn, excluded, True)
+    conn.close()
+    assert kept
+
+    assert server_module._fetch_matches_count(db_path) == {"total": 1, "win": 1, "lose": 0, "draw": 0}
+    assert server_module._fetch_matches_count(db_path, session_id=session_id)["total"] == 1
+
+
+def test_health_check_post_match_sets_excluded(tmp_path: Path, monkeypatch):
+    """Issue #479: クリップの無い試合も一覧から記録対象外にでき、警告判定の対象から外れる。"""
+    client, db_path = _setup_health_check(tmp_path, monkeypatch)
+    conn = db.connect(db_path)
+    match_id = db.save_match_result(conn, _unranked_match())
+    conn.close()
+
+    client.post(
+        "/health-check/match",
+        data={"match_id": match_id, "result": "win", "room_type": "random", "excluded": "on"},
+    )
+
+    match = _health_check_matches(client)[match_id]
+    assert match["excluded"] is True
+    assert match["warnings"] == []
+    assert match["editable"] is False
+
+    client.post("/health-check/match", data={"match_id": match_id, "result": "win", "room_type": "random"})
+    assert _health_check_matches(client)[match_id]["excluded"] is False
