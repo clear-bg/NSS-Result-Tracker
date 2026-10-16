@@ -11,6 +11,12 @@
 {% if status == "saved" %}
 <p class="rank-entry-message rank-entry-message-success">記録しました。</p>
 {% endif %}
+{% if status == "excluded" %}
+<p class="rank-entry-message rank-entry-message-success">この試合を記録対象外にしました。</p>
+{% endif %}
+{% if status == "included" %}
+<p class="rank-entry-message rank-entry-message-success">この試合を記録対象に戻しました。</p>
+{% endif %}
 {% if error %}
 <p class="rank-entry-message rank-entry-message-error">{{ error }}</p>
 {% endif %}
@@ -367,7 +373,49 @@
     left.appendChild(details);
   }
 
+  // Issue #479: 記録対象外(試合そのものが無かったものとして扱う)の切り替え。
+  // ランク入力フォームとは別のフォームにする(対象外にする試合はランクを入力しない
+  // ため)。誤操作で勝率等から試合が消えないよう、切り替える前に確認を挟む
+  function appendExcludeForm(clip) {
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = "/rank-entry/exclude";
+
+    const hidden = document.createElement("input");
+    hidden.type = "hidden";
+    hidden.name = "match_id";
+    hidden.value = clip.match_id;
+    form.appendChild(hidden);
+
+    const label = document.createElement("label");
+    label.className = "rank-entry-exclude";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.name = "excluded";
+    checkbox.checked = !!clip.excluded;
+    checkbox.addEventListener("change", function () {
+      userSelected = true;
+      const message = checkbox.checked
+        ? "この試合を記録対象外にしますか?\n(勝率・ランク推移などから外れます。得点者の記録は残ります)"
+        : "この試合を記録対象に戻しますか?";
+      if (!window.confirm(message)) {
+        checkbox.checked = !checkbox.checked;
+        return;
+      }
+      form.submit();
+    });
+    label.appendChild(checkbox);
+    label.appendChild(document.createTextNode("記録対象外(レッグバンド等)"));
+    form.appendChild(label);
+    left.appendChild(form);
+  }
+
   function renderLeftPanel(clip) {
+    renderLeftPanelBody(clip);
+    appendExcludeForm(clip);
+  }
+
+  function renderLeftPanelBody(clip) {
     left.innerHTML = "";
 
     const info = document.createElement("div");
@@ -382,6 +430,14 @@
       addRow(info, "自動検知(参考)", clip.rank_after_ocr, "rank-entry-match-row-hint");
     }
     left.appendChild(info);
+
+    if (clip.excluded) {
+      const excludedNote = document.createElement("p");
+      excludedNote.className = "rank-entry-empty";
+      excludedNote.textContent = "この試合は記録対象外です。勝率・ランク推移などには含めません(得点者の記録は残っています)。";
+      left.appendChild(excludedNote);
+      return;
+    }
 
     renderWarnings(clip);
 
@@ -638,20 +694,29 @@
 
       const row = document.createElement("button");
       row.type = "button";
-      row.className = "rank-entry-clip-row" + (clip.match_id === selectedMatchId ? " rank-entry-clip-row-active" : "");
+      row.className = "rank-entry-clip-row" + (clip.match_id === selectedMatchId ? " rank-entry-clip-row-active" : "")
+        + (clip.excluded ? " rank-entry-clip-row-excluded" : "");
 
       const marker = appendCell(row, "rank-entry-clip-marker", hasWarning ? "⚠" : "");
       if (hasWarning) {
         marker.classList.add("rank-entry-clip-marker-warning");
       } else {
         const dot = document.createElement("span");
-        dot.className = "rank-entry-clip-status-dot " + (confirmed ? "rank-entry-clip-status-dot-confirmed" : "rank-entry-clip-status-dot-unconfirmed");
+        let dotClass = confirmed ? "rank-entry-clip-status-dot-confirmed" : "rank-entry-clip-status-dot-unconfirmed";
+        if (clip.excluded) {
+          dotClass = "rank-entry-clip-status-dot-excluded";
+        }
+        dot.className = "rank-entry-clip-status-dot " + dotClass;
         marker.appendChild(dot);
       }
 
       appendCell(row, "rank-entry-clip-time", clip.detected_at_text);
       appendCell(row, "rank-entry-clip-result", clip.result_text);
-      appendCell(row, "rank-entry-clip-rank", confirmed ? String(clip.rank_after) : "未入力");
+      let rankText = confirmed ? String(clip.rank_after) : "未入力";
+      if (clip.excluded) {
+        rankText = "対象外";
+      }
+      appendCell(row, "rank-entry-clip-rank", rankText);
       if (index === 0) {
         appendCell(row, "rank-entry-clip-latest", clip.recency_label);
       }
