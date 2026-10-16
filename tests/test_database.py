@@ -30,6 +30,7 @@ from nss_tracker.database.db import (
     save_rank_warning_ack,
     save_vs_rank_snapshot,
     save_vs_slot_ranks,
+    set_match_excluded,
     update_match_fields,
 )
 from nss_tracker.detection.vs_rank import SlotRank
@@ -2876,3 +2877,159 @@ def test_connect_rank_staked_migration_is_idempotent(tmp_path):
     connect(db_path).close()
 
     connect(db_path).close()  # 2回目もエラーにならない
+
+
+def _ranked_match(conn, rank_before_ocr: float, result: str = "win", session_id=None) -> int:
+    return save_match_result(
+        conn,
+        MatchResult(
+            result=result,
+            rank_before=rank_before_ocr,
+            rank_after=None,
+            league_changed=None,
+            detected_at=datetime.now(timezone.utc),
+        ),
+        session_id=session_id,
+    )
+
+
+def test_connect_migrates_legacy_matches_without_excluded(tmp_path):
+    """Issue #479: excluded列が無い移行前のDBでも、既存行は全て0(記録対象)扱いになる。"""
+    db_path = tmp_path / "legacy_excluded.db"
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.executescript(
+        """
+        CREATE TABLE matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            result TEXT NOT NULL,
+            rank_before REAL,
+            rank_after REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO matches (detected_at, result, created_at, updated_at)
+            VALUES ('2026-07-01T00:00:00+09:00', 'win', '2026-07-01T00:00:00+09:00', '2026-07-01T00:00:00+09:00');
+        """
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    conn = connect(db_path)
+
+    rows = fetch_all_matches(conn)
+    assert rows[0]["excluded"] == 0
+    conn.close()
+    connect(db_path).close()  # 2回目もエラーにならない
+
+
+def test_set_match_excluded_relinks_chain_past_pending_match():
+    """Issue #479: レッグバンドモード等で未確定のまま止まっていた試合を対象外にすると、
+    後続の試合のrank_beforeが、その試合を飛ばした直前の確定値で張り直される。"""
+    conn = connect(":memory:")
+    first = _ranked_match(conn, 45.0)
+    save_manual_rank_after(conn, first, 45.2)
+    pending = _ranked_match(conn, 3.8)  # レッグバンドモードの試合(未確定のまま)
+    following = _ranked_match(conn, 45.2)
+    assert fetch_match(conn, pending)["rank_before"] == 45.2
+    assert fetch_match(conn, following)["rank_before"] is None
+    assert fetch_pending_manual_rank_match_count(conn) == 2
+
+    set_match_excluded(conn, pending, True)
+
+    assert fetch_match(conn, pending)["excluded"] == 1
+    assert fetch_match(conn, following)["rank_before"] == 45.2
+    assert fetch_pending_manual_rank_match_count(conn) == 1
+    assert fetch_oldest_pending_manual_rank_match(conn)["id"] == following
+
+
+def test_set_match_excluded_skips_consecutive_excluded_matches():
+    conn = connect(":memory:")
+    first = _ranked_match(conn, 45.0)
+    save_manual_rank_after(conn, first, 45.2)
+    excluded_ids = [_ranked_match(conn, 3.8), _ranked_match(conn, 3.9)]
+    following = _ranked_match(conn, 45.2)
+
+    for match_id in excluded_ids:
+        set_match_excluded(conn, match_id, True)
+
+    assert fetch_match(conn, following)["rank_before"] == 45.2
+
+
+def test_set_match_excluded_relinks_from_confirmed_excluded_match():
+    """確定済みの試合を対象外にした場合も、後続のrank_beforeはその試合の値を引き継がない。"""
+    conn = connect(":memory:")
+    first = _ranked_match(conn, 45.0)
+    save_manual_rank_after(conn, first, 45.2)
+    middle = _ranked_match(conn, 45.2)
+    save_manual_rank_after(conn, middle, 45.5)
+    following = _ranked_match(conn, 45.5)
+    assert fetch_match(conn, following)["rank_before"] == 45.5
+
+    set_match_excluded(conn, middle, True)
+
+    assert fetch_match(conn, following)["rank_before"] == 45.2
+
+
+def test_set_match_excluded_false_restores_chain():
+    conn = connect(":memory:")
+    first = _ranked_match(conn, 45.0)
+    save_manual_rank_after(conn, first, 45.2)
+    middle = _ranked_match(conn, 45.2)
+    save_manual_rank_after(conn, middle, 45.5)
+    following = _ranked_match(conn, 45.5)
+    set_match_excluded(conn, middle, True)
+
+    set_match_excluded(conn, middle, False)
+
+    assert fetch_match(conn, middle)["excluded"] == 0
+    assert fetch_match(conn, middle)["rank_before"] == 45.2
+    assert fetch_match(conn, following)["rank_before"] == 45.5
+
+
+def test_new_match_after_excluded_match_inherits_from_previous_included_match():
+    """対象外にした後に記録された新しい試合も、対象外の試合を飛ばして引き継ぐ。"""
+    conn = connect(":memory:")
+    first = _ranked_match(conn, 45.0)
+    save_manual_rank_after(conn, first, 45.2)
+    excluded = _ranked_match(conn, 3.8)
+    set_match_excluded(conn, excluded, True)
+
+    following = _ranked_match(conn, 45.2)
+
+    assert fetch_match(conn, following)["rank_before"] == 45.2
+
+
+def test_save_manual_rank_after_rejects_excluded_match():
+    conn = connect(":memory:")
+    match_id = _ranked_match(conn, 45.0)
+    set_match_excluded(conn, match_id, True)
+
+    with pytest.raises(ValueError, match="記録対象外"):
+        save_manual_rank_after(conn, match_id, 45.2)
+
+
+def test_excluded_match_is_hidden_from_queries_but_goals_are_kept(monkeypatch):
+    """Issue #479: 記録対象外は試合そのものが無かったものとして扱うが、ゴールは残す。"""
+    monkeypatch.setenv("GOAL_RECORD_MODE", "all")
+    conn = connect(":memory:")
+    session_id = create_session(conn)
+    before = _ranked_match(conn, 45.0, session_id=session_id)
+    excluded = _ranked_match(conn, 3.8, session_id=session_id)
+    after = _ranked_match(conn, 45.0, session_id=session_id)
+    save_goal(conn, excluded, "player", None, datetime.now(timezone.utc))
+
+    set_match_excluded(conn, excluded, True)
+
+    assert [r["id"] for r in fetch_recent_matches(conn, 10)] == [before, after]
+    assert [r["id"] for r in fetch_matches_for_session(conn, session_id)] == [before, after]
+    assert fetch_next_match(conn, before)["id"] == after
+    assert len(fetch_goals_for_session(conn, session_id)) == 1
+    assert fetch_match(conn, excluded) is not None
+
+
+def test_set_match_excluded_raises_for_missing_match():
+    conn = connect(":memory:")
+
+    with pytest.raises(ValueError):
+        set_match_excluded(conn, 999, True)
