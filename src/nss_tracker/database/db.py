@@ -86,6 +86,7 @@ from nss_tracker.config import (
     get_room_type,
     is_allowed_player,
 )
+from nss_tracker import rank_estimate
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchResult
 from nss_tracker.timeutil import now_jst
@@ -155,6 +156,11 @@ CREATE TABLE IF NOT EXISTS matches (
                                      -- 自動検知(OCR)が読み取ったランク変動確定後の値。Issue #306。
                                      -- 比較・将来のOCR精度検証用で、rank_afterのように表示・
                                      -- league_changed算出には使わない
+    rank_after_estimate REAL CHECK (rank_after_estimate IS NULL OR ROUND(rank_after_estimate, 2) = rank_after_estimate),
+                                     -- 確定済みの過去の試合(勝敗・合計ランク差→増減量)から
+                                     -- 推定したランク変動後の値。Issue #486。/rank-entryの初期値・
+                                     -- 「推定値を使う」に使う。rank_beforeが未確定の間はNULL
+                                     -- (refresh_rank_after_estimate参照)
     league_changed TEXT,            -- 'up' / 'down' / NULL
     mine_team_color TEXT,           -- VS画面で実測した自チームの色(hex文字列、例: '#64bde2')。Issue #113
     opponent_team_color TEXT,       -- 同、相手チーム。VS画面を検知できなかった試合ではどちらもNULL
@@ -489,6 +495,89 @@ def _migrate_matches_add_excluded(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_matches_add_rank_after_estimate(conn: sqlite3.Connection) -> None:
+    """Issue #486: 既存DBファイルのmatchesテーブルにrank_after_estimate列を追加する。
+
+    追加時、手動入力待ち(rank_afterが未確定)の試合だけ推定値を埋める。確定済みの
+    試合は入力に使われることが無いため埋めない。新規DBでは_SCHEMA自体に既に
+    rank_after_estimate列を含むため、この関数は無害にreturnする。
+    """
+    columns = conn.execute("PRAGMA table_info(matches)").fetchall()
+    if any(c["name"] == "rank_after_estimate" for c in columns):
+        return
+
+    logger.info("matchesテーブルにrank_after_estimate列を追加しています")
+    conn.execute(
+        "ALTER TABLE matches ADD COLUMN rank_after_estimate REAL "
+        "CHECK (rank_after_estimate IS NULL OR ROUND(rank_after_estimate, 2) = rank_after_estimate)"
+    )
+    conn.commit()
+    pending = conn.execute(
+        "SELECT id FROM matches WHERE rank_staked = 1 AND excluded = 0 AND rank_after IS NULL"
+    ).fetchall()
+    for row in pending:
+        refresh_rank_after_estimate(conn, row["id"])
+
+
+def _team_rank_diffs(conn: sqlite3.Connection) -> dict[int, Optional[int]]:
+    """vs_slot_ranksから試合ごとの合計ランク差(rank_estimate.team_rank_diff)を求める。"""
+    slots: dict[int, dict[str, list]] = {}
+    for row in conn.execute("SELECT match_id, side, rank_tier, rank_tier_label FROM vs_slot_ranks"):
+        sides = slots.setdefault(row["match_id"], {"mine": [], "opponent": []})
+        sides.setdefault(row["side"], []).append((row["rank_tier_label"], row["rank_tier"]))
+    return {
+        match_id: rank_estimate.team_rank_diff(sides["mine"], sides["opponent"]) for match_id, sides in slots.items()
+    }
+
+
+def refresh_rank_after_estimate(conn: sqlite3.Connection, match_id: int) -> None:
+    """試合のrank_after_estimate(推定値、Issue #486)を計算し直して保存する。
+
+    推定の入力(rank_before・勝敗・VS画面のランク・人数差フラグ)が変わるたびに
+    呼ぶ。学習データは確定済み・記録対象・人数差なしの勝ち/負けの試合で、対象の
+    試合自身は含めない(計算の中身はrank_estimate.py参照)。ランクを賭けていない
+    試合・記録対象外の試合は推定しない(NULLのまま)。
+    """
+    row = conn.execute(
+        "SELECT id, result, rank_before, rank_staked, excluded, player_shortage, "
+        "league_change_label_detected, rank_after_estimate FROM matches WHERE id = ?",
+        (match_id,),
+    ).fetchone()
+    if row is None:
+        return
+    estimate = None
+    if row["rank_staked"] and not row["excluded"] and row["rank_before"] is not None:
+        diffs = _team_rank_diffs(conn)
+        samples = [
+            rank_estimate.Sample(
+                result=r["result"],
+                team_rank_diff=diffs.get(r["id"]),
+                delta=r["rank_after"] - r["rank_before"],
+            )
+            for r in conn.execute(
+                "SELECT id, result, rank_before, rank_after FROM matches "
+                "WHERE excluded = 0 AND player_shortage = 0 AND result IN ('win', 'lose') "
+                "AND rank_before IS NOT NULL AND rank_after IS NOT NULL AND id != ?",
+                (match_id,),
+            )
+        ]
+        estimate = rank_estimate.estimate_rank_after(
+            rank_before=row["rank_before"],
+            result=row["result"],
+            team_rank_diff=diffs.get(match_id),
+            league_change_label=row["league_change_label_detected"],
+            player_shortage=bool(row["player_shortage"]),
+            samples=samples,
+        )
+    if estimate == row["rank_after_estimate"]:
+        return
+    conn.execute(
+        "UPDATE matches SET rank_after_estimate = ?, updated_at = ? WHERE id = ?",
+        (estimate, now_jst().isoformat(), match_id),
+    )
+    conn.commit()
+
+
 def _repair_missing_rank_before(conn: sqlite3.Connection) -> None:
     """rank_stakedが1なのにrank_beforeがNULLのままの行を、直前の「ランクを賭けた
     試合」の確定済みrank_afterで埋める(Issue #446、_migrate_matches_add_rank_stakedから
@@ -548,6 +637,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     _migrate_matches_add_rank_staked(conn)
     _migrate_matches_add_player_shortage(conn)
     _migrate_matches_add_excluded(conn)
+    _migrate_matches_add_rank_after_estimate(conn)
     logger.info("DBに接続しました: %s", Path(db_path).resolve())
     return conn
 
@@ -760,6 +850,7 @@ def _backfill_next_rank_before(conn: sqlite3.Connection, confirmed_match_id: int
             after_id,
             current_rank_after,
         )
+        refresh_rank_after_estimate(conn, row["id"])
         if row["rank_after"] is None:
             return
         after_id = row["id"]
@@ -802,6 +893,7 @@ def _force_overwrite_next_rank_before(conn: sqlite3.Connection, corrected_match_
         corrected_match_id,
         rank_after,
     )
+    refresh_rank_after_estimate(conn, row["id"])
     if row["rank_after"] is not None:
         logger.warning(
             "matches.id=%d は既にrank_afterが確定済み(%s)のままrank_beforeのみ連動更新したため、"
@@ -889,6 +981,9 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
         ),
     )
     conn.commit()
+    # Issue #486: VS画面のランクはこの後のsave_vs_slot_ranksで保存されるため、
+    # そちらでも計算し直す(VS画面を見逃した試合はここで計算したものが残る)
+    refresh_rank_after_estimate(conn, cursor.lastrowid)
     return cursor.lastrowid
 
 
@@ -1040,6 +1135,8 @@ def update_match_fields(
         room_type,
         player_shortage,
     )
+    if result is not None or player_shortage is not None:
+        refresh_rank_after_estimate(conn, match_id)
 
 
 def delete_match(conn: sqlite3.Connection, match_id: int) -> None:
@@ -1113,6 +1210,7 @@ def _relink_rank_before(conn: sqlite3.Connection, target_id: int) -> None:
         target["rank_before"],
         new_rank_before,
     )
+    refresh_rank_after_estimate(conn, target_id)
     if target["rank_after"] is not None:
         logger.warning(
             "matches.id=%d は既にrank_afterが確定済み(%s)のままrank_beforeのみ張り直したため、"
@@ -1396,6 +1494,7 @@ def save_vs_slot_ranks(
             )
             inserted_ids.append(cursor.lastrowid)
     conn.commit()
+    refresh_rank_after_estimate(conn, match_id)
     return inserted_ids
 
 
