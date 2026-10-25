@@ -24,6 +24,7 @@ from nss_tracker.database.db import (
     fetch_recent_matches,
     fetch_vs_rank_snapshot_slots,
     fetch_vs_slot_ranks,
+    refresh_rank_after_estimate,
     save_goal,
     save_manual_rank_after,
     save_match_result,
@@ -3033,3 +3034,124 @@ def test_set_match_excluded_raises_for_missing_match():
 
     with pytest.raises(ValueError):
         set_match_excluded(conn, 999, True)
+
+
+def _estimate_of(conn, match_id):
+    return conn.execute("SELECT rank_after_estimate FROM matches WHERE id = ?", (match_id,)).fetchone()[
+        "rank_after_estimate"
+    ]
+
+
+def _confirmed_chain(conn, results_and_afters, start=42.00):
+    """ランクを賭けた試合を順に保存・確定させ、最後の試合のidを返す。"""
+    match_id = None
+    rank_before = start
+    for result, rank_after in results_and_afters:
+        match_id = _make_ranked_match(conn, result=result, rank_before=rank_before)
+        save_manual_rank_after(conn, match_id, rank_after)
+        rank_before = rank_after
+    return match_id
+
+
+def test_rank_after_estimate_uses_median_of_confirmed_matches():
+    """Issue #486: VS画面のランクが無い試合は、確定済みの同じ勝敗の中央値を足す。"""
+    conn = connect(":memory:")
+    _confirmed_chain(conn, [("win", 42.20), ("win", 42.45), ("lose", 42.25), ("win", 42.43)])
+
+    pending = _make_ranked_match(conn, result="win")
+
+    assert _estimate_of(conn, pending) == pytest.approx(42.43 + 0.20)
+
+
+def test_rank_after_estimate_is_null_until_rank_before_is_resolved():
+    conn = connect(":memory:")
+    _confirmed_chain(conn, [("win", 42.20)])
+    blocked_prev = _make_ranked_match(conn, result="win")
+    pending = _make_ranked_match(conn, result="win")
+    assert _estimate_of(conn, pending) is None, "前提: 直前が未確定なのでrank_beforeも推定値も無い"
+
+    save_manual_rank_after(conn, blocked_prev, 42.40)
+
+    assert _estimate_of(conn, pending) == pytest.approx(42.60)
+
+
+def test_rank_after_estimate_follows_rank_before_correction():
+    conn = connect(":memory:")
+    last = _confirmed_chain(conn, [("win", 42.20)])
+    pending = _make_ranked_match(conn, result="win")
+    assert _estimate_of(conn, pending) == pytest.approx(42.40)
+
+    save_manual_rank_after(conn, last, 42.30)
+
+    assert _estimate_of(conn, pending) == pytest.approx(42.60)
+
+
+def test_rank_after_estimate_uses_team_rank_diff_from_vs_slot_ranks():
+    """VS画面のランクが保存された時点で、合計ランク差の直線から計算し直す。"""
+    conn = connect(":memory:")
+    rank_before = 42.00
+    for diff in range(-5, 5):
+        match_id = _make_ranked_match(conn, result="win", rank_before=rank_before)
+        save_vs_slot_ranks(
+            conn, match_id, [SlotRank("∞", 40 + diff)] + [SlotRank("∞", 40)] * 3, [SlotRank("∞", 40)] * 4
+        )
+        rank_after = round(rank_before + 0.20 - 0.02 * diff, 2)
+        save_manual_rank_after(conn, match_id, rank_after)
+        rank_before = rank_after
+    pending = _make_ranked_match(conn, result="win", rank_before=rank_before)
+    assert _estimate_of(conn, pending) == pytest.approx(rank_before + 0.21), "VS画面保存前は中央値"
+
+    save_vs_slot_ranks(conn, pending, [SlotRank("∞", 30)] + [SlotRank("∞", 40)] * 3, [SlotRank("∞", 40)] * 4)
+
+    assert _estimate_of(conn, pending) == pytest.approx(rank_before + 0.40)
+
+
+def test_rank_after_estimate_ignores_excluded_and_shortage_matches():
+    conn = connect(":memory:")
+    _confirmed_chain(conn, [("win", 42.20)])
+    shortage = _make_ranked_match(conn, result="win", rank_before=42.20)
+    update_match_fields(conn, shortage, player_shortage=True)
+    save_manual_rank_after(conn, shortage, 42.20)
+    excluded = _make_ranked_match(conn, result="win", rank_before=42.20)
+    save_manual_rank_after(conn, excluded, 43.00)
+    set_match_excluded(conn, excluded, True)
+
+    pending = _make_ranked_match(conn, result="win")
+
+    assert _estimate_of(conn, pending) == pytest.approx(42.40)
+
+
+def test_rank_after_estimate_recomputed_when_player_shortage_flag_changes():
+    conn = connect(":memory:")
+    _confirmed_chain(conn, [("win", 42.20)])
+    pending = _make_ranked_match(conn, result="win")
+
+    update_match_fields(conn, pending, player_shortage=True)
+
+    assert _estimate_of(conn, pending) == 42.20
+
+
+def test_rank_after_estimate_is_null_for_unranked_match():
+    conn = connect(":memory:")
+    _confirmed_chain(conn, [("win", 42.20)])
+    match_id = _unranked_match(conn)
+
+    refresh_rank_after_estimate(conn, match_id)
+
+    assert _estimate_of(conn, match_id) is None
+
+
+def test_connect_migrates_legacy_matches_without_rank_after_estimate(tmp_path):
+    """Issue #486: 移行時、手動入力待ちの試合だけ推定値を埋める。"""
+    db_path = tmp_path / "legacy_estimate.db"
+    conn = connect(db_path)
+    _confirmed_chain(conn, [("win", 42.20)])
+    pending = _make_ranked_match(conn, result="win")
+    conn.execute("ALTER TABLE matches DROP COLUMN rank_after_estimate")
+    conn.commit()
+    conn.close()
+
+    conn = connect(db_path)
+
+    assert _estimate_of(conn, pending) == pytest.approx(42.40)
+    assert _estimate_of(conn, 1) is None
