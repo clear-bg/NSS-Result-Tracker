@@ -40,7 +40,6 @@ from nss_tracker.web.server import (
     _aggregate_goal_stats,
     _build_match_log_badges,
     _compute_box_stats,
-    _convert_rank_tier_to_unified_scale,
     _fetch_goal_stats,
     _fetch_rank_graph_summary,
     _fetch_winrate,
@@ -1539,34 +1538,6 @@ def test_overlay_match_log_page_hides_panel_when_no_matches(tmp_path: Path):
     # 自動更新のscriptタグは必ず残す。bodyごと空にすると最初の試合が終わっても
     # ウィジェットが復帰しなくなる(Issue #104のbody innerHTML差し替え方式のため)
     assert '<script src="/static/overlay-refresh.js"' in response.text
-
-
-@pytest.mark.parametrize(
-    "tier_label, tier_value, expected",
-    [
-        ("∞", 42, 42),
-        ("∞", 0, 0),
-        ("S", 9, -1),
-        ("S", 0, -10),
-        ("A", 29, -11),
-        ("A", 0, -40),
-        (None, None, None),
-        ("∞", None, None),
-        ("B", 5, None),
-    ],
-)
-def test_convert_rank_tier_to_unified_scale(tier_label, tier_value, expected):
-    assert _convert_rank_tier_to_unified_scale(tier_label, tier_value) == expected
-
-
-def test_convert_rank_tier_unified_scale_preserves_promotion_order():
-    # A29(-11) < S0(-10) < S9(-1) < 無限0(0) の順序が保たれること
-    a29 = _convert_rank_tier_to_unified_scale("A", 29)
-    s0 = _convert_rank_tier_to_unified_scale("S", 0)
-    s9 = _convert_rank_tier_to_unified_scale("S", 9)
-    mu0 = _convert_rank_tier_to_unified_scale("∞", 0)
-
-    assert a29 < s0 < s9 < mu0
 
 
 def test_summarize_vs_slot_ranks_sums_known_members_and_counts_unknown():
@@ -3240,6 +3211,30 @@ def test_rank_entry_get_shows_oldest_pending_match(tmp_path: Path, monkeypatch):
     assert clips[0]["recency_label"] == "最新"
 
 
+def test_rank_entry_get_includes_rank_after_estimate(tmp_path: Path, monkeypatch):
+    """Issue #486: 過去の試合から求めた推定値が、rank_after_ocrと並んで埋め込まれる。"""
+    monkeypatch.setattr(server_module, "DEFAULT_CLIPS_DIR", tmp_path / "clips")
+    db_path = tmp_path / "test.db"
+    conn = db.connect(db_path)
+    first = db.save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=38.62, rank_after=None, league_changed=None, detected_at=now_jst()),
+    )
+    db.save_manual_rank_after(conn, first, 38.40)
+    db.save_match_result(
+        conn,
+        MatchResult(result="lose", rank_before=38.40, rank_after=38.50, league_changed=None, detected_at=now_jst()),
+    )
+    conn.close()
+    client = TestClient(create_app(db_path))
+
+    response = client.get("/rank-entry")
+
+    clips = _extract_rank_entry_clips(response.text)
+    assert clips[0]["rank_after_ocr"] == 38.5
+    assert clips[0]["rank_after_estimate"] == pytest.approx(38.18)
+
+
 def test_rank_entry_post_saves_player_shortage_with_rank_after(tmp_path: Path):
     """Issue #462: ランク入力と同じ送信で人数差フラグも保存される。"""
     db_path = tmp_path / "test.db"
@@ -4823,13 +4818,17 @@ def test_rank_entry_step_buttons_repeat_while_pressed(tmp_path: Path, monkeypatc
 
 
 def test_rank_entry_copy_button_fills_both_inputs(tmp_path: Path, monkeypatch):
-    """「推定値を使う」は分割後も残し、自動検知値を両方の欄へ分けて反映する。"""
+    """「推定値を使う」は分割後も残し、推定値を両方の欄へ分けて反映する。
+
+    Issue #486: 反映する値は過去の試合から求めた推定値を優先し、無ければ
+    自動検知値(rank_after_ocr)にフォールバックする(suggestedRank)。
+    """
     html = _rank_entry_page(tmp_path, monkeypatch)
 
     assert "推定値を使う" in html
     assert (
         "      copyButton.addEventListener(\"click\", function () {\n"
-        "        fillInputs(clip.rank_after_ocr);\n"
+        "        fillInputs(suggestedRank(clip));\n"
         "        fractionInput.focus();"
     ) in html
 
