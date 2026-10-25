@@ -229,6 +229,7 @@ from nss_tracker.database.db import (
     update_match_fields,
 )
 from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR
+from nss_tracker.rank_estimate import convert_rank_tier_to_unified_scale
 
 _WEB_DIR = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=_WEB_DIR / "templates")
@@ -902,27 +903,6 @@ def _fetch_goal_stats(db_path: Path) -> list[dict]:
     return _aggregate_goal_stats(rows)
 
 
-# Issue #100: ∞/S/A帯を跨いで比較できるよう、帯内の数値を統一スケールに換算する
-# オフセット。ユーザーから聞いたゲーム内の実際の仕様(∞は0〜49、Sは0〜9、Aは
-# 最大29で下限不明。各帯とも帯内の上限に到達すると次の帯へ自動的に昇格する)に
-# 基づく。この換算により A29(-11) < S0(-10) < S9(-1) < ∞0(0) のように、
-# 昇格の順序と換算後の数値の大小関係が矛盾なく一致する連続したスケールになる。
-# B~E帯は範囲が未検証のため対象外のまま(detection/vs_rank.pyのdocstring参照)
-_RANK_TIER_OFFSETS = {"∞": 0, "S": -10, "A": -40}
-
-
-def _convert_rank_tier_to_unified_scale(tier_label: Optional[str], tier_value: Optional[int]) -> Optional[int]:
-    """∞/S/A帯の帯内数値を、帯を跨いで比較できる統一スケールの数値に変換する。
-
-    tier_labelが∞/S/Aのいずれでもない場合(B~E帯・読み取り失敗、rank_tier_label・
-    rank_tierともNULL)、またはtier_valueがNoneの場合はNoneを返す(呼び出し側で
-    「不明」として扱う)。
-    """
-    if tier_label not in _RANK_TIER_OFFSETS or tier_value is None:
-        return None
-    return tier_value + _RANK_TIER_OFFSETS[tier_label]
-
-
 def _summarize_vs_slot_ranks(rows: list[sqlite3.Row]) -> dict:
     """1チーム分のvs_slot_ranks(最大4スロット)を、統一スケールでの合計値に集計する。
 
@@ -932,7 +912,7 @@ def _summarize_vs_slot_ranks(rows: list[sqlite3.Row]) -> dict:
     converted_values = []
     unknown_count = 0
     for row in rows:
-        value = _convert_rank_tier_to_unified_scale(row["rank_tier_label"], row["rank_tier"])
+        value = convert_rank_tier_to_unified_scale(row["rank_tier_label"], row["rank_tier"])
         if value is None:
             unknown_count += 1
         else:
@@ -1628,6 +1608,9 @@ def _build_rank_entry_clip_info(
         "result_text": _MATCH_RESULT_LABELS.get(row["result"], row["result"]),
         "rank_before": row["rank_before"],
         "rank_after_ocr": row["rank_after_ocr"],
+        # Issue #486: 過去の試合(勝敗・合計ランク差)から推定した値。入力欄の初期値・
+        # 「推定値を使う」はこちらを優先し、無ければrank_after_ocrへフォールバックする
+        "rank_after_estimate": row["rank_after_estimate"],
         "rank_after": row["rank_after"],
         "has_clip": has_clip,
         # Issue #312: ゲージクローズアップ動画(画面全体クリップとは別ファイル)が

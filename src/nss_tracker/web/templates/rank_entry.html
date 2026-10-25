@@ -410,6 +410,19 @@
     left.appendChild(form);
   }
 
+  function hasValue(value) {
+    return value !== null && value !== undefined;
+  }
+
+  // Issue #486: 入力欄の初期値・「推定値を使う」に入れる値。過去の試合から求めた
+  // 推定値を優先し、まだ求められない試合(学習データが無い等)はゲージ読み取りの
+  // 自動検知値(rank_after_ocr)を使う
+  function suggestedRank(clip) {
+    if (hasValue(clip.rank_after_estimate)) return clip.rank_after_estimate;
+    if (hasValue(clip.rank_after_ocr)) return clip.rank_after_ocr;
+    return null;
+  }
+
   function renderLeftPanel(clip) {
     renderLeftPanelBody(clip);
     appendExcludeForm(clip);
@@ -426,7 +439,10 @@
     addRow(info, "記録時刻", clip.detected_at_text);
     addRow(info, "結果", clip.result_text);
     addRow(info, "試合前ランク", formatRank(clip.rank_before));
-    if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
+    if (hasValue(clip.rank_after_estimate)) {
+      addRow(info, "推定値", formatRank(clip.rank_after_estimate), "rank-entry-match-row-hint");
+    }
+    if (hasValue(clip.rank_after_ocr)) {
       addRow(info, "自動検知(参考)", clip.rank_after_ocr, "rank-entry-match-row-hint");
     }
     left.appendChild(info);
@@ -523,12 +539,12 @@
       // 現在確定している値からの修正が自然なため)。推定値に戻したい場合は
       // 下の「推定値を使う」ボタンから明示的に取り込める。
       fillInputs(clip.rank_after);
-    } else if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
+    } else if (suggestedRank(clip) !== null) {
       // 初回表示時の初期値としてのみ使う。定期更新のたびにここへ来ても
       // (renderLeftPanelは同じ試合を選んだままの間は呼ばれないため)入力中の
       // 内容を勝手に上書きすることはない。値を戻したい場合は下の「推定値を使う」
       // ボタンから明示的に取り込む(ユーザー確認済み、モジュールdocstring参照)
-      fillInputs(clip.rank_after_ocr);
+      fillInputs(suggestedRank(clip));
     }
     // 入力欄を一度でも操作したら、以後の自動更新でこの試合から勝手に
     // 離れないようにする(定期更新中に別の試合の動画へ切り替わって
@@ -597,13 +613,13 @@
 
     // Issue #457: 入力欄を2つに分けて幅を詰めたため、同じ行に並べると左カラム
     // (150px)に収まらない。入力欄の下・「記録」ボタンの上へ独立した行として置く
-    if (clip.rank_after_ocr !== null && clip.rank_after_ocr !== undefined) {
+    if (suggestedRank(clip) !== null) {
       const copyButton = document.createElement("button");
       copyButton.type = "button";
       copyButton.className = "rank-entry-copy-button";
       copyButton.textContent = "推定値を使う";
       copyButton.addEventListener("click", function () {
-        fillInputs(clip.rank_after_ocr);
+        fillInputs(suggestedRank(clip));
         fractionInput.focus();
         fractionInput.select();
       });
