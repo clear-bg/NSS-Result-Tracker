@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>システムの終了</title>
+<link rel="stylesheet" href="/static/admin.css?v={{ admin_css_version }}">
+</head>
+<body>
+{# Issue #485: /adminの「システムを終了…」ボタンから開く警告画面。ここで「終了する」を押した場合だけ終了する #}
+<h1>システムを終了しますか?</h1>
+<div class="admin-shutdown-warning">
+  <p class="admin-shutdown-warning-lead">終了すると、以下がすべて止まります。</p>
+  <ul>
+    <li>試合の検知・記録(この後の試合は記録されません)</li>
+    <li>OBSシーンの自動切替・配信ウィジェットの更新</li>
+    <li>このページを含むWebダッシュボード(/admin・/rank-entry・/health-check)</li>
+  </ul>
+</div>
+<p class="admin-shutdown-note">録画中のランク入力用クリップがあれば破棄されます。再開するには、ターミナルからもう一度起動してください。</p>
+<form method="post" action="/admin/shutdown" class="admin-shutdown-actions">
+  <button type="submit" class="admin-shutdown-confirm-button">終了する</button>
+  <a href="/admin">キャンセル(設定画面に戻る)</a>
+</form>
+</body>
+</html>

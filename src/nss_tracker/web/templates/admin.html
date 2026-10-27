@@ -17,6 +17,15 @@
       <li><a href="/rank-entry" target="_blank" rel="noopener">ランク手動入力</a></li>
       <li><a href="/health-check" target="_blank" rel="noopener">ランク記録の健全性チェック</a></li>
     </ul>
+    {# Issue #485: 誤操作を避けるため、設定フォームとは別のカラム・別のフォームに置く。
+       押すとまず警告画面(GET /admin/shutdown)を挟み、そこで同意した場合だけ終了する #}
+    <div class="admin-system">
+      <h2>システム</h2>
+      <p>検知・記録を止めて、アプリを終了します。</p>
+      <form method="get" action="/admin/shutdown">
+        <button type="submit" class="admin-shutdown-button">システムを終了…</button>
+      </form>
+    </div>
   </div>
   <div class="admin-col-settings">
     {# Issue #470: OBSの「仮想カメラ開始」の押し忘れに気づけるようにする。中身は下のスクリプトが
