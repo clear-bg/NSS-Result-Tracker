@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>終了しました</title>
+<link rel="stylesheet" href="/static/admin.css?v={{ admin_css_version }}">
+</head>
+<body>
+{# Issue #485: 終了を受け付けた直後に返すページ。この後Webサーバーも止まるため、ポーリング等のスクリプトは置かない #}
+<h1>システムを終了しました</h1>
+<p class="admin-message admin-shutdown-done">検知・記録を停止しました。Webダッシュボードも停止するため、このページからはこれ以上操作できません。</p>
+<p class="admin-shutdown-note">このタブ(/rank-entryのタブも)は閉じてかまいません。再開するには、ターミナルからもう一度起動してください。</p>
+</body>
+</html>

@@ -29,7 +29,10 @@ Issue #410: 当初は「確認完了」ボタン自体をdisabledにしていた
 
 import threading
 
+from nss_tracker import shutdown_request
 from nss_tracker.config import ConfigError, get_room_type
+
+_WAIT_POLL_INTERVAL_SECONDS = 0.5
 
 _lock = threading.Lock()
 _obs_scene_switching_confirmed = False
@@ -81,6 +84,14 @@ def is_confirmed() -> bool:
     return _confirmed_event.is_set()
 
 
-def wait_for_confirmation() -> None:
-    """確認完了まで無期限にブロックする(main.pyがOBS/YouTube接続を始める直前に呼ぶ)。"""
-    _confirmed_event.wait()
+def wait_for_confirmation() -> bool:
+    """確認完了まで無期限にブロックする(main.pyがOBS/YouTube接続を始める直前に呼ぶ)。
+
+    確認完了ならTrue、確認より先に`/admin`からシステム終了が要求された場合はFalseを返す
+    (Issue #485)。短い間隔で待ちを区切っているのは、終了要求に気づくためと、Windowsでは
+    タイムアウト無しの`Event.wait()`がCtrl+Cで割り込めないため。
+    """
+    while not _confirmed_event.wait(timeout=_WAIT_POLL_INTERVAL_SECONDS):
+        if shutdown_request.is_requested():
+            return False
+    return True

@@ -20,6 +20,10 @@ fixtures/videos等の動画ファイルを入力に差し替えて同じルー�
 Issue #379: 起動直後はWebサーバー(`/admin`・`/rank-entry`)だけを起動し、
 OBS Virtual Camera・OBS(obs-websocket)・YouTube連携への接続は`/admin`で
 「確認完了」ボタンが押されるまで行わない(`nss_tracker.startup_gate`参照)。
+
+Issue #485: Ctrl+Cに加えて`/admin`からも終了できる(`nss_tracker.shutdown_request`参照)。
+どちらで終了しても同じ後始末(録画中クリップの破棄・`reader.stop()`・OCR用Executorの
+停止・OBS/YouTube連携とWebサーバーの停止・配信セッションの終了)を通す。
 """
 
 import argparse
@@ -67,7 +71,7 @@ from nss_tracker.detection.rank_ocr import (
     _get_reader,
 )
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
-from nss_tracker import detection_pause, match_transition, startup_gate
+from nss_tracker import detection_pause, match_transition, shutdown_request, startup_gate
 from nss_tracker.obs_control import ObsSceneController
 from nss_tracker.rank_entry_clips import (
     DEFAULT_CLIPS_DIR,
@@ -413,6 +417,11 @@ def run(
     reader.start()
     try:
         while True:
+            # Issue #485: /adminからの終了要求。Ctrl+Cのときと同じく、このループを
+            # 抜けて後始末(finally節・main()側のfinally節)を通す
+            if shutdown_request.is_requested():
+                _log_session_summary("設定画面(/admin)から終了が要求されたため終了します", session_results)
+                break
             frame = reader.read(timeout=frame_read_timeout_seconds)
             if frame is None:
                 if reader.is_running:
@@ -590,16 +599,26 @@ def run(
                         recorder.finish(pending_clip_match_id)
                     pending_clip_match_id = None
     except KeyboardInterrupt:
-        total = sum(session_results.values())
-        logger.info(
-            "Ctrl+Cを受け取ったため終了します(このセッションで記録した試合数: %d件 win=%d lose=%d draw=%d)",
-            total,
-            session_results["win"],
-            session_results["lose"],
-            session_results["draw"],
-        )
+        _log_session_summary("Ctrl+Cを受け取ったため終了します", session_results)
     finally:
+        # Issue #485: 録画中のクリップは試合結果と紐付いていないため捨てる
+        # (/rank-entryで使えないため。ユーザーとの相談で決定)
+        if clip_recorder.is_recording:
+            for recorder in clip_recorders:
+                recorder.discard()
+            logger.info("終了時に録画中だったランク入力用クリップを破棄しました")
         reader.stop()
+
+
+def _log_session_summary(reason: str, session_results: dict[str, int]) -> None:
+    logger.info(
+        "%s(このセッションで記録した試合数: %d件 win=%d lose=%d draw=%d)",
+        reason,
+        sum(session_results.values()),
+        session_results["win"],
+        session_results["lose"],
+        session_results["draw"],
+    )
 
 
 def main() -> None:
@@ -669,60 +688,71 @@ def main() -> None:
     logger.info("配信セッションを開始しました: session_id=%d", session_id)
     web_handle = start_web_server_thread(create_app(db_path), host=web_host, port=web_port)
     logger.info("Webダッシュボードを起動しました: http://%s:%d/", web_host, web_port)
-    admin_url = f"http://{web_host}:{web_port}/admin"
-    # Issue #129: 配信中に調整したくなり得る設定項目(ALLOWED_PLAYERS等)をGUIで
-    # 編集できる管理画面を起動時に自動的に開く。失敗してもアプリ全体を止める
-    # 理由にはならない(ブラウザが無い環境等)ため、WARNINGログのみで継続する
-    try:
-        webbrowser.open(admin_url)
-    except Exception:
-        logger.warning("設定画面を自動的に開けませんでした。手動で開いてください: %s", admin_url)
-    # Issue #306: ランク確定値(rank_after)の手動入力ページも、/adminと同様に
-    # 起動時に自動的に別ブラウザで開く(いずれ同一画面に統合する可能性はあるが、
-    # 現段階では別ページのまま、ユーザー確認済み)
-    rank_entry_url = f"http://{web_host}:{web_port}/rank-entry"
-    try:
-        webbrowser.open(rank_entry_url)
-    except Exception:
-        logger.warning("ランク手動入力画面を自動的に開けませんでした。手動で開いてください: %s", rank_entry_url)
-
-    # Issue #379: 「起動できたことに満足して専用部屋なのにrandomのまま等の設定忘れ」を
-    # 防ぐため、/adminで「確認完了」ボタンが押されるまでOBS Virtual Camera・OBS
-    # (obs-websocket)・YouTube連携への接続を一切行わない(startup_gate.pyのモジュール
-    # docstring参照)。タイムアウトは設けず無期限に待つ
-    logger.info("設定確認待ちです。%sで設定を確認し、「確認完了」ボタンを押してください", admin_url)
-    startup_gate.wait_for_confirmation()
-    logger.info("設定確認が完了しました。OBS・YouTube連携への接続を開始します")
-
-    obs_controller = ObsSceneController(
-        host=obs_host,
-        port=obs_port,
-        password=obs_password,
-        scene_in_match=obs_scene_in_match,
-        scene_between_matches=obs_scene_between_matches,
-        browser_source_names=obs_browser_source_names,
-    )
+    # Issue #485: 起動確認ゲートの待機中に終了した場合も同じ後始末を通すよう、
+    # Webサーバー起動直後からtry/finallyで囲む
+    obs_controller: Optional[ObsSceneController] = None
     dive_time_watcher: Optional[DiveTimeWatcher] = None
-    if youtube_chat_dive_time_enabled:
-        dive_time_watcher = DiveTimeWatcher()
-        dive_time_watcher.start()
-    clip_recorder = RankEntryClipRecorder(output_dir=DEFAULT_CLIPS_DIR, db_path=db_path)
-    # Issue #312: ゲージのROI(GAUGE_ROI_ENLARGED)だけを切り出し、目盛り線を
-    # 合成したクローズアップ動画を並行して生成する(rank_entry_clips.pyの
-    # モジュールdocstring参照)
-    gauge_clip_recorder = RankEntryClipRecorder(
-        output_dir=GAUGE_CLIPS_DIR,
-        target_width=GAUGE_TARGET_WIDTH,
-        crop_roi=GAUGE_ROI_ENLARGED,
-        overlay_fn=_draw_gauge_ticks,
-        db_path=db_path,
-        # Issue #399: ランク変動が止まった瞬間の値を目盛りに合わせて読み取れるよう、
-        # ゲージ動画だけサンプリングを上げる。あわせて拡大・目盛り描画を書き出し時に
-        # 回し、バッファには生クロップ(1枚約28KB)だけを保持する
-        target_sample_fps=GAUGE_SAMPLE_FPS,
-        resize_on_encode=True,
-    )
     try:
+        admin_url = f"http://{web_host}:{web_port}/admin"
+        # Issue #129: 配信中に調整したくなり得る設定項目(ALLOWED_PLAYERS等)をGUIで
+        # 編集できる管理画面を起動時に自動的に開く。失敗してもアプリ全体を止める
+        # 理由にはならない(ブラウザが無い環境等)ため、WARNINGログのみで継続する
+        try:
+            webbrowser.open(admin_url)
+        except Exception:
+            logger.warning("設定画面を自動的に開けませんでした。手動で開いてください: %s", admin_url)
+        # Issue #306: ランク確定値(rank_after)の手動入力ページも、/adminと同様に
+        # 起動時に自動的に別ブラウザで開く(いずれ同一画面に統合する可能性はあるが、
+        # 現段階では別ページのまま、ユーザー確認済み)
+        rank_entry_url = f"http://{web_host}:{web_port}/rank-entry"
+        try:
+            webbrowser.open(rank_entry_url)
+        except Exception:
+            logger.warning("ランク手動入力画面を自動的に開けませんでした。手動で開いてください: %s", rank_entry_url)
+
+        # Issue #379: 「起動できたことに満足して専用部屋なのにrandomのまま等の設定忘れ」を
+        # 防ぐため、/adminで「確認完了」ボタンが押されるまでOBS Virtual Camera・OBS
+        # (obs-websocket)・YouTube連携への接続を一切行わない(startup_gate.pyのモジュール
+        # docstring参照)。タイムアウトは設けず無期限に待つ
+        logger.info("設定確認待ちです。%sで設定を確認し、「確認完了」ボタンを押してください", admin_url)
+        # Issue #485: 確認前に/adminからシステム終了が要求された場合は、何にも接続せずに終了する
+        try:
+            confirmed = startup_gate.wait_for_confirmation()
+        except KeyboardInterrupt:
+            logger.info("Ctrl+Cを受け取ったため終了します(設定確認前のため、何も記録していません)")
+            return
+        if not confirmed:
+            logger.info("設定画面(/admin)から終了が要求されたため終了します(設定確認前のため、何も記録していません)")
+            return
+        logger.info("設定確認が完了しました。OBS・YouTube連携への接続を開始します")
+
+        obs_controller = ObsSceneController(
+            host=obs_host,
+            port=obs_port,
+            password=obs_password,
+            scene_in_match=obs_scene_in_match,
+            scene_between_matches=obs_scene_between_matches,
+            browser_source_names=obs_browser_source_names,
+        )
+        if youtube_chat_dive_time_enabled:
+            dive_time_watcher = DiveTimeWatcher()
+            dive_time_watcher.start()
+        clip_recorder = RankEntryClipRecorder(output_dir=DEFAULT_CLIPS_DIR, db_path=db_path)
+        # Issue #312: ゲージのROI(GAUGE_ROI_ENLARGED)だけを切り出し、目盛り線を
+        # 合成したクローズアップ動画を並行して生成する(rank_entry_clips.pyの
+        # モジュールdocstring参照)
+        gauge_clip_recorder = RankEntryClipRecorder(
+            output_dir=GAUGE_CLIPS_DIR,
+            target_width=GAUGE_TARGET_WIDTH,
+            crop_roi=GAUGE_ROI_ENLARGED,
+            overlay_fn=_draw_gauge_ticks,
+            db_path=db_path,
+            # Issue #399: ランク変動が止まった瞬間の値を目盛りに合わせて読み取れるよう、
+            # ゲージ動画だけサンプリングを上げる。あわせて拡大・目盛り描画を書き出し時に
+            # 回し、バッファには生クロップ(1枚約28KB)だけを保持する
+            target_sample_fps=GAUGE_SAMPLE_FPS,
+            resize_on_encode=True,
+        )
         run(
             reader,
             machine,
@@ -738,10 +768,14 @@ def main() -> None:
     finally:
         if dive_time_watcher is not None:
             dive_time_watcher.stop()
-        obs_controller.close()
+        if obs_controller is not None:
+            obs_controller.close()
+        # Issue #485: OCR用のProcessPoolExecutorを明示的に止める(以前はプロセス終了任せだった)
+        machine.close()
         web_handle.stop()
         db.end_session(conn, session_id)
         conn.close()
+        logger.info("終了しました")
 
 
 if __name__ == "__main__":

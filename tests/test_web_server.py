@@ -13,7 +13,7 @@ from dotenv import dotenv_values
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from nss_tracker import match_transition, startup_gate, virtual_camera_status
+from nss_tracker import match_transition, shutdown_request, startup_gate, virtual_camera_status
 from nss_tracker.database import db
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.web import server as server_module
@@ -4987,3 +4987,47 @@ def test_health_check_post_match_sets_excluded(tmp_path: Path, monkeypatch):
 
     client.post("/health-check/match", data={"match_id": match_id, "result": "win", "room_type": "random"})
     assert _health_check_matches(client)[match_id]["excluded"] is False
+
+
+def test_admin_shows_shutdown_button_outside_settings_form(tmp_path: Path, monkeypatch):
+    """Issue #485: 終了ボタンは左カラム(ウィジェット一覧の下)に置き、設定フォーム(POST /admin)
+    とは別のフォームにする。押すとまず警告画面(GET /admin/shutdown)を開くだけで、終了はしない。
+    """
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    html = client.get("/admin").text
+
+    widgets_col = html[html.index('class="admin-col-widgets"') : html.index('class="admin-col-settings"')]
+    assert '<form method="get" action="/admin/shutdown">' in widgets_col
+    settings_form = html[html.index('<form method="post" action="/admin">') : html.index("</form>", html.index('<form method="post" action="/admin">'))]
+    assert "/admin/shutdown" not in settings_form
+    assert shutdown_request.is_requested() is False
+
+
+def test_admin_shutdown_confirm_page_does_not_request_shutdown(tmp_path: Path):
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    response = client.get("/admin/shutdown")
+
+    assert response.status_code == 200
+    assert '<form method="post" action="/admin/shutdown"' in response.text
+    assert 'href="/admin"' in response.text
+    assert shutdown_request.is_requested() is False
+
+
+def test_admin_shutdown_post_requests_shutdown_and_logs_once(tmp_path: Path, caplog):
+    """Issue #485: 同意されたら終了を要求し、リダイレクトせず「終了しました」のページをその場で返す
+    (この後Webサーバーも止まるため)。重ねて送信されてもログは1回だけ出す。
+    """
+    client = TestClient(create_app(tmp_path / "test.db"))
+
+    with caplog.at_level(logging.INFO, logger="nss_tracker.web"):
+        first = client.post("/admin/shutdown", follow_redirects=False)
+        second = client.post("/admin/shutdown", follow_redirects=False)
+
+    assert first.status_code == 200
+    assert "システムを終了しました" in first.text
+    assert second.status_code == 200
+    assert shutdown_request.is_requested() is True
+    assert [r.getMessage() for r in caplog.records].count("設定画面(/admin)からシステムの終了が要求されました") == 1

@@ -165,6 +165,14 @@ Issue #470: `/admin`の配信設定欄の先頭に、OBS Virtual Cameraから実
 ターミナルのログのみで確認する」という決め事を、この項目に限って覆したもの
 (ユーザーの要望)。`/admin`は入力途中のフォームを差し替えないよう全体の自動更新を
 しないため、この表示だけを`/api/virtual-camera-status`のポーリングで書き換える。
+
+Issue #485: `/admin`の左カラム(ウィジェット一覧の下)からシステムを終了できる。
+誤操作を避けるため設定フォーム(Issue #410)とは別にし、ボタンを押すとまず警告画面
+(`GET /admin/shutdown`)を挟み、そこで「終了する」を押した場合だけ`POST /admin/shutdown`で
+終了を要求する。Webサーバーは別スレッドで動いているため、ハンドラは
+`shutdown_request.request_shutdown()`で検知ループ(main.py)へ伝えるだけでプロセスを
+直接落とさない。後始末はCtrl+Cのときと同じ経路でmain.pyが行う。終了後はWebサーバーも
+止まるため、POSTへの応答はリダイレクトせず「終了しました」のページをその場で返す。
 """
 
 import colorsys
@@ -186,6 +194,7 @@ from nss_tracker import (
     match_transition,
     match_warnings,
     rank_warnings,
+    shutdown_request,
     startup_gate,
     virtual_camera_status,
     youtube_chat,
@@ -1839,6 +1848,21 @@ def create_app(db_path: Path) -> FastAPI:
             "admin_css_version": _static_asset_version("admin.css"),
         }
         return _TEMPLATES.TemplateResponse(request, "admin.html", context)
+
+    @app.get("/admin/shutdown")
+    def admin_shutdown_confirm(request: Request):
+        """システム終了の警告画面(Issue #485、モジュールdocstring参照)。"""
+        context = {"admin_css_version": _static_asset_version("admin.css")}
+        return _TEMPLATES.TemplateResponse(request, "admin_shutdown_confirm.html", context)
+
+    @app.post("/admin/shutdown")
+    def admin_shutdown(request: Request):
+        """警告画面で同意されたシステム終了を要求する(Issue #485、モジュールdocstring参照)。"""
+        if not shutdown_request.is_requested():
+            _logger.info("設定画面(/admin)からシステムの終了が要求されました")
+            shutdown_request.request_shutdown()
+        context = {"admin_css_version": _static_asset_version("admin.css")}
+        return _TEMPLATES.TemplateResponse(request, "admin_shutdown_done.html", context)
 
     @app.post("/admin")
     def admin_update(

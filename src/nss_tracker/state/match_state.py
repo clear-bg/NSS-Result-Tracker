@@ -1175,6 +1175,16 @@ class MatchStateMachine:
         self._vs_screen_event = None
         return event
 
+    def close(self) -> None:
+        """OCR用のExecutor(本番はProcessPoolExecutor)を止める(Issue #485)。
+
+        main.pyがアプリ終了時(Ctrl+C・/adminからの終了の両方)に呼ぶ。以前は明示的に
+        止めずプロセス終了任せにしていた。まだ始まっていないOCRは取り消し、実行中の
+        ものは終わるまで待つ(長くても数秒)。終了後に結果を使うことは無いため。
+        """
+        for executor in (self._rank_ocr_executor, self._goal_ocr_executor):
+            executor.shutdown(wait=True, cancel_futures=True)
+
     def process_frame(
         self, frame: np.ndarray, blackout: Optional[BlackoutObservation] = None
     ) -> Optional[MatchResult]:

@@ -3119,3 +3119,16 @@ def test_blackout_while_rank_before_ocr_is_pending_waits_and_finalizes(monkeypat
     result = machine.process_frame(frame, BlackoutObservation(blackout=True, min_mean=0.0, min_std=0.5))
     assert result is not None, "暗転の時点で読み取りの完了を待って確定するはず"
     assert result.rank_before == pytest.approx(41.2)
+
+
+def test_close_shuts_down_both_ocr_executors():
+    """Issue #485: アプリ終了時に、OCR用のExecutor(本番はProcessPoolExecutor)を2つとも明示的に止める。"""
+    rank_ocr_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    goal_ocr_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    machine = MatchStateMachine(rank_ocr_executor=rank_ocr_executor, goal_ocr_executor=goal_ocr_executor)
+
+    machine.close()
+
+    for executor in (rank_ocr_executor, goal_ocr_executor):
+        with pytest.raises(RuntimeError):
+            executor.submit(lambda: None)
