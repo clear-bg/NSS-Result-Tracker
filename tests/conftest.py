@@ -1,5 +1,6 @@
 import re
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,14 @@ requires_video_fixtures = pytest.mark.skipif(
 # 混ざることがあるため、「配下の全pngを無条件にfixtureとして扱う」テストでは
 # このヘルパーで事前にフィルタする
 _FIXTURE_NAME_PATTERN = re.compile(r"^\d+_")
+
+
+@pytest.fixture(autouse=True)
+def _reset_shutdown_request(monkeypatch):
+    """Issue #485: 終了要求はモジュールレベルの状態(threading.Eventはset()が不可逆)で、
+    main.run()が毎フレーム確認するため、テスト間で漏れないよう全テストでリセットする。
+    """
+    monkeypatch.setattr("nss_tracker.shutdown_request._requested_event", threading.Event())
 
 
 def list_screenshot_fixtures(fixtures_dir: Path) -> list[Path]:

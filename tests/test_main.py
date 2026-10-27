@@ -67,7 +67,7 @@ def test_main_starts_and_stops_web_server(monkeypatch, tmp_path):
     # 手前でブロックする。ここでは実際のブラウザ操作を伴わないよう待ち自体は無効化しつつ、
     # 呼ばれたこと自体(配線が壊れていないこと)はspyで確認する
     wait_calls = []
-    monkeypatch.setattr(main.startup_gate, "wait_for_confirmation", lambda: wait_calls.append(True))
+    monkeypatch.setattr(main.startup_gate, "wait_for_confirmation", lambda: wait_calls.append(True) or True)
 
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
@@ -121,7 +121,7 @@ def test_main_continues_when_browser_cannot_be_opened(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "run", lambda reader, machine, conn, session_id, obs_controller, fps, clip_recorder, gauge_clip_recorder, blackout_watcher=None, virtual_camera_monitor=None: None)
     # Issue #379: main()は/admin側の「確認完了」ボタンが押されるまでOBS/YouTube接続の
     # 手前でブロックするため、ここではその待ち自体を検証対象外として無効化する
-    monkeypatch.setattr(main.startup_gate, "wait_for_confirmation", lambda: None)
+    monkeypatch.setattr(main.startup_gate, "wait_for_confirmation", lambda: True)
 
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
@@ -948,3 +948,108 @@ def test_run_observes_virtual_camera_even_while_detection_is_paused(monkeypatch,
         conn.close()
 
     assert len(observed) == 3
+
+
+class _ShutdownAfterReader(_ListReader):
+    """指定枚数のフレームを返した直後に、/adminからの終了要求(Issue #485)を出すリーダー。"""
+
+    def __init__(self, frames, shutdown_after):
+        super().__init__(frames)
+        self._shutdown_after = shutdown_after
+
+    def read(self, timeout):
+        frame = super().read(timeout)
+        if self.frames_consumed == self._shutdown_after:
+            main.shutdown_request.request_shutdown()
+        return frame
+
+
+def test_run_stops_on_shutdown_request_and_discards_recording_clip(monkeypatch, tmp_path):
+    """Issue #485: /adminから終了が要求されたら検知ループを抜け、録画中のクリップは
+    試合結果と紐付いていないため書き出さずに捨てる。
+    """
+    monkeypatch.setattr(main, "_warmup_ocr_engines", lambda: None)
+    config.set_room_type("random")
+
+    class _NoOpObs:
+        def set_in_match(self, in_match):
+            pass
+
+    script = [
+        {},
+        {"match_end_seen": True},  # 「試合終了」確認 → 録画開始
+        {},
+        {},  # このフレームを処理する前に終了要求が来る
+    ]
+    reader = _ShutdownAfterReader([_BRIGHT_FRAME] * 4, shutdown_after=3)
+    recorders = [
+        RankEntryClipRecorder(output_dir=tmp_path / name, target_sample_fps=10.0)
+        for name in ("rank_entry_clips", "rank_gauge_clips")
+    ]
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db._SCHEMA)
+        conn.commit()
+        session_id = db.create_session(conn)
+        main.run(reader, _ScriptedMachine(script), conn, session_id, _NoOpObs(), 10.0, *recorders)
+    finally:
+        conn.close()
+
+    assert reader.frames_consumed == 3, "終了要求の後はフレームを読まないはず"
+    for recorder in recorders:
+        assert not recorder.is_recording
+    assert not list((tmp_path / "rank_entry_clips").glob("*.mp4"))
+
+
+def test_main_exits_without_connecting_when_shutdown_requested_before_confirm(monkeypatch, tmp_path):
+    """Issue #485: 起動確認ゲートの待機中に/adminから終了が要求された場合、OBS・YouTube・
+    検知ループには一切進まずに、Webサーバーの停止・配信セッションの終了まで行う。
+    """
+    monkeypatch.setattr(main, "LOG_DIR", tmp_path / "logs")
+    run_calls = []
+    monkeypatch.setattr(main, "run", lambda *args, **kwargs: run_calls.append(True))
+    obs_calls = []
+    monkeypatch.setattr(main, "ObsSceneController", lambda **kwargs: obs_calls.append(True))
+    monkeypatch.setattr(main.startup_gate, "wait_for_confirmation", lambda: False)
+
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("DB_PATH", str(db_path))
+    monkeypatch.setenv("WEB_HOST", "127.0.0.1")
+    monkeypatch.setenv("WEB_PORT", "8770")
+    monkeypatch.setenv("NSS_TRACKER_LOG_LEVEL", "INFO")
+    monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
+    monkeypatch.setenv("RANK_DELTA_DISTRIBUTION_SCOPE", "session")
+    monkeypatch.setenv("RANK_GRAPH_MATCH_LIMIT", "all")
+    monkeypatch.setenv("OBS_WEBSOCKET_HOST", "127.0.0.1")
+    monkeypatch.setenv("OBS_WEBSOCKET_PORT", "48767")
+    monkeypatch.setenv("OBS_WEBSOCKET_PASSWORD", "none")
+    monkeypatch.setenv("OBS_SCENE_IN_MATCH", "InMatch")
+    monkeypatch.setenv("OBS_SCENE_BETWEEN_MATCHES", "BetweenMatches")
+    monkeypatch.setenv("OBS_BROWSER_SOURCE_NAMES", "none")
+    monkeypatch.setenv("OBS_SCENE_SWITCHING_ENABLED", "true")
+    monkeypatch.setenv("YOUTUBE_CHAT_DIVE_TIME_ENABLED", "false")
+    monkeypatch.setattr(sys, "argv", ["main.py", "--video", "dummy.mp4"])
+    monkeypatch.setattr(main.webbrowser, "open", lambda url: None)
+
+    original_start = main.start_web_server_thread
+    captured = {}
+
+    def spy_start(app, host, port):
+        captured["handle"] = original_start(app, host=host, port=port)
+        return captured["handle"]
+
+    monkeypatch.setattr(main, "start_web_server_thread", spy_start)
+
+    main.main()
+
+    assert run_calls == []
+    assert obs_calls == []
+    assert not captured["handle"].thread.is_alive()
+    conn = sqlite3.connect(db_path)
+    try:
+        ended_at = conn.execute("SELECT ended_at FROM sessions").fetchone()[0]
+    finally:
+        conn.close()
+    assert ended_at is not None

@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from nss_tracker import startup_gate
+from nss_tracker import shutdown_request, startup_gate
 from nss_tracker.config import ConfigError
 
 
@@ -79,5 +79,35 @@ def test_wait_for_confirmation_blocks_until_confirm_start(monkeypatch):
         startup_gate.confirm_start()
 
         assert unblocked.wait(timeout=2.0)
+    finally:
+        thread.join(timeout=2.0)
+
+
+def test_wait_for_confirmation_returns_true_when_confirmed(monkeypatch):
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "random")
+    startup_gate.mark_obs_scene_switching_confirmed()
+    startup_gate.confirm_start()
+
+    assert startup_gate.wait_for_confirmation() is True
+
+
+def test_wait_for_confirmation_returns_false_when_shutdown_requested_before_confirm(monkeypatch):
+    """Issue #485: 確認前に/adminからシステム終了が要求されたら、待ちを抜けてFalseを返す。"""
+    monkeypatch.setattr(startup_gate, "_WAIT_POLL_INTERVAL_SECONDS", 0.01)
+    result = {}
+
+    def waiter():
+        result["confirmed"] = startup_gate.wait_for_confirmation()
+
+    thread = threading.Thread(target=waiter, daemon=True)
+    thread.start()
+    try:
+        time.sleep(0.05)
+        assert "confirmed" not in result  # まだ何も起きていないためブロックしたまま
+
+        shutdown_request.request_shutdown()
+
+        thread.join(timeout=2.0)
+        assert result == {"confirmed": False}
     finally:
         thread.join(timeout=2.0)
