@@ -1,0 +1,446 @@
+/* Issue #489: 記録漏れ試合の追加(/match-entry)専用のスタイル。admin.css(本体の幅・見出し・
+   メッセージ・送信ボタン)と併用し、ここではこの画面に固有の部品だけを足す。
+   見た目はArtifactのモックでユーザーと確認して決めた(/adminと揃えた白背景・青ボタン)。 */
+
+.match-entry-lead {
+    font-size: 13px;
+    color: #555;
+    line-height: 1.6;
+    margin: 0 0 20px;
+}
+
+.match-entry-fieldset {
+    border: 0;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+}
+
+.match-entry-fieldset[disabled] {
+    opacity: .55;
+}
+
+.match-entry-section {
+    border-top: 1px solid #e3e6ea;
+    padding-top: 16px;
+    margin-bottom: 20px;
+}
+
+.match-entry-required,
+.match-entry-optional {
+    font-size: 11px;
+    font-weight: bold;
+    letter-spacing: .04em;
+    margin-left: 6px;
+}
+
+.match-entry-required {
+    color: #b3261e;
+}
+
+.match-entry-optional {
+    color: #6b7280;
+}
+
+.match-entry-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 14px;
+}
+
+.match-entry-label {
+    font-size: 13px;
+    color: #555;
+}
+
+.match-entry-hint {
+    font-size: 12px;
+    color: #6b7280;
+    margin: 0;
+}
+
+.match-entry-field input,
+.match-entry-vs-slot input,
+.match-entry-vs-slot select {
+    font-size: 14px;
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box;
+    max-width: 100%;
+}
+
+.match-entry-field-error input {
+    border-color: #b3261e;
+}
+
+.match-entry-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+
+.match-entry-time {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.match-entry-time input {
+    width: 44px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 秒は任意のため、必須の時・分と見分けられるよう枠を点線にする */
+.match-entry-time .match-entry-second {
+    border-style: dashed;
+}
+
+.match-entry-colon {
+    font-weight: bold;
+    color: #6b7280;
+}
+
+.match-entry-results {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.match-entry-results label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    padding: 6px 12px;
+}
+
+.match-entry-results input {
+    margin: 0;
+}
+
+/* 直近試合結果ログ(Issue #262)と同じ勝敗の色 */
+.match-entry-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.match-entry-dot-win { background: #0ca30c; }
+.match-entry-dot-lose { background: #d03b3b; }
+.match-entry-dot-draw { background: #898781; }
+
+/* ランク入力欄: /rank-entry(.rank-entry-tier-field等、Issue #457/#474)と同じ寸法 */
+.match-entry-rank-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+}
+
+.match-entry-step-field {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+}
+
+.match-entry-step-field input {
+    width: 35px;
+    padding: 6px 4px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.match-entry-steppers {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+}
+
+.match-entry-steppers button {
+    flex: 1;
+    font-size: 9px;
+    line-height: 1;
+    padding: 0 7px;
+    border: 1px solid #ccc;
+    background: #fff;
+    color: #555;
+    cursor: pointer;
+}
+
+.match-entry-steppers button:first-child {
+    border-radius: 4px 4px 0 0;
+    border-bottom: none;
+}
+
+.match-entry-steppers button:last-child {
+    border-radius: 0 0 4px 4px;
+}
+
+.match-entry-steppers button:hover {
+    background: #f0f0f0;
+}
+
+.match-entry-decimal-point {
+    font-size: 16px;
+    font-weight: bold;
+    color: #555;
+}
+
+.match-entry-delta {
+    font-size: 13px;
+    color: #6b7280;
+    margin-left: 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+.match-entry-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+}
+
+.match-entry-all-unknown {
+    margin-bottom: 8px;
+}
+
+.match-entry-vs-hint {
+    margin-bottom: 12px;
+}
+
+/* VS画面のランク: 自チーム・相手チームを左右に並べ、狭い画面では縦積みにする */
+.match-entry-vs-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 24px;
+}
+
+.match-entry-vs-team {
+    flex: 1 1 220px;
+    min-width: 0;
+}
+
+.match-entry-vs-team h3 {
+    font-size: 13px;
+    color: #555;
+    margin: 0 0 6px;
+}
+
+.match-entry-vs-slot {
+    display: grid;
+    grid-template-columns: 52px 72px 64px;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+    font-size: 13px;
+}
+
+.match-entry-vs-slot input,
+.match-entry-vs-slot select {
+    padding: 4px 6px;
+    width: 100%;
+}
+
+.match-entry-vs-slot input {
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.match-entry-vs-who {
+    color: #6b7280;
+}
+
+.match-entry-vs-self .match-entry-vs-who {
+    color: #222;
+    font-weight: bold;
+}
+
+/* 数値が空欄(=「不明」として保存する)の欄 */
+.match-entry-vs-unknown input {
+    background: #f1f3f4;
+}
+
+/* 「VS画面のランクが分からない」にチェックしたとき、入力欄と説明文を同じ濃さまで暗くする */
+.match-entry-dimmed {
+    opacity: .4;
+}
+
+.match-entry-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: center;
+    margin-top: 8px;
+}
+
+.match-entry-actions a {
+    font-size: 14px;
+    color: #1a73e8;
+    text-decoration: none;
+}
+
+.match-entry-actions a:hover {
+    text-decoration: underline;
+}
+
+.match-entry-actions button[type="submit"] {
+    margin-top: 0;
+}
+
+.match-entry-blocked {
+    padding: 12px 14px;
+    border: 2px solid #b3261e;
+    border-radius: 4px;
+    background: #fbe9e7;
+    color: #b3261e;
+    font-size: 14px;
+    font-weight: bold;
+    margin-bottom: 16px;
+}
+
+.match-entry-blocked p {
+    margin: 4px 0 0;
+    font-weight: normal;
+    font-size: 13px;
+}
+
+/* ---- 確認画面 ---- */
+.match-entry-warn {
+    padding: 12px 14px;
+    border: 2px solid #b3261e;
+    border-radius: 4px;
+    background: #fbe9e7;
+    color: #b3261e;
+    font-size: 14px;
+    margin-bottom: 20px;
+}
+
+.match-entry-warn strong {
+    display: block;
+    margin-bottom: 6px;
+}
+
+.match-entry-warn ul {
+    margin: 0;
+    padding-left: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.match-entry-summary {
+    display: grid;
+    grid-template-columns: 9em 1fr;
+    gap: 4px 12px;
+    font-size: 14px;
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+}
+
+.match-entry-summary dt {
+    color: #6b7280;
+}
+
+.match-entry-summary dd {
+    margin: 0;
+    min-width: 0;
+}
+
+.match-entry-table-wrap {
+    overflow-x: auto;
+}
+
+.match-entry-table {
+    border-collapse: collapse;
+    font-size: 13px;
+    width: 100%;
+    font-variant-numeric: tabular-nums;
+}
+
+.match-entry-table th,
+.match-entry-table td {
+    text-align: left;
+    padding: 6px 8px;
+    border-bottom: 1px solid #e3e6ea;
+    white-space: nowrap;
+}
+
+.match-entry-table th {
+    color: #6b7280;
+    font-weight: normal;
+    font-size: 12px;
+}
+
+.match-entry-row-new td {
+    background: #e8f0fe;
+    font-weight: bold;
+}
+
+/* 追加する試合は配信(起動)の1試合目になるため、直前の試合との間に配信の区切りを引く */
+.match-entry-row-session-break td {
+    border-top: 2px solid #222;
+}
+
+.match-entry-tag {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: #1a73e8;
+    color: #fff;
+}
+
+.match-entry-changed {
+    color: #b3261e;
+    font-weight: bold;
+}
+
+.match-entry-muted {
+    color: #6b7280;
+    font-size: 13px;
+}
+
+.match-entry-rule-warn {
+    border-left: 3px solid #e6a100;
+    padding: 6px 10px;
+    font-size: 13px;
+    background: #f1f3f4;
+    margin-bottom: 6px;
+}
+
+.match-entry-ack {
+    margin: 16px 0;
+}
+
+button[type="submit"].match-entry-danger-button {
+    background: #b3261e;
+}
+
+button[type="submit"].match-entry-danger-button:hover {
+    background: #8c1d18;
+}
+
+button[type="submit"].match-entry-danger-button:disabled {
+    background: #d9a29e;
+    cursor: not-allowed;
+}
+
+/* 「戻って修正する」は入力値をPOSTで持ち帰るためボタンだが、見た目はリンクにする */
+button[type="submit"].match-entry-link-button {
+    background: none;
+    color: #1a73e8;
+    padding: 0;
+    font-size: 14px;
+}
+
+button[type="submit"].match-entry-link-button:hover {
+    background: none;
+    text-decoration: underline;
+}

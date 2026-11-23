@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>記録漏れ試合の追加</title>
+<link rel="stylesheet" href="/static/admin.css?v={{ admin_css_version }}">
+<link rel="stylesheet" href="/static/match_entry.css?v={{ match_entry_css_version }}">
+</head>
+<body>
+{# Issue #489: 記録漏れ試合の追加の完了画面(POST /match-entryからのリダイレクト先) #}
+<h1>記録漏れ試合の追加</h1>
+<p class="admin-message admin-message-success">id={{ match_id }} として追加しました。{% if backup_path %}バックアップ: {{ backup_path }}(DBファイルと同じフォルダ){% endif %}</p>
+<div class="match-entry-actions">
+  <a href="/health-check">ランク記録の健全性チェックで確認する</a>
+  <a href="/match-entry">続けて追加する</a>
+  <a href="/admin">/admin に戻る</a>
+</div>
+</body>
+</html>

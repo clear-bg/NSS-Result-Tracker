@@ -188,9 +188,12 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 
 from nss_tracker import (
     detection_pause,
+    manual_match,
+    match_activity,
     match_transition,
     match_warnings,
     rank_warnings,
@@ -212,6 +215,9 @@ from nss_tracker.config import (
     update_editable_settings,
 )
 from nss_tracker.database.db import (
+    backup_database,
+    insert_manual_match,
+    plan_manual_match_insert,
     connect as _connect_and_migrate,
     delete_match,
     set_match_excluded,
@@ -239,6 +245,7 @@ from nss_tracker.database.db import (
 )
 from nss_tracker.rank_entry_clips import DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR
 from nss_tracker.rank_estimate import convert_rank_tier_to_unified_scale
+from nss_tracker.timeutil import now_jst
 
 _WEB_DIR = Path(__file__).parent
 _TEMPLATES = Jinja2Templates(directory=_WEB_DIR / "templates")
@@ -1792,6 +1799,291 @@ def _list_clip_match_ids(clips_dir: Path) -> list[int]:
     )
 
 
+# Issue #489: 記録漏れ試合の手動追加(/match-entry)。入力値の検証と挿入位置の判定は
+# manual_match.py、DBへの書き込みはdb.insert_manual_match()が担い、ここでは画面に
+# 出す値の組み立てと、DBの外にあるもの(クリップファイル・バックアップ)を扱う。
+
+_RESULT_LABELS = {"win": "勝ち", "lose": "負け", "draw": "引き分け"}
+_MATCH_ENTRY_VS_LABEL_OPTIONS = (("∞", "∞"), ("S", "S"), ("A", "A"), (manual_match.VS_UNKNOWN_LABEL, "不明"))
+# 試合IDをずらす書き込みの直前に取るバックアップの置き場所(DBファイルと同じフォルダの下)
+_MATCH_ENTRY_BACKUP_DIR_NAME = "backups"
+# 確認画面の表に、試合IDがずれる試合を何件まで個別に並べるか(残りは件数だけ出す)
+_MATCH_ENTRY_SHIFTED_ROWS_SHOWN = 3
+
+
+def _match_entry_vs_teams() -> list[dict]:
+    """VS画面のランク入力欄(自チーム・相手チーム各4人)をテンプレート用に並べる。"""
+    return [
+        {
+            "title": title,
+            "slots": [
+                {
+                    "field": manual_match.vs_field_name(side, index),
+                    "name": manual_match.vs_slot_name(side, index),
+                    "is_self": side == "mine" and index == 0,
+                }
+                for index in range(manual_match.VS_SLOT_COUNT)
+            ],
+        }
+        for side, title in (("mine", "自チーム"), ("opponent", "相手チーム"))
+    ]
+
+
+def _guess_manual_match_rank_before(conn: sqlite3.Connection) -> Optional[float]:
+    """入力欄の初期値に使う、追加する試合の試合前ランクの見込みを返す。
+
+    追加できるのは「配信の1試合目の直前」か「起動後まだ試合が無い配信の末尾」のため、
+    どちらの場合も今回の配信の1試合目より前で最後に確定したランクを賭けた試合の
+    rank_afterが引き継がれる。実際の値は試合終了時刻から決まる挿入位置しだいのため、
+    確認画面で改めて示す。
+    """
+    session_id = fetch_current_session_id(conn)
+    first = (
+        conn.execute("SELECT MIN(id) AS id FROM matches WHERE session_id = ?", (session_id,)).fetchone()["id"]
+        if session_id is not None
+        else None
+    )
+    query = "SELECT rank_after FROM matches WHERE rank_staked = 1 AND excluded = 0"
+    params: tuple = ()
+    if first is not None:
+        query += " AND id < ?"
+        params = (first,)
+    row = conn.execute(query + " ORDER BY id DESC LIMIT 1", params).fetchone()
+    return row["rank_after"] if row is not None else None
+
+
+def _match_entry_default_values(db_path: Path) -> dict:
+    """入力画面を開いたときの初期値。
+
+    ランクは試合前ランクの見込みをそのまま入れておき(▲▼で増減させる起点にする)、
+    VS画面のランクは全員∞・数値は空欄にする。自分の数値だけは試合前ランクの帯番号を
+    入れておく(試合前のランクから分かるため、ユーザーとの相談で決定)。
+    """
+    conn = _connect(db_path)
+    try:
+        guess = _guess_manual_match_rank_before(conn)
+    finally:
+        conn.close()
+    values: dict = {"date": now_jst().date().isoformat(), "rank_before_guess": guess}
+    if guess is not None:
+        hundredths = round(guess * 100)
+        values["rank_tier"] = str(hundredths // 100)
+        values["rank_fraction"] = f"{hundredths % 100:02d}"
+    for side in manual_match.VS_SIDES:
+        for index in range(manual_match.VS_SLOT_COUNT):
+            values[f"{manual_match.vs_field_name(side, index)}_label"] = "∞"
+    if guess is not None:
+        values[f"{manual_match.vs_field_name('mine', 0)}_value"] = str(int(guess))
+    return values
+
+
+def _match_entry_values_from_form(form) -> dict:
+    """送信されたフォームの値を、入力画面に戻すとき・確認画面のhidden項目用にそのまま持つ。"""
+    values = {key: value for key, value in form.items() if isinstance(value, str)}
+    for checkbox in ("player_shortage", "vs_all_unknown"):
+        values[checkbox] = checkbox in form
+    # 確認画面の「確認しました」は入力値ではないため持ち回らない
+    values.pop("confirmed", None)
+    return values
+
+
+def _count_clips_from(boundary: int) -> int:
+    """試合IDがboundary以上のクリップファイルの数(画面全体・ゲージの合計)。"""
+    return sum(
+        1 for clips_dir in (DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR) for i in _list_clip_match_ids(clips_dir) if i >= boundary
+    )
+
+
+def _shift_clip_files(boundary: int):
+    """試合IDがboundary以上のクリップ(`{match_id}.mp4`)を、IDを1つ後ろへずらした名前へ付け替える。
+
+    db.insert_manual_match()のbefore_commitとして渡す。番号の大きい方から順に付け替える
+    ため、途中で既存のファイルを上書きすることは無い(付け替え先が既にあれば中止する)。
+    途中で失敗した場合はそこまでの付け替えを元に戻してから例外を送出し、成功した場合は
+    元に戻す関数を返す(DBのコミットに失敗したときに呼ばれる)。
+    """
+    renamed: list[tuple[Path, Path]] = []
+
+    def undo() -> None:
+        for moved_to, moved_from in reversed(renamed):
+            moved_to.rename(moved_from)
+
+    try:
+        for clips_dir in (DEFAULT_CLIPS_DIR, GAUGE_CLIPS_DIR):
+            for match_id in _list_clip_match_ids(clips_dir):  # 新しい順(番号の大きい順)
+                if match_id < boundary:
+                    continue
+                source = clips_dir / f"{match_id}.mp4"
+                target = clips_dir / f"{match_id + 1}.mp4"
+                if target.exists():
+                    raise RuntimeError(f"クリップの付け替え先が既に存在します: {target}")
+                source.rename(target)
+                renamed.append((target, source))
+    except Exception:
+        undo()
+        raise
+    if renamed:
+        _logger.info("記録漏れ試合の追加に伴い、クリップ%d件のファイル名を付け替えました(id>=%dを+1)", len(renamed), boundary)
+    return undo
+
+
+def _format_session_started_at(conn: sqlite3.Connection, session_id: Optional[int]) -> str:
+    row = (
+        conn.execute("SELECT started_at FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        if session_id is not None
+        else None
+    )
+    if row is None:
+        return "-"
+    return datetime.fromisoformat(row["started_at"]).strftime("%m/%d %H:%M 起動")
+
+
+def _format_vs_slots(slots: tuple) -> str:
+    return " / ".join("-" if slot.is_unknown else f"{slot.label}{slot.value}" for slot in slots)
+
+
+def _match_entry_warnings(
+    conn: sqlite3.Connection, entry: manual_match.ManualMatchEntry, plan
+) -> list[str]:
+    """確認画面に出す警告(書き込みは止めないが、目を通してほしいもの)。
+
+    勝敗とランクの変化の矛盾(ルールA/D/E)は入力エラーとして既に弾いているため、
+    ここに出るのはそれ以外のルール(I: 直後の試合のVS画面と帯が合わない、J: 合計ランク差が
+    小さいのに変化ゼロ)と、VS画面のランクの入力内容に関するもの。
+    """
+    mine_values = [convert_rank_tier_to_unified_scale(s.label, s.value) for s in entry.vs_mine]
+    opponent_values = [convert_rank_tier_to_unified_scale(s.label, s.value) for s in entry.vs_opponent]
+    mine_known = [v for v in mine_values if v is not None]
+    opponent_known = [v for v in opponent_values if v is not None]
+    next_match_vs_tier = (
+        _mine_vs_tier(fetch_vs_slot_ranks(conn, plan.next_staked_id)) if plan.next_staked_id is not None else None
+    )
+    found = [
+        warning.message
+        for warning in rank_warnings.evaluate(
+            result=entry.result,
+            rank_before=plan.rank_before,
+            rank_after=entry.rank_after,
+            league_change_label_detected=plan.league_changed,
+            next_match_vs_tier=next_match_vs_tier,
+            team_rank_totals=rank_warnings.TeamRankTotals(
+                mine=sum(mine_known) if mine_known else None,
+                opponent=sum(opponent_known) if opponent_known else None,
+                mine_known_count=len(mine_known),
+                opponent_known_count=len(opponent_known),
+            ),
+            player_shortage=entry.player_shortage,
+        )
+        if warning.rule_code not in manual_match.BLOCKING_RULE_CODES
+    ]
+    found += [
+        w.message
+        + " 追加後、ランク記録の健全性チェック(/health-check)にこの警告が出ます(確認済みにすれば消せます)。"
+        for w in match_warnings.evaluate(mine_known_count=len(mine_known), opponent_known_count=len(opponent_known))
+    ]
+    self_slot = entry.vs_mine[0]
+    if self_slot.label == "∞" and self_slot.value != int(plan.rank_before):
+        found.append(
+            f"VS画面の自分のランク(∞{self_slot.value})が、試合前のランク({plan.rank_before})の"
+            f"帯番号({int(plan.rank_before)})と一致しません。"
+        )
+    return found
+
+
+def _next_autoincrement_match_id(conn: sqlite3.Connection) -> int:
+    """末尾に追加した場合に採番される試合IDの見込み(AUTOINCREMENTの採番規則に合わせる)。"""
+    seq = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'matches'").fetchone()
+    max_id = conn.execute("SELECT MAX(id) AS id FROM matches").fetchone()["id"]
+    return max(seq["seq"] if seq is not None else 0, max_id or 0) + 1
+
+
+def _build_match_entry_confirm_context(
+    conn: sqlite3.Connection, entry: manual_match.ManualMatchEntry, plan
+) -> dict:
+    """確認画面に出す内容(追加する試合・前後の試合の表・変わる内容・警告)を組み立てる。"""
+    position = plan.position
+    new_id = position.new_id if position.new_id is not None else _next_autoincrement_match_id(conn)
+
+    def row_for(match_id: int, *, shifted: bool) -> dict:
+        match = fetch_match(conn, match_id)
+        rank_before_text = "-" if match["rank_before"] is None else f"{match['rank_before']:.2f}"
+        rank_before_changed = shifted and match_id == plan.next_staked_id
+        if rank_before_changed:
+            rank_before_text = f"{rank_before_text} → {entry.rank_after:.2f}"
+        return {
+            "kind": "existing",
+            "id_text": f"{match_id} → {match_id + 1}" if shifted else str(match_id),
+            "id_changed": shifted,
+            "recorded_at": _format_recorded_at(match["detected_at"]),
+            "result": _RESULT_LABELS.get(match["result"], match["result"]),
+            "rank_before": rank_before_text,
+            "rank_before_changed": rank_before_changed,
+            "rank_after": "-" if match["rank_after"] is None else f"{match['rank_after']:.2f}",
+            "session": _format_session_started_at(conn, match["session_id"]),
+            "session_break": False,
+        }
+
+    rows = []
+    if position.previous is not None:
+        rows.append(row_for(position.previous.id, shifted=False))
+    rows.append(
+        {
+            "kind": "new",
+            "id_text": f"(新規) {new_id}",
+            "id_changed": False,
+            "recorded_at": entry.detected_at.strftime("%m/%d %H:%M:%S"),
+            "result": _RESULT_LABELS[entry.result],
+            "rank_before": f"{plan.rank_before:.2f}",
+            "rank_before_changed": False,
+            "rank_after": f"{entry.rank_after:.2f}",
+            "session": _format_session_started_at(conn, position.session_id),
+            # 追加する試合は配信(起動)の1試合目になるため、直前の試合との間で配信が切り替わる
+            "session_break": position.previous is not None,
+        }
+    )
+    shown = plan.shifted_match_ids[:_MATCH_ENTRY_SHIFTED_ROWS_SHOWN]
+    # 試合前ランクが変わる試合は、表示件数の外にあっても必ず表に出す
+    if plan.next_staked_id is not None and plan.next_staked_id not in shown:
+        shown = shown + (plan.next_staked_id,)
+    rows += [row_for(match_id, shifted=True) for match_id in shown]
+    remaining = len(plan.shifted_match_ids) - len(shown)
+
+    delta = round(entry.rank_after - plan.rank_before, 2)
+    league_text = {"up": "(昇格)", "down": "(降格)"}.get(plan.league_changed, "")
+    return {
+        "summary": [
+            ("試合終了時刻", entry.detected_at.strftime("%Y-%m-%d %H:%M:%S")),
+            ("勝敗", _RESULT_LABELS[entry.result]),
+            ("ランク", f"{plan.rank_before:.2f} → {entry.rank_after:.2f}({delta:+.2f}){league_text}"),
+            # 直前の行がランクを賭けていない試合のこともあるため、試合前ランクの出どころを明示する
+            ("試合前ランク", f"id={plan.previous_staked_id} の確定値を引き継ぎ"),
+            ("人数差", "あり" if entry.player_shortage else "なし"),
+            (
+                "VS画面",
+                f"自 {_format_vs_slots(entry.vs_mine)} ・ 相手 {_format_vs_slots(entry.vs_opponent)}"
+                if entry.has_vs_ranks
+                else "全員不明(保存しません)",
+            ),
+            ("属する配信", _format_session_started_at(conn, position.session_id)),
+        ],
+        "rows": rows,
+        "remaining_shifted_count": remaining,
+        "shifted_count": len(plan.shifted_match_ids),
+        "shifted_from": plan.shifted_match_ids[0] if plan.shifted_match_ids else None,
+        "clip_count": _count_clips_from(position.new_id) if position.new_id is not None else 0,
+        "next_staked_new_id": plan.next_staked_id + 1 if plan.next_staked_id is not None else None,
+        "next_staked_confirmed": plan.next_staked_rank_after is not None,
+        "warnings": _match_entry_warnings(conn, entry, plan),
+    }
+
+
+def _backup_before_match_entry(conn: sqlite3.Connection, db_path: Path) -> Path:
+    """記録漏れ試合の追加の直前に、DBファイルと同じフォルダのbackups/へ丸ごと複製する。"""
+    timestamp = now_jst().strftime("%Y%m%d_%H%M%S")
+    dest = db_path.parent / _MATCH_ENTRY_BACKUP_DIR_NAME / f"{db_path.stem}_{timestamp}_before_match_entry.db"
+    return backup_database(conn, dest)
+
+
 def create_app(db_path: Path) -> FastAPI:
     app = FastAPI()
     # Issue #407: このモジュールの_connect()はスキーマ作成・マイグレーションを行わない
@@ -2049,6 +2341,117 @@ def create_app(db_path: Path) -> FastAPI:
         )
         status = "excluded" if excluded_value else "included"
         return RedirectResponse(f"/rank-entry?match_id={match_id}&status={status}", status_code=303)
+
+    # Issue #489: 記録漏れ試合の手動追加。入力 → 確認(POST /match-entry/confirm) →
+    # 実行(POST /match-entry) → 完了(GET /match-entry/done)の流れ。DBを直接書き換える
+    # (試合IDをずらす)ため、確認画面で「確認しました」にチェックするまで実行させず、
+    # 実行直前にも条件を確かめ直してバックアップを取る
+    def render_match_entry(request: Request, values: dict, errors: Optional[dict] = None, error: Optional[str] = None):
+        context = {
+            "values": values,
+            "errors": errors or {},
+            "error": error,
+            "in_progress": match_activity.is_in_progress(),
+            "vs_teams": _match_entry_vs_teams(),
+            "vs_label_options": _MATCH_ENTRY_VS_LABEL_OPTIONS,
+            "admin_css_version": _static_asset_version("admin.css"),
+            "match_entry_css_version": _static_asset_version("match_entry.css"),
+        }
+        return _TEMPLATES.TemplateResponse(request, "match_entry.html", context)
+
+    _IN_PROGRESS_MESSAGE = "試合中のため、いまは追加できません。試合が終わり試合間に戻ってから、もう一度お試しください。"
+
+    @app.get("/match-entry")
+    def match_entry(request: Request):
+        return render_match_entry(request, _match_entry_default_values(db_path))
+
+    @app.post("/match-entry/back")
+    async def match_entry_back(request: Request):
+        """確認画面の「戻って修正する」。入力値を保ったまま入力画面に戻す。"""
+        form = await request.form()
+        return render_match_entry(request, _match_entry_values_from_form(form))
+
+    def plan_match_entry(form) -> tuple:
+        """フォームを検証し、(入力値, 計画, 確認画面の内容, 入力欄ごとのエラー)を返す。"""
+        entry, errors = manual_match.parse_form(form, now_jst())
+        if entry is None:
+            return None, None, None, errors
+        conn = _connect(db_path)
+        try:
+            plan = plan_manual_match_insert(conn, entry, fetch_current_session_id(conn))
+            context = _build_match_entry_confirm_context(conn, entry, plan)
+        except manual_match.ManualMatchError as exc:
+            return None, None, None, {exc.field: str(exc)}
+        finally:
+            conn.close()
+        return entry, plan, context, {}
+
+    @app.post("/match-entry/confirm")
+    async def match_entry_confirm(request: Request):
+        form = await request.form()
+        values = _match_entry_values_from_form(form)
+        if match_activity.is_in_progress():
+            return render_match_entry(request, values, error=_IN_PROGRESS_MESSAGE)
+        entry, plan, confirm_context, errors = await run_in_threadpool(plan_match_entry, form)
+        if entry is None:
+            return render_match_entry(request, values, errors=errors)
+        context = {
+            **confirm_context,
+            "hidden_values": [
+                (key, value) for key, value in values.items() if isinstance(value, str) and key != "rank_before_guess"
+            ]
+            + [(key, "on") for key in ("player_shortage", "vs_all_unknown") if values.get(key)],
+            "admin_css_version": _static_asset_version("admin.css"),
+            "match_entry_css_version": _static_asset_version("match_entry.css"),
+        }
+        return _TEMPLATES.TemplateResponse(request, "match_entry_confirm.html", context)
+
+    def execute_match_entry(entry: manual_match.ManualMatchEntry) -> tuple[int, Path]:
+        conn = _connect(db_path)
+        try:
+            backup_path = _backup_before_match_entry(conn, db_path)
+            _logger.info("記録漏れ試合の追加の前にDBをバックアップしました: %s", backup_path)
+            new_id, _ = insert_manual_match(
+                conn, entry, fetch_current_session_id(conn), before_commit=_shift_clip_files
+            )
+        finally:
+            conn.close()
+        return new_id, backup_path
+
+    @app.post("/match-entry")
+    async def match_entry_submit(request: Request):
+        form = await request.form()
+        values = _match_entry_values_from_form(form)
+        if "confirmed" not in form:
+            return render_match_entry(request, values, error="確認画面で「確認しました」にチェックを入れてから追加してください。")
+        if match_activity.is_in_progress():
+            return render_match_entry(request, values, error=_IN_PROGRESS_MESSAGE)
+        entry, errors = manual_match.parse_form(form, now_jst())
+        if entry is None:
+            return render_match_entry(request, values, errors=errors)
+        try:
+            new_id, backup_path = await run_in_threadpool(execute_match_entry, entry)
+        except manual_match.ManualMatchError as exc:
+            _logger.warning("記録漏れ試合の追加が拒否されました: %s", exc)
+            return render_match_entry(request, values, errors={exc.field: str(exc)})
+        except Exception:
+            _logger.exception("記録漏れ試合の追加に失敗しました(DBの変更は取り消しました)")
+            return render_match_entry(
+                request, values, error="追加に失敗したため、変更を取り消しました。詳しくはターミナルのログを確認してください。"
+            )
+        return RedirectResponse(
+            f"/match-entry/done?match_id={new_id}&backup={quote(backup_path.name)}", status_code=303
+        )
+
+    @app.get("/match-entry/done")
+    def match_entry_done(request: Request, match_id: int, backup: str = ""):
+        context = {
+            "match_id": match_id,
+            "backup_path": f"{_MATCH_ENTRY_BACKUP_DIR_NAME}/{backup}" if backup else None,
+            "admin_css_version": _static_asset_version("admin.css"),
+            "match_entry_css_version": _static_asset_version("match_entry.css"),
+        }
+        return _TEMPLATES.TemplateResponse(request, "match_entry_done.html", context)
 
     @app.get("/health-check")
     def health_check(request: Request, status: Optional[str] = None, error: Optional[str] = None):

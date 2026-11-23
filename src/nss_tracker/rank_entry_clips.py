@@ -390,6 +390,12 @@ class RankEntryClipRecorder:
     def is_recording(self) -> bool:
         return self._recording
 
+    @property
+    def is_encoding(self) -> bool:
+        """finish()後、バックグラウンドで`{match_id}.mp4`を書き出している最中ならTrue
+        (Issue #489、書き出し中に試合IDがずれないよう`/match-entry`が待つため)。"""
+        return self._last_encode_thread is not None and self._last_encode_thread.is_alive()
+
     def start(self, source_fps: float) -> None:
         """録画を開始する。前回分のバッファが残っていれば(finish()未到達のまま
         次の試合が始まった場合)破棄する(モジュールdocstring参照、見逃しは許容する)。
