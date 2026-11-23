@@ -1,4 +1,5 @@
 import logging
+import threading
 
 import cv2
 import numpy as np
@@ -279,6 +280,23 @@ def test_finish_encodes_clip_and_stops_recording(tmp_path):
     assert output_path.exists()
     assert output_path.stat().st_size > 0
     assert recorder.is_recording is False
+
+
+def test_is_encoding_is_true_only_while_writing_the_clip(tmp_path, monkeypatch):
+    """Issue #489: 書き出し中は/match-entryが試合IDをずらさないよう、書き出しの有無を外から見られる。"""
+    recorder = RankEntryClipRecorder(output_dir=tmp_path, target_sample_fps=10.0)
+    assert recorder.is_encoding is False
+
+    release = threading.Event()
+    monkeypatch.setattr(recorder, "_encode_and_apply_retention", lambda frames, match_id: release.wait(10))
+    recorder.start(source_fps=10.0)
+    recorder.add_frame(_make_frame(width=64, height=48))
+    recorder.finish(match_id=42)
+    assert recorder.is_encoding is True
+
+    release.set()
+    recorder._last_encode_thread.join(timeout=10)
+    assert recorder.is_encoding is False
 
 
 def test_finish_applies_retention_keeping_only_max_clips(tmp_path):
