@@ -75,9 +75,10 @@ NULLのまま)。Webサーバーは検知・記録処理と別スレッド/別�
 
 import logging
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from nss_tracker.config import (
     get_db_path,
@@ -86,10 +87,10 @@ from nss_tracker.config import (
     get_room_type,
     is_allowed_player,
 )
-from nss_tracker import rank_estimate
+from nss_tracker import manual_match, rank_estimate
 from nss_tracker.detection.vs_rank import SlotRank
 from nss_tracker.state.match_state import MatchResult
-from nss_tracker.timeutil import now_jst
+from nss_tracker.timeutil import JST, now_jst
 
 logger = logging.getLogger("nss_tracker.database")
 
@@ -1629,3 +1630,266 @@ def fetch_vs_rank_snapshot_slots(conn: sqlite3.Connection, snapshot_id: int) -> 
         "SELECT * FROM vs_rank_snapshot_slots WHERE snapshot_id = ? ORDER BY side, slot_index",
         (snapshot_id,),
     ).fetchall()
+
+
+def backup_database(conn: sqlite3.Connection, dest_path: Path) -> Path:
+    """DBの内容をそのままdest_pathへ複製する(SQLiteのオンラインバックアップAPI)。
+
+    記録漏れ試合の手動追加(Issue #489)のように、試合IDの繰り下げを伴う書き込みの
+    直前に取る。検知ループが別のコネクションで書き込んでいる最中でも一貫した内容を
+    複製できる。
+    """
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    backup_conn = sqlite3.connect(dest_path)
+    try:
+        conn.backup(backup_conn)
+    finally:
+        backup_conn.close()
+    return dest_path
+
+
+@dataclass(frozen=True)
+class ManualMatchPlan:
+    """記録漏れ試合を追加したときに何が書き込まれ、何が変わるか(Issue #489)。
+
+    確認画面の表示と、実際の書き込み(insert_manual_match)の両方がこれを使う。
+    試合IDはすべて**追加前**のもの。
+    """
+
+    position: manual_match.InsertPosition
+    # 引き継ぎ元(直前のランクを賭けた・記録対象の試合)と、そこから引き継ぐ試合前ランク
+    previous_staked_id: int
+    rank_before: float
+    league_changed: Optional[str]
+    # 試合IDが1つ後ろへずれる試合(追加前のID、昇順)
+    shifted_match_ids: tuple[int, ...]
+    # 試合前ランクが書き換わる後続の試合(直後のランクを賭けた・記録対象の試合)
+    next_staked_id: Optional[int]
+    next_staked_old_rank_before: Optional[float]
+    next_staked_rank_after: Optional[float]
+
+
+def _parse_detected_at(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=JST)
+
+
+def plan_manual_match_insert(
+    conn: sqlite3.Connection, entry: manual_match.ManualMatchEntry, current_session_id: Optional[int]
+) -> ManualMatchPlan:
+    """記録漏れ試合をどこへ追加し、何が変わるかを求める(書き込みはしない、Issue #489)。
+
+    条件を満たさない場合は`manual_match.ManualMatchError`を送出する:
+
+    - 挿入位置が決まらない(配信の途中に入る時刻等、`manual_match.decide_insert_position`参照)
+    - 試合前ランクの引き継ぎ元(直前のランクを賭けた試合)が無い、または未確定
+      (値を捏造しない。未確定なら先に`/rank-entry`で確定させてもらう)
+    - 勝敗とランクの変化がゲーム仕様上ありえない(`manual_match.check_rank_change`)
+    """
+    refs = [
+        manual_match.MatchRef(
+            id=row["id"], detected_at=_parse_detected_at(row["detected_at"]), session_id=row["session_id"]
+        )
+        for row in conn.execute("SELECT id, detected_at, session_id FROM matches ORDER BY id")
+    ]
+    position = manual_match.decide_insert_position(entry.detected_at, refs, current_session_id)
+    boundary = position.new_id
+
+    query = "SELECT id, rank_after FROM matches WHERE rank_staked = 1 AND excluded = 0"
+    params: tuple = ()
+    if boundary is not None:
+        query += " AND id < ?"
+        params = (boundary,)
+    previous_staked = conn.execute(query + " ORDER BY id DESC LIMIT 1", params).fetchone()
+    if previous_staked is None:
+        raise manual_match.ManualMatchError(
+            "rank_after", "この試合より前にランクを賭けた試合が無いため、試合前のランクを決められません。"
+        )
+    if previous_staked["rank_after"] is None:
+        raise manual_match.ManualMatchError(
+            "rank_after",
+            f"直前のランクを賭けた試合(id={previous_staked['id']})のランクがまだ確定していません。"
+            "先にランク手動入力(/rank-entry)で確定させてください。",
+        )
+    rank_before = previous_staked["rank_after"]
+    problems = manual_match.check_rank_change(entry.result, rank_before, entry.rank_after)
+    if problems:
+        raise manual_match.ManualMatchError("rank_after", " ".join(problems))
+
+    shifted: tuple[int, ...] = ()
+    next_staked = None
+    if boundary is not None:
+        shifted = tuple(
+            row["id"] for row in conn.execute("SELECT id FROM matches WHERE id >= ? ORDER BY id", (boundary,))
+        )
+        next_staked = conn.execute(
+            "SELECT id, rank_before, rank_after FROM matches "
+            "WHERE id >= ? AND rank_staked = 1 AND excluded = 0 ORDER BY id ASC LIMIT 1",
+            (boundary,),
+        ).fetchone()
+    return ManualMatchPlan(
+        position=position,
+        previous_staked_id=previous_staked["id"],
+        rank_before=rank_before,
+        league_changed=manual_match.league_change(rank_before, entry.rank_after),
+        shifted_match_ids=shifted,
+        next_staked_id=next_staked["id"] if next_staked is not None else None,
+        next_staked_old_rank_before=next_staked["rank_before"] if next_staked is not None else None,
+        next_staked_rank_after=next_staked["rank_after"] if next_staked is not None else None,
+    )
+
+
+# 試合IDを参照している列。IDを繰り下げるときはすべて揃えて動かす
+# (vs_rank_snapshotsはセッション単位で試合IDを持たないため対象外、delete_matchと同じ)
+_MATCH_ID_COLUMNS = (
+    ("matches", "id"),
+    ("goals", "match_id"),
+    ("vs_slot_ranks", "match_id"),
+    ("match_rank_warning_acks", "match_id"),
+)
+
+
+def _shift_match_ids(conn: sqlite3.Connection, boundary: int) -> None:
+    """boundary以上の試合IDを1つずつ後ろへずらす(参照している列も揃えて動かす)。
+
+    `id = id + 1`を1回で行うと、更新途中で隣の行とID(主キー、および
+    match_rank_warning_acksのUNIQUE制約)がぶつかるため、いったん負の値へ
+    退避してから正に戻す2段階で行う。
+    """
+    for table, column in _MATCH_ID_COLUMNS:
+        conn.execute(f"UPDATE {table} SET {column} = -({column} + 1) WHERE {column} >= ?", (boundary,))
+        conn.execute(f"UPDATE {table} SET {column} = -{column} WHERE {column} < 0")
+    # 繰り下げで最大IDが採番済みの値を超えた場合に、次に自動採番されるIDとぶつからないよう合わせる
+    conn.execute(
+        "UPDATE sqlite_sequence SET seq = (SELECT MAX(id) FROM matches) "
+        "WHERE name = 'matches' AND seq < (SELECT MAX(id) FROM matches)"
+    )
+
+
+def insert_manual_match(
+    conn: sqlite3.Connection,
+    entry: manual_match.ManualMatchEntry,
+    current_session_id: Optional[int],
+    before_commit: Optional[Callable[[int], Callable[[], None]]] = None,
+) -> tuple[int, ManualMatchPlan]:
+    """記録漏れ試合を1件追加し、追加した試合のIDと実際に適用した計画を返す(Issue #489)。
+
+    1つのトランザクションの中で、以下をまとめて行う(途中で失敗したらすべて取り消す):
+
+    1. 挿入位置以降の試合IDを1つずつ後ろへずらす(時系列はすべてid順で表現されているため、
+       過去に遡って入れるには末尾に追加できない)。goals/vs_slot_ranks/
+       match_rank_warning_acksの試合IDも揃えて動かす
+    2. 空いた位置に試合を追加する。ランクを賭けた野良の試合(rank_staked=1・room_type='random')
+       として扱い、試合前ランクは直前のランクを賭けた試合のrank_afterを引き継ぐ。
+       rank_before_ocr/rank_after_ocrは自動検知していないためNULLのまま
+    3. VS画面のランクが1人でも分かっていれば8人分をvs_slot_ranksへ保存する
+       (不明の人はsave_vs_slot_ranksと同じくNULLの行にする。全員不明なら保存しない)
+    4. 直後のランクを賭けた試合の試合前ランクを、追加した試合のrank_afterで書き換える
+       (_force_overwrite_next_rank_beforeと同じ扱い。確定済みならWARNINGを出す)
+
+    昇格演出/降格ラベル(league_change_label_detected)は、帯番号の変化と同じ値を入れる。
+    人間が配信アーカイブで確かめた変化であり、空のままだと`/health-check`のルールCが
+    毎回「演出を検知していない」と警告してしまうため。
+
+    `before_commit`を渡すと、試合IDをずらした場合に限り、コミット直前に
+    `before_commit(挿入位置のID)`を呼ぶ。クリップファイルの名前の付け替え等、DBの外で
+    揃えて動かす必要があるものに使う(db.pyはファイルシステムに依存しない方針のため、
+    呼び出し元が渡す)。戻り値は取り消し用の関数で、コミットに失敗した場合に呼ぶ。
+
+    書き込み直前に条件をもう一度確かめるため、`plan_manual_match_insert`と同じ
+    ManualMatchErrorを送出することがある(確認画面を開いてから状況が変わった場合)。
+    """
+    if conn.in_transaction:
+        conn.commit()
+    # 検知ループ(別コネクション)の書き込みと交互にならないよう、最初から書き込みロックを取る
+    conn.execute("BEGIN IMMEDIATE")
+    undo: Optional[Callable[[], None]] = None
+    try:
+        plan = plan_manual_match_insert(conn, entry, current_session_id)
+        boundary = plan.position.new_id
+        if boundary is not None:
+            _shift_match_ids(conn, boundary)
+
+        now = now_jst().isoformat()
+        cursor = conn.execute(
+            "INSERT INTO matches "
+            "(id, session_id, detected_at, result, rank_before, rank_after, league_changed, room_type, "
+            "league_change_label_detected, rank_staked, player_shortage, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'random', ?, 1, ?, ?, ?)",
+            (
+                boundary,
+                plan.position.session_id,
+                entry.detected_at.isoformat(),
+                entry.result,
+                plan.rank_before,
+                _round_rank(entry.rank_after),
+                plan.league_changed,
+                plan.league_changed,
+                1 if entry.player_shortage else 0,
+                now,
+                now,
+            ),
+        )
+        new_id = cursor.lastrowid
+
+        if entry.has_vs_ranks:
+            for side, slots in (("mine", entry.vs_mine), ("opponent", entry.vs_opponent)):
+                for slot_index, slot in enumerate(slots):
+                    conn.execute(
+                        "INSERT INTO vs_slot_ranks "
+                        "(match_id, side, slot_index, rank_tier, rank_tier_label, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (new_id, side, slot_index, slot.value, slot.label, now, now),
+                    )
+
+        next_staked_new_id = plan.next_staked_id + 1 if plan.next_staked_id is not None else None
+        if next_staked_new_id is not None:
+            conn.execute(
+                "UPDATE matches SET rank_before = ?, updated_at = ? WHERE id = ?",
+                (_round_rank(entry.rank_after), now, next_staked_new_id),
+            )
+
+        if before_commit is not None and boundary is not None:
+            undo = before_commit(boundary)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        if undo is not None:
+            undo()
+        raise
+
+    logger.info(
+        "記録漏れ試合を手動で追加しました: matches.id=%d session_id=%s detected_at=%s result=%s "
+        "rank=%s->%s league_changed=%s player_shortage=%s vs_mine=%s vs_opponent=%s "
+        "(試合IDを繰り下げた試合: %s)",
+        new_id,
+        plan.position.session_id,
+        entry.detected_at.isoformat(),
+        entry.result,
+        plan.rank_before,
+        entry.rank_after,
+        plan.league_changed,
+        entry.player_shortage,
+        [(s.label, s.value) for s in entry.vs_mine] if entry.has_vs_ranks else None,
+        [(s.label, s.value) for s in entry.vs_opponent] if entry.has_vs_ranks else None,
+        f"{len(plan.shifted_match_ids)}件(旧id={plan.shifted_match_ids[0]}〜)" if plan.shifted_match_ids else "なし",
+    )
+    refresh_rank_after_estimate(conn, new_id)
+    if next_staked_new_id is not None:
+        logger.info(
+            "matches.id=%d のrank_beforeを、追加した試合(id=%d)のrank_after(%s)で連動更新しました(%s->%s)",
+            next_staked_new_id,
+            new_id,
+            entry.rank_after,
+            plan.next_staked_old_rank_before,
+            _round_rank(entry.rank_after),
+        )
+        refresh_rank_after_estimate(conn, next_staked_new_id)
+        if plan.next_staked_rank_after is not None:
+            logger.warning(
+                "matches.id=%d は既にrank_afterが確定済み(%s)のままrank_beforeのみ連動更新したため、"
+                "league_changedの判定基準が古いrank_beforeのままになっている可能性があります(要手動確認)",
+                next_staked_new_id,
+                plan.next_staked_rank_after,
+            )
+    return new_id, plan

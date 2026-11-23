@@ -71,7 +71,7 @@ from nss_tracker.detection.rank_ocr import (
     _get_reader,
 )
 from nss_tracker.detection.vs_rank import _get_reader as _get_vs_rank_reader
-from nss_tracker import detection_pause, match_transition, shutdown_request, startup_gate
+from nss_tracker import detection_pause, match_activity, match_transition, shutdown_request, startup_gate
 from nss_tracker.obs_control import ObsSceneController
 from nss_tracker.rank_entry_clips import (
     DEFAULT_CLIPS_DIR,
@@ -457,6 +457,13 @@ def run(
             # 映像の有無は検知の一時停止とは無関係なため、一時停止の判定より前で行う
             if virtual_camera_monitor is not None:
                 virtual_camera_monitor.observe(frame, now)
+
+            # Issue #489: 記録漏れ試合の手動追加(/match-entry)は試合IDをずらすため、
+            # 試合IDをメモリ上に持っている間(試合中・クリップの録画中/書き出し中)は
+            # 受け付けないようにする(match_activity.pyのモジュールdocstring参照)
+            match_activity.set_in_progress(
+                machine.in_match or any(recorder.is_recording or recorder.is_encoding for recorder in clip_recorders)
+            )
 
             # Issue #440: 他競技をプレイしている間、/adminから検知処理そのものを
             # 一時停止できる。reader.read()は止めず読み続けて捨てるだけにする
