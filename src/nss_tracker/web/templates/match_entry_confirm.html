@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>記録漏れ試合の追加(確認)</title>
+<link rel="stylesheet" href="/static/admin.css?v={{ admin_css_version }}">
+<link rel="stylesheet" href="/static/match_entry.css?v={{ match_entry_css_version }}">
+</head>
+<body>
+{# Issue #489: 記録漏れ試合の追加の確認画面。「確認しました」にチェックを入れるまで追加できない #}
+<h1>記録漏れ試合の追加 — 確認</h1>
+
+<div class="match-entry-warn">
+  <strong>DBを直接書き換えます。内容をよく確認してください。</strong>
+  <ul>
+    {% if shifted_count %}
+    <li>id={{ shifted_from }} 以降の{{ shifted_count }}試合の試合IDが1つずつ後ろにずれます{% if clip_count %}(クリップ{{ clip_count }}件のファイル名も変わります){% endif %}</li>
+    {% else %}
+    <li>最後の試合の後ろに追加します(試合IDがずれる試合はありません)</li>
+    {% endif %}
+    {% if next_staked_new_id %}
+    <li>直後の試合(新id={{ next_staked_new_id }})の試合前ランクが書き換わります{% if next_staked_confirmed %}(この試合はランク確定済みのため、昇格/降格の判定は書き換わりません){% endif %}</li>
+    {% endif %}
+    <li>実行前にDBのバックアップを取ります</li>
+  </ul>
+</div>
+
+<section class="match-entry-section">
+  <h2>追加する試合</h2>
+  <dl class="match-entry-summary">
+    {% for label, value in summary %}
+    <dt>{{ label }}</dt><dd>{{ value }}</dd>
+    {% endfor %}
+  </dl>
+</section>
+
+<section class="match-entry-section">
+  <h2>入る位置と変わる内容</h2>
+  <div class="match-entry-table-wrap">
+    <table class="match-entry-table">
+      <thead><tr><th>試合ID</th><th>記録時刻</th><th>勝敗</th><th>試合前</th><th>試合後</th><th>配信</th></tr></thead>
+      <tbody>
+        {% for row in rows %}
+        <tr class="{% if row.kind == 'new' %}match-entry-row-new{% endif %}{% if row.session_break %} match-entry-row-session-break{% endif %}">
+          <td>{% if row.id_changed %}<span class="match-entry-changed">{{ row.id_text }}</span>{% else %}{{ row.id_text }}{% endif %}{% if row.kind == 'new' %} <span class="match-entry-tag">追加</span>{% endif %}</td>
+          <td>{{ row.recorded_at }}</td>
+          <td>{{ row.result }}</td>
+          <td>{% if row.rank_before_changed %}<span class="match-entry-changed">{{ row.rank_before }}</span>{% else %}{{ row.rank_before }}{% endif %}</td>
+          <td>{{ row.rank_after }}</td>
+          <td>{{ row.session }}</td>
+        </tr>
+        {% endfor %}
+        {% if remaining_shifted_count %}
+        <tr><td colspan="6" class="match-entry-muted">… 以降{{ remaining_shifted_count }}試合も試合IDが+1されます(内容は変わりません)</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="match-entry-section">
+  <h2>矛盾チェック</h2>
+  {% if warnings %}
+  {% for warning in warnings %}
+  <div class="match-entry-rule-warn">{{ warning }}</div>
+  {% endfor %}
+  {% else %}
+  <p class="match-entry-muted">気になる点はありません。</p>
+  {% endif %}
+  <p class="match-entry-hint">勝敗とランクの増減の矛盾、2帯以上の変動などは入力画面に戻されるため、ここには通過した警告だけが出ます。</p>
+</section>
+
+<form method="post" action="/match-entry">
+  {% for name, value in hidden_values %}
+  <input type="hidden" name="{{ name }}" value="{{ value }}">
+  {% endfor %}
+  <label class="match-entry-check match-entry-ack"><input type="checkbox" id="confirmed" name="confirmed">上の内容でDBを書き換えることを確認しました</label>
+  <div class="match-entry-actions">
+    <button type="submit" class="match-entry-danger-button" id="match-entry-execute" disabled>追加する</button>
+    <button type="submit" class="match-entry-link-button" formaction="/match-entry/back">戻って修正する</button>
+  </div>
+</form>
+
+<script>
+(function () {
+  var ack = document.getElementById("confirmed");
+  var execute = document.getElementById("match-entry-execute");
+  ack.addEventListener("change", function () { execute.disabled = !ack.checked; });
+})();
+</script>
+</body>
+</html>

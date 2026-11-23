@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>記録漏れ試合の追加</title>
+<link rel="stylesheet" href="/static/admin.css?v={{ admin_css_version }}">
+<link rel="stylesheet" href="/static/match_entry.css?v={{ match_entry_css_version }}">
+</head>
+<body>
+{# Issue #489: システムの起動忘れで記録できなかった試合を手動で追加する入力画面。
+   送信するとまず確認画面(POST /match-entry/confirm)を挟み、そこで同意した場合だけ追加する #}
+<h1>記録漏れ試合の追加</h1>
+<p class="match-entry-lead">システムの起動を忘れて記録できなかった、ランクを賭けた試合を追加します。入力した試合終了時刻から、どの試合の前に入るかを自動で決めます。追加できるのは<strong>配信(起動)の1試合目の直前</strong>だけです。</p>
+
+{% if in_progress %}
+<div class="match-entry-blocked">
+  試合中のため、いまは追加できません。
+  <p>試合が終わり、試合間に戻ると入力できるようになります(ページを再読み込みしてください)。</p>
+</div>
+{% endif %}
+{% if error %}
+<p class="admin-message admin-message-error">{{ error }}</p>
+{% endif %}
+
+<form method="post" action="/match-entry/confirm" id="match-entry-form">
+<fieldset class="match-entry-fieldset" {% if in_progress %}disabled{% endif %}>
+  <section class="match-entry-section">
+    <h2>試合結果<span class="match-entry-required">必須</span></h2>
+
+    <div class="match-entry-field{% if errors.detected_at %} match-entry-field-error{% endif %}">
+      <span class="match-entry-label">試合終了時刻</span>
+      <div class="match-entry-row">
+        <input type="date" id="date" name="date" value="{{ values.date or '' }}" aria-label="日付">
+        <div class="match-entry-time">
+          <input type="text" inputmode="numeric" maxlength="2" id="hour" name="hour" value="{{ values.hour or '' }}" placeholder="時" aria-label="時">
+          <span class="match-entry-colon">:</span>
+          <input type="text" inputmode="numeric" maxlength="2" id="minute" name="minute" value="{{ values.minute or '' }}" placeholder="分" aria-label="分">
+          <span class="match-entry-colon">:</span>
+          <input type="text" inputmode="numeric" maxlength="2" id="second" name="second" value="{{ values.second or '' }}" placeholder="秒" class="match-entry-second" aria-label="秒(任意)">
+        </div>
+      </div>
+      {% if errors.detected_at %}<p class="admin-field-error">{{ errors.detected_at }}</p>{% endif %}
+      <p class="match-entry-hint">秒は任意です(空欄なら00秒として扱います)。配信アーカイブで「試合終了」が出た時刻を目安にしてください。</p>
+    </div>
+
+    <div class="match-entry-field{% if errors.result %} match-entry-field-error{% endif %}">
+      <span class="match-entry-label">勝敗</span>
+      <div class="match-entry-results" role="radiogroup">
+        {% for value, label in [("win", "勝ち"), ("lose", "負け"), ("draw", "引き分け")] %}
+        <label><input type="radio" name="result" value="{{ value }}" {% if values.result == value %}checked{% endif %}><span class="match-entry-dot match-entry-dot-{{ value }}"></span>{{ label }}</label>
+        {% endfor %}
+      </div>
+      {% if errors.result %}<p class="admin-field-error">{{ errors.result }}</p>{% endif %}
+    </div>
+
+    <div class="match-entry-field{% if errors.rank_after %} match-entry-field-error{% endif %}">
+      <span class="match-entry-label">ランク(変動後)</span>
+      {# /rank-entry(Issue #457/#474)と同じく、帯番号と小数部を分けて右に▲▼を置く #}
+      <div class="match-entry-rank-row">
+        <div class="match-entry-step-field">
+          <input type="text" inputmode="numeric" id="rank_tier" name="rank_tier" value="{{ values.rank_tier or '' }}" aria-label="帯番号" autocomplete="off">
+          <span class="match-entry-steppers"><button type="button" data-step="100" aria-label="帯番号を1増やす">▲</button><button type="button" data-step="-100" aria-label="帯番号を1減らす">▼</button></span>
+        </div>
+        <span class="match-entry-decimal-point">.</span>
+        <div class="match-entry-step-field">
+          <input type="text" inputmode="numeric" maxlength="2" id="rank_fraction" name="rank_fraction" value="{{ values.rank_fraction or '' }}" aria-label="小数部" autocomplete="off">
+          <span class="match-entry-steppers"><button type="button" data-step="1" aria-label="0.01増やす">▲</button><button type="button" data-step="-1" aria-label="0.01減らす">▼</button></span>
+        </div>
+        {% if values.rank_before_guess is not none %}
+        <span class="match-entry-delta" id="rank-delta" data-rank-before="{{ values.rank_before_guess }}"></span>
+        {% endif %}
+      </div>
+      {% if errors.rank_after %}<p class="admin-field-error">{{ errors.rank_after }}</p>{% endif %}
+    </div>
+  </section>
+
+  <section class="match-entry-section">
+    <h2>その他<span class="match-entry-optional">任意</span></h2>
+    <label class="match-entry-check"><input type="checkbox" id="player_shortage" name="player_shortage" {% if values.player_shortage %}checked{% endif %}>人数差あり(味方が抜けて3人になった試合)</label>
+  </section>
+
+  <section class="match-entry-section">
+    <h2>VS画面のランク<span class="match-entry-optional">任意</span></h2>
+    <label class="match-entry-check match-entry-all-unknown"><input type="checkbox" id="vs_all_unknown" name="vs_all_unknown" {% if values.vs_all_unknown %}checked{% endif %}>VS画面のランクが分からない(自分を含む全員を「不明」として記録する)</label>
+    <p class="match-entry-hint match-entry-vs-hint" id="vs-hint">全員∞で初期選択しています。数値を入れた人だけ保存し、<strong>空欄の人は「不明」</strong>として扱います。S/Aの人だけ帯を切り替えてください。</p>
+    {% if errors.vs %}<p class="admin-field-error">{{ errors.vs }}</p>{% endif %}
+    <div class="match-entry-vs-grid" id="vs-grid">
+      {% for team in vs_teams %}
+      <div class="match-entry-vs-team">
+        <h3>{{ team.title }}</h3>
+        {% for slot in team.slots %}
+        {% set label_key = slot.field ~ "_label" %}
+        {% set value_key = slot.field ~ "_value" %}
+        <div class="match-entry-vs-slot{% if slot.is_self %} match-entry-vs-self{% endif %}">
+          <span class="match-entry-vs-who">{{ slot.name }}</span>
+          <select name="{{ label_key }}" id="{{ label_key }}" aria-label="{{ slot.name }}の帯">
+            {% for option_value, option_label in vs_label_options %}
+            <option value="{{ option_value }}" {% if values[label_key] == option_value %}selected{% endif %}>{{ option_label }}</option>
+            {% endfor %}
+          </select>
+          <input type="text" inputmode="numeric" maxlength="2" name="{{ value_key }}" id="{{ value_key }}" value="{{ values[value_key] or '' }}" placeholder="不明" aria-label="{{ slot.name }}の数値">
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <div class="match-entry-actions">
+    <button type="submit">確認画面へ</button>
+    <a href="/admin">/admin に戻る</a>
+  </div>
+</fieldset>
+</form>
+
+<script>
+(function () {
+  var tierInput = document.getElementById("rank_tier");
+  var fractionInput = document.getElementById("rank_fraction");
+  var delta = document.getElementById("rank-delta");
+
+  // /rank-entry(Issue #474)と同じ: 小数部は「小数点以下の桁をそのまま並べたもの」として読み
+  // ("5"なら.50、"05"なら.05)、0.01単位の整数で増減して繰り上がりを帯番号へ反映する
+  function hundredths() {
+    var tier = parseInt(tierInput.value, 10);
+    var digits = fractionInput.value.trim();
+    var fraction = digits === "" ? 0 : Math.round(parseFloat("0." + digits) * 100);
+    if (isNaN(tier) || isNaN(fraction)) return null;
+    return tier * 100 + fraction;
+  }
+  function renderDelta() {
+    if (!delta) return;
+    var before = Math.round(parseFloat(delta.getAttribute("data-rank-before")) * 100);
+    var after = hundredths();
+    if (after === null) {
+      delta.textContent = "";
+      return;
+    }
+    var diff = (after - before) / 100;
+    delta.textContent = "直前の確定ランク " + (before / 100).toFixed(2) + " から " + (diff >= 0 ? "+" : "") + diff.toFixed(2) + "(確認画面で確定します)";
+  }
+  function stepBy(deltaHundredths) {
+    var total = (hundredths() || 0) + deltaHundredths;
+    var tier = Math.floor(total / 100);
+    tierInput.value = String(tier);
+    fractionInput.value = String(total - tier * 100).padStart(2, "0");
+    renderDelta();
+  }
+
+  // 長押しで連続して増減する(/rank-entryのattachRepeatingPressと同じ間隔)
+  var REPEAT_DELAY_MS = 400;
+  var REPEAT_INTERVAL_MS = 50;
+  document.querySelectorAll(".match-entry-steppers button").forEach(function (button) {
+    var step = parseInt(button.getAttribute("data-step"), 10);
+    var delayTimer = null;
+    var repeatTimer = null;
+    function stop() {
+      clearTimeout(delayTimer);
+      clearInterval(repeatTimer);
+    }
+    button.addEventListener("pointerdown", function (event) {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      stop();
+      stepBy(step);
+      delayTimer = setTimeout(function () {
+        repeatTimer = setInterval(function () { stepBy(step); }, REPEAT_INTERVAL_MS);
+      }, REPEAT_DELAY_MS);
+    });
+    ["pointerup", "pointerleave", "pointercancel", "blur"].forEach(function (type) {
+      button.addEventListener(type, stop);
+    });
+    button.addEventListener("click", function (event) {
+      if (event.detail === 0) stepBy(step);
+    });
+  });
+  fractionInput.addEventListener("keydown", function (event) {
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      event.preventDefault();
+      stepBy(event.key === "ArrowUp" ? 1 : -1);
+    }
+  });
+  [tierInput, fractionInput].forEach(function (input) {
+    input.addEventListener("input", renderDelta);
+  });
+  renderDelta();
+
+  // VS画面: 「分からない」にチェックしたら8人分の欄をまとめて無効化する。入力済みの値は
+  // 消さず(外せば元に戻る)、説明文は消さずに入力欄と同じ濃さまで暗くする
+  var allUnknown = document.getElementById("vs_all_unknown");
+  var grid = document.getElementById("vs-grid");
+  var hint = document.getElementById("vs-hint");
+  function syncAllUnknown() {
+    grid.classList.toggle("match-entry-dimmed", allUnknown.checked);
+    hint.classList.toggle("match-entry-dimmed", allUnknown.checked);
+    grid.querySelectorAll("select, input").forEach(function (el) { el.disabled = allUnknown.checked; });
+  }
+  allUnknown.addEventListener("change", syncAllUnknown);
+  // 数値が空欄の人は「不明」として扱うことを見た目でも示す
+  grid.querySelectorAll(".match-entry-vs-slot").forEach(function (slot) {
+    var select = slot.querySelector("select");
+    var input = slot.querySelector("input");
+    function sync() {
+      slot.classList.toggle("match-entry-vs-unknown", input.value.trim() === "" || select.value === "{{ vs_label_options[-1][0] }}");
+    }
+    input.addEventListener("input", sync);
+    select.addEventListener("change", sync);
+    sync();
+  });
+  {% if not in_progress %}syncAllUnknown();{% endif %}
+})();
+</script>
+</body>
+</html>
