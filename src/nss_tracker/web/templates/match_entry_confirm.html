@@ -21,6 +21,10 @@
     {% if next_staked_new_id %}
     <li>直後の試合(新id={{ next_staked_new_id }})の試合前ランクが書き換わります{% if next_staked_confirmed %}(この試合はランク確定済みのため、昇格/降格の判定は書き換わりません){% endif %}</li>
     {% endif %}
+    {% if past_session %}
+    <li>この試合は過去の配信として登録します。今回の起動(配信)の開始時刻を {{ session_old_started_at }} から {{ session_new_started_at }}(試合終了の少し前の推定値)に書き換えます</li>
+    <li>続けて試合をする場合は、追加したあとにシステムを再起動してください(再起動しないと、これからの試合も過去の配信に混ざり、「今回」の勝率などにこの試合が入ります)</li>
+    {% endif %}
     <li>実行前にDBのバックアップを取ります</li>
   </ul>
 </div>
