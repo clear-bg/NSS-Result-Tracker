@@ -232,3 +232,42 @@ def test_clip_rename_failure_rolls_back_db_and_files(setup, monkeypatch):
         assert fetch_match(conn, ids[1])["rank_before"] == 43.27
     finally:
         conn.close()
+
+
+def test_past_session_append_rewrites_session_start_and_warns_to_restart(setup):
+    """過去の試合を追加するためだけに起動した場合(Issue #491)。"""
+    client, db_path, ids, *_ = setup
+    conn = connect(db_path)
+    try:
+        new_session = create_session(conn)
+        conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (_at(24, 0, 38).isoformat(), new_session)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    form = _form(date="2026-11-23", hour="01", minute="40", rank_tier="43", rank_fraction="80")
+
+    confirm = client.post("/match-entry/confirm", data=form).text
+    assert "過去の配信として登録します" in confirm
+    assert "11/24 00:38 から 11/23 01:35" in confirm
+    assert "11/24 00:38 起動 → 11/23 01:35 開始(推定、試合終了の5分前)" in confirm
+
+    response = client.post("/match-entry", data={**form, "confirmed": "on"}, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"].endswith("&past_session=1")
+    conn = connect(db_path)
+    try:
+        started_at = conn.execute("SELECT started_at FROM sessions WHERE id = ?", (new_session,)).fetchone()
+        assert started_at["started_at"] == _at(23, 1, 35).isoformat()
+        assert fetch_match(conn, ids[2] + 1)["session_id"] == new_session
+    finally:
+        conn.close()
+    assert "システムを再起動してください" in client.get(response.headers["location"]).text
+
+
+def test_normal_insert_does_not_mention_past_session(setup):
+    client, *_ = setup
+    response = client.post("/match-entry", data=_form(confirmed="on"), follow_redirects=False)
+    assert "past_session" not in response.headers["location"]
+    assert "過去の配信" not in client.post("/match-entry/confirm", data=_form(minute="03")).text

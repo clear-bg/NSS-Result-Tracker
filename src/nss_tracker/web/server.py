@@ -1938,6 +1938,13 @@ def _format_session_started_at(conn: sqlite3.Connection, session_id: Optional[in
     return datetime.fromisoformat(row["started_at"]).strftime("%m/%d %H:%M 起動")
 
 
+def _format_past_session_started_at(started_at: datetime) -> str:
+    """過去の配信として追加する場合に書き換える開始時刻の表示(Issue #491、推定値であることを明示する)。"""
+    return started_at.strftime(
+        f"%m/%d %H:%M 開始(推定、試合終了の{int(manual_match.PAST_SESSION_START_OFFSET.total_seconds() // 60)}分前)"
+    )
+
+
 def _format_vs_slots(slots: tuple) -> str:
     return " / ".join("-" if slot.is_unknown else f"{slot.label}{slot.value}" for slot in slots)
 
@@ -2042,6 +2049,8 @@ def _build_match_entry_confirm_context(
         }
     )
     shown = plan.shifted_match_ids[:_MATCH_ENTRY_SHIFTED_ROWS_SHOWN]
+    if plan.session_new_started_at is not None:
+        rows[-1]["session"] = _format_past_session_started_at(plan.session_new_started_at)
     # 試合前ランクが変わる試合は、表示件数の外にあっても必ず表に出す
     if plan.next_staked_id is not None and plan.next_staked_id not in shown:
         shown = shown + (plan.next_staked_id,)
@@ -2064,7 +2073,13 @@ def _build_match_entry_confirm_context(
                 if entry.has_vs_ranks
                 else "全員不明(保存しません)",
             ),
-            ("属する配信", _format_session_started_at(conn, position.session_id)),
+            (
+                "属する配信",
+                f"{plan.session_old_started_at.strftime('%m/%d %H:%M 起動')} → "
+                f"{_format_past_session_started_at(plan.session_new_started_at)}"
+                if plan.session_new_started_at is not None
+                else _format_session_started_at(conn, position.session_id),
+            ),
         ],
         "rows": rows,
         "remaining_shifted_count": remaining,
@@ -2074,6 +2089,13 @@ def _build_match_entry_confirm_context(
         "next_staked_new_id": plan.next_staked_id + 1 if plan.next_staked_id is not None else None,
         "next_staked_confirmed": plan.next_staked_rank_after is not None,
         "warnings": _match_entry_warnings(conn, entry, plan),
+        "past_session": plan.session_new_started_at is not None,
+        "session_old_started_at": (
+            plan.session_old_started_at.strftime("%m/%d %H:%M") if plan.session_old_started_at is not None else None
+        ),
+        "session_new_started_at": (
+            plan.session_new_started_at.strftime("%m/%d %H:%M") if plan.session_new_started_at is not None else None
+        ),
     }
 
 
@@ -2406,17 +2428,17 @@ def create_app(db_path: Path) -> FastAPI:
         }
         return _TEMPLATES.TemplateResponse(request, "match_entry_confirm.html", context)
 
-    def execute_match_entry(entry: manual_match.ManualMatchEntry) -> tuple[int, Path]:
+    def execute_match_entry(entry: manual_match.ManualMatchEntry) -> tuple[int, Path, bool]:
         conn = _connect(db_path)
         try:
             backup_path = _backup_before_match_entry(conn, db_path)
             _logger.info("記録漏れ試合の追加の前にDBをバックアップしました: %s", backup_path)
-            new_id, _ = insert_manual_match(
+            new_id, plan = insert_manual_match(
                 conn, entry, fetch_current_session_id(conn), before_commit=_shift_clip_files
             )
         finally:
             conn.close()
-        return new_id, backup_path
+        return new_id, backup_path, plan.session_new_started_at is not None
 
     @app.post("/match-entry")
     async def match_entry_submit(request: Request):
@@ -2430,7 +2452,7 @@ def create_app(db_path: Path) -> FastAPI:
         if entry is None:
             return render_match_entry(request, values, errors=errors)
         try:
-            new_id, backup_path = await run_in_threadpool(execute_match_entry, entry)
+            new_id, backup_path, past_session = await run_in_threadpool(execute_match_entry, entry)
         except manual_match.ManualMatchError as exc:
             _logger.warning("記録漏れ試合の追加が拒否されました: %s", exc)
             return render_match_entry(request, values, errors={exc.field: str(exc)})
@@ -2440,13 +2462,16 @@ def create_app(db_path: Path) -> FastAPI:
                 request, values, error="追加に失敗したため、変更を取り消しました。詳しくはターミナルのログを確認してください。"
             )
         return RedirectResponse(
-            f"/match-entry/done?match_id={new_id}&backup={quote(backup_path.name)}", status_code=303
+            f"/match-entry/done?match_id={new_id}&backup={quote(backup_path.name)}"
+            + ("&past_session=1" if past_session else ""),
+            status_code=303,
         )
 
     @app.get("/match-entry/done")
-    def match_entry_done(request: Request, match_id: int, backup: str = ""):
+    def match_entry_done(request: Request, match_id: int, backup: str = "", past_session: bool = False):
         context = {
             "match_id": match_id,
+            "past_session": past_session,
             "backup_path": f"{_MATCH_ENTRY_BACKUP_DIR_NAME}/{backup}" if backup else None,
             "admin_css_version": _static_asset_version("admin.css"),
             "match_entry_css_version": _static_asset_version("match_entry.css"),

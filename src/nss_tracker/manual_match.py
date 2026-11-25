@@ -22,7 +22,7 @@
 """
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Mapping, Optional, Sequence
 
 from nss_tracker import rank_warnings
@@ -42,6 +42,10 @@ VS_UNKNOWN_LABEL = "unknown"
 # 書き込み前に入力エラーとして弾くルール(rank_warningsのルールコード)。
 # いずれもゲーム仕様上ありえない矛盾のため、警告ではなくエラーにする
 BLOCKING_RULE_CODES = ("A", "D", "E")
+
+# 過去の配信として追加するとき、配信の開始時刻を試合終了時刻のどれだけ前とみなすか(Issue #491)。
+# 実際の開始時刻は分からないため推定値。sessions.started_atは表示にしか使っていない
+PAST_SESSION_START_OFFSET = timedelta(minutes=5)
 
 
 class ManualMatchError(ValueError):
@@ -296,3 +300,24 @@ def league_change(rank_before: float, rank_after: float) -> Optional[str]:
     if tier_after < tier_before:
         return "down"
     return None
+
+
+def past_session_started_at(
+    detected_at: datetime, position: InsertPosition, session_started_at: datetime
+) -> Optional[datetime]:
+    """過去の配信として追加する場合に、配信の開始時刻をいつに書き換えるかを返す(Issue #491)。
+
+    末尾に追加する試合は今のセッション(今回の起動)に入るが、過去の試合を追加するためだけに
+    起動した場合は、セッションの開始時刻(起動時刻)が試合より後になり、`/health-check`の
+    配信の区切りがちぐはぐになる。そのため、試合終了時刻が起動時刻より前なら、開始時刻を
+    試合終了時刻の`PAST_SESSION_START_OFFSET`前に書き換える。
+
+    書き換えない場合はNoneを返す:
+
+    - 既存の試合の直前に入れる場合(その試合のセッションに属させるだけで、開始時刻は変えない)
+    - 試合終了時刻が起動時刻以降の場合(起動はしていたが仮想カメラの開始が遅れて記録できなかった
+      ケース。今回の配信の試合なので開始時刻はそのままでよい)
+    """
+    if position.following is not None or detected_at >= session_started_at:
+        return None
+    return detected_at - PAST_SESSION_START_OFFSET

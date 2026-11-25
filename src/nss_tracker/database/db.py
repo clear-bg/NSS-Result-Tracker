@@ -1667,6 +1667,10 @@ class ManualMatchPlan:
     next_staked_id: Optional[int]
     next_staked_old_rank_before: Optional[float]
     next_staked_rank_after: Optional[float]
+    # 過去の配信として追加する場合の、属するセッションの開始時刻の書き換え(Issue #491)。
+    # 書き換えない場合はどちらもNone
+    session_old_started_at: Optional[datetime] = None
+    session_new_started_at: Optional[datetime] = None
 
 
 def _parse_detected_at(value: str) -> datetime:
@@ -1727,6 +1731,15 @@ def plan_manual_match_insert(
             "WHERE id >= ? AND rank_staked = 1 AND excluded = 0 ORDER BY id ASC LIMIT 1",
             (boundary,),
         ).fetchone()
+
+    session_old_started_at = None
+    session_new_started_at = None
+    session_row = conn.execute("SELECT started_at FROM sessions WHERE id = ?", (position.session_id,)).fetchone()
+    if session_row is not None:
+        started_at = _parse_detected_at(session_row["started_at"])
+        session_new_started_at = manual_match.past_session_started_at(entry.detected_at, position, started_at)
+        if session_new_started_at is not None:
+            session_old_started_at = started_at
     return ManualMatchPlan(
         position=position,
         previous_staked_id=previous_staked["id"],
@@ -1736,6 +1749,8 @@ def plan_manual_match_insert(
         next_staked_id=next_staked["id"] if next_staked is not None else None,
         next_staked_old_rank_before=next_staked["rank_before"] if next_staked is not None else None,
         next_staked_rank_after=next_staked["rank_after"] if next_staked is not None else None,
+        session_old_started_at=session_old_started_at,
+        session_new_started_at=session_new_started_at,
     )
 
 
@@ -1786,6 +1801,8 @@ def insert_manual_match(
        (不明の人はsave_vs_slot_ranksと同じくNULLの行にする。全員不明なら保存しない)
     4. 直後のランクを賭けた試合の試合前ランクを、追加した試合のrank_afterで書き換える
        (_force_overwrite_next_rank_beforeと同じ扱い。確定済みならWARNINGを出す)
+    5. 過去の配信として末尾に追加する場合(試合終了時刻が今のセッションの起動時刻より前)は、
+       そのセッションの開始時刻を書き換える(`manual_match.past_session_started_at`、Issue #491)
 
     昇格演出/降格ラベル(league_change_label_detected)は、帯番号の変化と同じ値を入れる。
     人間が配信アーカイブで確かめた変化であり、空のままだと`/health-check`のルールCが
@@ -1849,6 +1866,12 @@ def insert_manual_match(
                 (_round_rank(entry.rank_after), now, next_staked_new_id),
             )
 
+        if plan.session_new_started_at is not None:
+            conn.execute(
+                "UPDATE sessions SET started_at = ?, updated_at = ? WHERE id = ?",
+                (plan.session_new_started_at.isoformat(), now, plan.position.session_id),
+            )
+
         if before_commit is not None and boundary is not None:
             undo = before_commit(boundary)
         conn.commit()
@@ -1875,6 +1898,13 @@ def insert_manual_match(
         f"{len(plan.shifted_match_ids)}件(旧id={plan.shifted_match_ids[0]}〜)" if plan.shifted_match_ids else "なし",
     )
     refresh_rank_after_estimate(conn, new_id)
+    if plan.session_new_started_at is not None:
+        logger.info(
+            "過去の配信として追加したため、sessions.id=%s の開始時刻を書き換えました(%s->%s)",
+            plan.position.session_id,
+            plan.session_old_started_at.isoformat(),
+            plan.session_new_started_at.isoformat(),
+        )
     if next_staked_new_id is not None:
         logger.info(
             "matches.id=%d のrank_beforeを、追加した試合(id=%d)のrank_after(%s)で連動更新しました(%s->%s)",

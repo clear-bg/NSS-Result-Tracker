@@ -203,3 +203,25 @@ def test_check_rank_change_rejects_impossible_combinations(result, before, after
 )
 def test_check_rank_change_accepts_possible_combinations(result, before, after):
     assert manual_match.check_rank_change(result, before, after) == []
+
+
+# ---- past_session_started_at(Issue #491) ----
+
+
+def test_past_session_start_is_five_minutes_before_the_match_when_appending_before_startup():
+    position = manual_match.InsertPosition(session_id=2, previous=MatchRef(1, _at(19, 0), 1), following=None)
+    started = manual_match.past_session_started_at(_at(21, 4), position, session_started_at=_at(23, 30))
+    assert started == _at(20, 59)
+
+
+def test_past_session_start_is_kept_when_the_match_is_after_startup():
+    """起動はしていたが仮想カメラの開始が遅れたケース。今回の配信の試合なので開始時刻は変えない。"""
+    position = manual_match.InsertPosition(session_id=2, previous=MatchRef(1, _at(19, 0), 1), following=None)
+    assert manual_match.past_session_started_at(_at(21, 4), position, session_started_at=_at(21, 0)) is None
+
+
+def test_past_session_start_is_kept_when_inserting_before_an_existing_match():
+    position = manual_match.InsertPosition(
+        session_id=2, previous=MatchRef(1, _at(19, 0), 1), following=MatchRef(2, _at(21, 9), 2)
+    )
+    assert manual_match.past_session_started_at(_at(21, 4), position, session_started_at=_at(21, 8)) is None

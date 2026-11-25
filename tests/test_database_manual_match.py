@@ -180,6 +180,43 @@ def test_insert_appends_when_current_session_has_no_matches(conn, two_sessions):
     assert added["rank_before"] == 43.60
 
 
+def _session_started_at(conn, session_id) -> str:
+    return conn.execute("SELECT started_at FROM sessions WHERE id = ?", (session_id,)).fetchone()["started_at"]
+
+
+def test_append_before_startup_rewrites_session_start(conn, two_sessions):
+    """過去の試合を追加するためだけに起動した場合、配信の開始時刻を試合終了の5分前にする(Issue #491)。"""
+    _, _, ids = two_sessions
+    conn.execute("UPDATE matches SET rank_after = 43.60 WHERE id = ?", (ids[3],))
+    new_session = create_session(conn)
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (_at(25, 0, 38).isoformat(), new_session))
+    conn.commit()
+    _, plan = insert_manual_match(conn, _entry(detected_at=_at(23, 1, 40), rank_after=43.80), new_session)
+    assert plan.session_old_started_at == _at(25, 0, 38)
+    assert plan.session_new_started_at == _at(23, 1, 35)
+    assert _session_started_at(conn, new_session) == _at(23, 1, 35).isoformat()
+
+
+def test_append_after_startup_keeps_session_start(conn, two_sessions):
+    """起動後に仮想カメラの開始が遅れて記録できなかった試合は、今回の配信のまま開始時刻を変えない。"""
+    _, _, ids = two_sessions
+    conn.execute("UPDATE matches SET rank_after = 43.60 WHERE id = ?", (ids[3],))
+    new_session = create_session(conn)
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (_at(23, 19, 50).isoformat(), new_session))
+    conn.commit()
+    _, plan = insert_manual_match(conn, _entry(detected_at=_at(23, 20, 0), rank_after=43.80), new_session)
+    assert plan.session_new_started_at is None
+    assert _session_started_at(conn, new_session) == _at(23, 19, 50).isoformat()
+
+
+def test_insert_before_first_match_keeps_session_start(conn, two_sessions):
+    _, current_session, _ = two_sessions
+    before = _session_started_at(conn, current_session)
+    _, plan = insert_manual_match(conn, _entry(), current_session)
+    assert plan.session_new_started_at is None
+    assert _session_started_at(conn, current_session) == before
+
+
 def test_insert_is_rejected_when_previous_ranked_match_is_unconfirmed(conn, two_sessions):
     _, _, ids = two_sessions
     new_session = create_session(conn)

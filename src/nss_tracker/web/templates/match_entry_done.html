@@ -10,6 +10,12 @@
 {# Issue #489: 記録漏れ試合の追加の完了画面(POST /match-entryからのリダイレクト先) #}
 <h1>記録漏れ試合の追加</h1>
 <p class="admin-message admin-message-success">id={{ match_id }} として追加しました。{% if backup_path %}バックアップ: {{ backup_path }}(DBファイルと同じフォルダ){% endif %}</p>
+{% if past_session %}
+<div class="match-entry-warn">
+  <strong>この試合は過去の配信として登録しました。</strong>
+  続けて試合をする場合は、システムを再起動してください。再起動しないと、これからの試合も過去の配信に混ざり、「今回」の勝率などにこの試合が入ります。
+</div>
+{% endif %}
 <div class="match-entry-actions">
   <a href="/health-check">ランク記録の健全性チェックで確認する</a>
   <a href="/match-entry">続けて追加する</a>
