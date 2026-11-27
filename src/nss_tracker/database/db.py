@@ -193,6 +193,13 @@ CREATE TABLE IF NOT EXISTS matches (
                                      -- /rank-entry・/health-checkから人間が立てる。勝率・ランク
                                      -- 推移・rank_beforeチェーン等の集計からはすべて除外するが、
                                      -- 行自体とgoalsは削除せず残す(set_match_excluded参照)
+    interrupted INTEGER NOT NULL DEFAULT 0, -- 1=「試合終了」を見ないまま次のVS画面へ戻った試合。Issue #493。
+                                     -- 専用部屋で部屋主が「やりなおす」を押した場合(通信切断も同じ
+                                     -- 遷移になる)。resultは結果バナーではなく、ゴール後の中央スコア
+                                     -- 表示(score_mine/score_opponent)から決めている
+    score_mine INTEGER,             -- ゴール後の中央スコア表示から読んだ最後のスコア(自チーム)。Issue #493。
+    score_opponent INTEGER,         -- 同、相手チーム。専用部屋の試合でだけ読む(野良・読めなかった試合はNULL)。
+                                     -- ゴールが1件も無いまま中断した試合は0-0
     created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601, JST)
     updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601, JST)
 );
@@ -520,6 +527,23 @@ def _migrate_matches_add_rank_after_estimate(conn: sqlite3.Connection) -> None:
         refresh_rank_after_estimate(conn, row["id"])
 
 
+def _migrate_matches_add_interrupted_and_score(conn: sqlite3.Connection) -> None:
+    """Issue #493: 既存DBファイルのmatchesテーブルにinterrupted・score_mine・score_opponent列を追加する。
+
+    既存行はinterrupted=0・スコアNULLになる(過去の試合のスコアは復元できない)。
+    新規DBでは_SCHEMA自体に既にこれらの列を含むため、この関数は無害にreturnする。
+    """
+    columns = {c["name"] for c in conn.execute("PRAGMA table_info(matches)").fetchall()}
+    if "interrupted" in columns:
+        return
+
+    logger.info("matchesテーブルにinterrupted・score_mine・score_opponent列を追加しています")
+    conn.execute("ALTER TABLE matches ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0")
+    conn.execute("ALTER TABLE matches ADD COLUMN score_mine INTEGER")
+    conn.execute("ALTER TABLE matches ADD COLUMN score_opponent INTEGER")
+    conn.commit()
+
+
 def _team_rank_diffs(conn: sqlite3.Connection) -> dict[int, Optional[int]]:
     """vs_slot_ranksから試合ごとの合計ランク差(rank_estimate.team_rank_diff)を求める。"""
     slots: dict[int, dict[str, list]] = {}
@@ -639,6 +663,7 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     _migrate_matches_add_player_shortage(conn)
     _migrate_matches_add_excluded(conn)
     _migrate_matches_add_rank_after_estimate(conn)
+    _migrate_matches_add_interrupted_and_score(conn)
     logger.info("DBに接続しました: %s", Path(db_path).resolve())
     return conn
 
@@ -950,6 +975,9 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
     選択肢に1件余分に出るだけだが、誤って非stakedにした試合は永久に入力できなく
     なる)。移行時のバックフィル条件(_migrate_matches_add_rank_staked)もこれと
     同じOR条件にしてある。
+
+    Issue #493: match.interrupted(「試合終了」を見ないまま次のVS画面へ戻った試合)と
+    match.score(ゴール後の中央スコア表示から読んだ最後のスコア)もそのまま保存する。
     """
     _maybe_correct_previous_match_rank_after(conn, match.rank_before)
     rank_staked = bool(match.vs_mine_ranks and match.vs_mine_ranks[0].tier is not None) or (
@@ -963,8 +991,8 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
         "INSERT INTO matches "
         "(session_id, detected_at, result, rank_before, rank_before_ocr, rank_after_ocr, "
         "mine_team_color, opponent_team_color, room_type, league_change_label_detected, "
-        "rank_staked, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "rank_staked, interrupted, score_mine, score_opponent, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             session_id,
             match.detected_at.isoformat(),
@@ -977,6 +1005,9 @@ def save_match_result(conn: sqlite3.Connection, match: MatchResult, session_id: 
             room_type,
             match.league_change_label_detected,
             1 if rank_staked else 0,
+            1 if match.interrupted else 0,
+            match.score[0] if match.score is not None else None,
+            match.score[1] if match.score is not None else None,
             now,
             now,
         ),

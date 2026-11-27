@@ -3155,3 +3155,80 @@ def test_connect_migrates_legacy_matches_without_rank_after_estimate(tmp_path):
 
     assert _estimate_of(conn, pending) == pytest.approx(42.40)
     assert _estimate_of(conn, 1) is None
+
+
+def test_save_match_result_stores_interrupted_and_score(monkeypatch):
+    """Issue #493: 「試合終了」を見ないまま中断した試合の印と、中央スコアから読んだスコアを保存する。"""
+    monkeypatch.setattr("nss_tracker.config._current_room_type", "private")
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="win",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+        score=(2, 1),
+        interrupted=True,
+    )
+
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["interrupted"] == 1
+    assert (row["score_mine"], row["score_opponent"]) == (2, 1)
+    assert row["room_type"] == "private"
+
+
+def test_save_match_result_defaults_to_not_interrupted_without_score():
+    conn = connect(":memory:")
+    match = MatchResult(
+        result="lose",
+        rank_before=None,
+        rank_after=None,
+        league_changed=None,
+        detected_at=datetime.now(timezone.utc),
+    )
+
+    match_id = save_match_result(conn, match)
+
+    row = conn.execute("SELECT * FROM matches WHERE id = ?", (match_id,)).fetchone()
+    assert row["interrupted"] == 0
+    assert row["score_mine"] is None
+    assert row["score_opponent"] is None
+
+
+def test_connect_migrates_legacy_matches_without_interrupted_and_score(tmp_path):
+    """Issue #493: interrupted・score_mine・score_opponent列が無い移行前のDBでも、
+    connect()を呼ぶだけで列が追加され、既存行はinterrupted=0・スコアNULLになる。
+    """
+    db_path = tmp_path / "legacy_interrupted.db"
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.executescript(
+        """
+        CREATE TABLE matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            detected_at TEXT NOT NULL,
+            result TEXT NOT NULL,
+            rank_before REAL,
+            rank_after REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO matches (detected_at, result, created_at, updated_at)
+            VALUES ('2026-07-01T00:00:00+09:00', 'win', '2026-07-01T00:00:00+09:00', '2026-07-01T00:00:00+09:00');
+        """
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    conn = connect(db_path)
+
+    columns = {c["name"]: c for c in conn.execute("PRAGMA table_info(matches)").fetchall()}
+    assert columns["interrupted"]["notnull"] == 1
+    rows = fetch_all_matches(conn)
+    assert rows[0]["interrupted"] == 0
+    assert rows[0]["score_mine"] is None
+    assert rows[0]["score_opponent"] is None
+    conn.close()
+
+    connect(db_path).close()  # 2回目もエラーにならない
