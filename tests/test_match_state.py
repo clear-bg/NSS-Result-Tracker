@@ -3132,3 +3132,204 @@ def test_close_shuts_down_both_ocr_executors():
     for executor in (rank_ocr_executor, goal_ocr_executor):
         with pytest.raises(RuntimeError):
             executor.submit(lambda: None)
+
+
+# --- Issue #493: 専用部屋で「試合終了」を見ないまま次のVS画面へ戻った試合 ---------------
+
+
+def _score_reading(left, right):
+    from nss_tracker.detection.center_score import DigitReading
+
+    mask = np.ones((64, 48), dtype=bool)
+    return (DigitReading(left, 0.95, mask), DigitReading(right, 0.95, mask))
+
+
+class _RedoScenario:
+    """VS画面→(ゴール→中央スコア表示)の繰り返し→次のVS画面、を1秒刻みで進める。"""
+
+    def __init__(self, monkeypatch, room_type="private", center_score_window_seconds=5):
+        self.screen = {"vs": False, "goal": False, "score": None, "match_end": False}
+        _stub_all_detections(monkeypatch)
+        monkeypatch.setattr(match_state_module, "get_room_type", lambda: room_type)
+        monkeypatch.setattr(match_state_module, "is_vs_screen", lambda frame: self.screen["vs"])
+        monkeypatch.setattr(match_state_module, "is_goal_event", lambda frame: self.screen["goal"])
+        monkeypatch.setattr(match_state_module, "is_match_end_screen", lambda frame: self.screen["match_end"])
+        monkeypatch.setattr(match_state_module, "confirm_match_end_text", lambda frame: True)
+        monkeypatch.setattr(match_state_module, "read_center_score", lambda frame: self.screen["score"])
+        monkeypatch.setattr(match_state_module, "read_vs_screen_ranks", lambda frame: ([], []))
+        monkeypatch.setattr(match_state_module, "confirm_goal_text", lambda frame: True)
+        monkeypatch.setattr(match_state_module, "is_own_goal_event", lambda frame: False)
+        monkeypatch.setattr(match_state_module, "read_scorer_name", lambda frame: ("Alice", 0.95))
+        monkeypatch.setattr(match_state_module, "read_assist_name", lambda frame: None)
+        monkeypatch.setattr(match_state_module, "read_precise_rank", lambda frame, gauge_roi, rank_number_roi: None)
+        self.machine = MatchStateMachine(
+            now_fn=FakeClock(),
+            vs_screen_confirm_seconds=1,
+            vs_screen_lockout_seconds=0,
+            goal_confirm_seconds=1,
+            match_end_confirm_seconds=1,
+            center_score_window_seconds=center_score_window_seconds,
+            center_score_stable_seconds=1,
+            center_score_gap_seconds=1.5,
+            # OCRをその場で終わらせ、スレッドの完了タイミングで結果が揺れないようにする
+            rank_ocr_executor=_RecordingExecutor(),
+            goal_ocr_executor=_RecordingExecutor(),
+        )
+        self.frame = np.zeros((10, 10, 3), dtype=np.uint8)
+        self.results = []
+
+    def step(self, frames=1, **screen):
+        self.screen.update(screen)
+        for _ in range(frames):
+            result = self.machine.process_frame(self.frame)
+            if result is not None:
+                self.results.append(result)
+
+    def vs_screen(self):
+        self.step(2, vs=True)
+        self.step(1, vs=False)
+
+    def goal(self, before, after):
+        self.step(2, goal=True)
+        self.step(1, goal=False, score=_score_reading(*before))
+        self.step(1)
+        self.step(3, score=_score_reading(*after))
+        self.step(3, score=None)  # 表示が消えて読み取り期間が終わる
+
+
+def test_private_redo_records_interrupted_match_from_last_score(monkeypatch, caplog):
+    scenario = _RedoScenario(monkeypatch)
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        scenario.vs_screen()
+        scenario.goal((0, 0), (1, 0))
+        scenario.goal((1, 0), (1, 1))
+        scenario.goal((1, 1), (2, 1))
+        assert scenario.results == []
+        scenario.vs_screen()  # 「試合終了」を見ないまま次のVS画面
+
+    assert len(scenario.results) == 1
+    result = scenario.results[0]
+    assert result.interrupted is True
+    assert result.score == (2, 1)
+    assert result.result == "win"
+    assert len(result.goals) == 3, "中断した試合のゴールはその試合のものとして記録する"
+    assert result.rank_before is None and result.rank_after is None
+    assert result.session_match_no == 1
+    assert scenario.machine.session_match_no == 2
+    assert "持ち越されます" not in caplog.text
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+@pytest.mark.parametrize("final,expected", [((0, 2), "lose"), ((2, 2), "draw")])
+def test_private_redo_result_follows_score(monkeypatch, final, expected):
+    scenario = _RedoScenario(monkeypatch)
+    scenario.vs_screen()
+    if final == (0, 2):
+        scenario.goal((0, 0), (0, 1))
+        scenario.goal((0, 1), (0, 2))
+    else:
+        scenario.goal((0, 0), (0, 2))  # 不自然な変化でも読み取り値を採用する
+        scenario.goal((0, 2), (2, 2))
+    scenario.vs_screen()
+    assert [r.result for r in scenario.results] == [expected]
+    assert scenario.results[0].score == final
+
+
+def test_private_redo_without_goals_is_a_draw(monkeypatch):
+    scenario = _RedoScenario(monkeypatch)
+    scenario.vs_screen()
+    scenario.step(5)
+    scenario.vs_screen()
+    assert len(scenario.results) == 1
+    assert scenario.results[0].result == "draw"
+    assert scenario.results[0].score == (0, 0)
+    assert scenario.results[0].interrupted is True
+    assert scenario.results[0].goals == []
+
+
+def test_private_redo_with_unread_score_is_not_recorded(monkeypatch, caplog):
+    """ゴールがあるのにスコアを読めていなければ勝敗が分からないため記録しない(WARNING)。"""
+    scenario = _RedoScenario(monkeypatch)
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        scenario.vs_screen()
+        scenario.step(2, goal=True)
+        scenario.step(8, goal=False)  # スコア表示を一度も読めない
+        scenario.vs_screen()
+    assert scenario.results == []
+    assert "中央スコアを読めていないため勝敗が分からず" in caplog.text
+
+
+def test_implausible_score_change_logs_warning_but_is_adopted(monkeypatch, caplog):
+    scenario = _RedoScenario(monkeypatch)
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        scenario.vs_screen()
+        scenario.goal((0, 0), (2, 0))  # 2点差未満なのに2点
+    assert "1回のゴールとして不自然です" in caplog.text
+    assert scenario.machine._match_score == (2, 0)
+
+
+def test_missed_goal_is_reported_from_pre_goal_score(monkeypatch, caplog):
+    """表示の最初に出るゴール前のスコアが、これまでに読んだスコアと違えば見逃しとして報告する。"""
+    scenario = _RedoScenario(monkeypatch)
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        scenario.vs_screen()
+        scenario.goal((0, 0), (1, 0))
+        scenario.goal((1, 1), (2, 1))  # 1-0から1-1になったゴールを見逃した
+    assert "それまでのゴールの見逃しの可能性" in caplog.text
+    assert "1回のゴールとして不自然です" not in caplog.text
+    assert scenario.machine._match_score == (2, 1)
+
+
+def test_random_room_keeps_previous_behavior(monkeypatch, caplog):
+    """野良では中央スコアを読まず、従来どおりゴールを次の試合へ持ち越す(INFOログ)。"""
+    scenario = _RedoScenario(monkeypatch, room_type="random")
+    calls = {"n": 0}
+
+    def counting_read(frame):
+        calls["n"] += 1
+        return None
+
+    monkeypatch.setattr(match_state_module, "read_center_score", counting_read)
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        scenario.vs_screen()
+        scenario.goal((0, 0), (1, 0))
+        scenario.vs_screen()
+    assert scenario.results == []
+    assert calls["n"] == 0
+    assert "持ち越されます" in caplog.text
+
+
+def test_private_redo_after_match_end_is_not_treated_as_interrupted(monkeypatch, caplog):
+    """「試合終了」を確認済みの場合は、やりなおしではなく結果バナーの取りこぼし(Issue #423)。"""
+    scenario = _RedoScenario(monkeypatch)
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        scenario.vs_screen()
+        scenario.goal((0, 0), (1, 0))
+        scenario.step(2, match_end=True)
+        scenario.step(1, match_end=False)
+        scenario.vs_screen()
+    assert scenario.results == []
+    assert "「試合終了」を確認済みなのに結果バナーを確定できないまま" in caplog.text
+
+
+def test_normal_private_match_result_carries_score(monkeypatch):
+    """結果バナーで確定した専用部屋の試合にも、読んだスコアを載せる(interruptedはFalse)。"""
+    scenario = _RedoScenario(monkeypatch)
+    scenario.vs_screen()
+    scenario.goal((0, 0), (0, 1))
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+    scenario.step(4)
+    assert len(scenario.results) == 1
+    assert scenario.results[0].result == "lose"
+    assert scenario.results[0].score == (0, 1)
+    assert scenario.results[0].interrupted is False
+
+
+def test_score_resets_between_matches(monkeypatch):
+    scenario = _RedoScenario(monkeypatch)
+    scenario.vs_screen()
+    scenario.goal((0, 0), (1, 0))
+    scenario.vs_screen()  # 1試合目は1-0で中断
+    scenario.step(3)
+    scenario.vs_screen()  # 2試合目はゴール無しで中断
+    assert [r.score for r in scenario.results] == [(1, 0), (0, 0)]
