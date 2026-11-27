@@ -75,3 +75,29 @@ def test_read_team_colors_mine_and_opponent_are_visually_distinct(fixtures_dir, 
     mine, opponent = read_team_colors(frame)
 
     assert _distance(mine, opponent) > 100
+
+
+@requires_fixtures
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "72_matching_hdr_off_1.png",
+        "73_matching_hdr_off_2.png",
+        "87_matching_hdr_off_3.png",
+        "82_matching_with_rank_4v3_hdr_off.png",
+        "86_matching_with_rank_4v4_hdr_off.png",
+    ],
+)
+def test_read_team_colors_classified_as_blue_and_pink_with_and_without_rank_badge(fixtures_dir, filename):
+    """Issue #494: ランクバッジの無い試合(72/73/87)でも、ある試合(82/86)でも、ROIが名前タグの
+    内側に入り、表示側の分類で正しい色(この5枚は目視で自チーム=青・相手チーム=ピンク)になる。
+    以前のROIはバッジが無いと芝生を拾い、灰色に分類されていた。
+    """
+    from nss_tracker.web.server import _TEAM_COLOR_BLUE, _TEAM_COLOR_PINK, _normalize_team_color
+
+    frame = cv2.imread(str(fixtures_dir / filename))
+
+    mine, opponent = read_team_colors(frame)
+
+    assert _normalize_team_color(mine) == _TEAM_COLOR_BLUE
+    assert _normalize_team_color(opponent) == _TEAM_COLOR_PINK
