@@ -67,6 +67,15 @@ Nintendo Switch Sports「サッカー」のプレイ映像をキャプチャー�
 - 状態監視(アニメーション中かどうかの判定)は固定領域のピクセル差分・平均色で行う。軽量な処理なので高頻度に回してよい
 - Issue #229: 当初(Issue #39)は「VS画面検知は任意のエンリッチであり、見逃しても既存の結果バナー起点フローには影響させない」方針だったが、実データでVS画面検知の精度が99%程度信頼できる水準まで改善したため方針転換し、**試合の区切りをVS画面確定に一本化した**。`state/match_state.py`の`_watch_for_banner()`は、その試合でVS画面を一度も確認できていない(`_vs_confirmed_this_match`がFalse)状態で結果バナーが確定した場合、新しい試合としては記録せず、直前の試合番号のままINFOログで誤検知として報告する(直前の試合終了後の残像を誤って結果バナーとして拾うケースの対策、2026-08-04の実機テストで発覚)。これによりVS画面を本当に見逃した試合(検知精度が上がったとはいえ残り僅かなケースで見逃す可能性はゼロではない)や、アプリを試合の途中から起動した場合は、その試合自体が記録されなくなる(ユーザー確認済みのトレードオフ)。詳細は`state/match_state.py`のモジュールdocstring参照
   - Issue #234: 同じVS画面が表示され続けている間に、演出(キック演出のスウォッシュ等)による一瞬の`is_vs_screen`判定揺れで、同じVS画面のまま試合開始が二重に発火する不具合が実データで見つかった(2026-08-05の実機テストで発覚)。対応として、VS画面確定直後は一定時間(既定30秒、`config/detection.toml`の`[match_state]`セクション`VS_SCREEN_LOCKOUT_SECONDS`で上書き可能)、新規のVS画面検知自体を行わないロック機構を追加した(`state/match_state.py`の`_check_for_vs_screen()`参照)
+- Issue #493: **専用部屋で「やりなおす」により中断した試合を記録する。** 専用部屋では部屋主が「試合終了」表示を待たずに「やりなおす」を押し、結果バナーが出ないまま次のVS画面へ戻ることがある。従来この試合はDBに残らず、ゴールも次の試合に合算されていた(上記Issue #243の経路)。ゴール直後に画面中央へ出る大きなスコア表示(**常に左=自チーム・右=相手チーム**、ゴールのたびに必ず出る、いずれもユーザー確認済み)を読み、専用部屋で「試合終了」を確認しないまま次のVS画面が来たら最後に読んだスコアで勝敗を決めて記録する。詳細は`state/match_state.py`のモジュールdocstring参照
+  - 読み取りは`detection/center_score.py`。数字のフォントが特殊なためOCRではなく**テンプレートマッチング**(白い最大連結成分を48x64に縮めてIoUを取る、1回0.2ms程度)を主にする。読むのはゴール検知から8秒間(`CENTER_SCORE_WINDOW_SECONDS`)だけで、その間は毎フレーム回す。切り替わり(回転・拡大)途中のフレームは、白い成分がROIの端に触れる・高さが止まった表示(109px前後)と違う、の2条件で読まない。同じ値が0.3秒続いたものだけ採用し、読み取り期間の最後に採用されていた値をその試合のスコアにする(`state/center_score_tracker.py`)
+  - テンプレートは`detection/center_score_templates/`(数字の形だけの2値画像、gitで管理)。手元に0〜4のサンプルしか無い(5はまれ、6はほぼ出ない、7以上・2桁は出ない前提、ユーザー確認済み)。テンプレートに無い形が続いた場合だけPaddleOCRで補う。OCRの余白は**端の色を引き伸ばす**(`BORDER_REPLICATE`)。rank_ocr.py等と同じ黒い余白だと「1」が「2」と誤読されたため。5・6のスクリーンショットが手に入ったら`scripts/build_center_score_templates.py`でテンプレートに足す
+  - 一致度の境目`MATCH_MIN`=0.90の根拠: スクリーンショット10枚(26桁)のleave-one-outで正しい数字との一致度0.95〜0.98・別の数字は最大0.80、fixtures/videos 23本の全フレームで11ゴールすべて正しく、試合中の誤読0件。**ただしfixturesはOBSローカル録画で、Virtual Camera経由の実フレームでは未確認**(Issue #373/#431と同じ理由で色味がずれうる)。読んだスコアはINFO・一致しない場合の経緯はDEBUG/WARNINGログに出るので、実配信のログで確かめる
+  - 勝敗: 同点(0-0・1-1・2-2等)は引き分け、ゴールが1件も無いまま中断した場合も0-0の引き分け。中断した試合のゴールはその試合のものとして記録する(ユーザーとの相談で決定)。ゴールがあるのにスコアを一度も読めていない場合だけは勝敗を決められないため、WARNINGを出して従来どおり記録しない
+  - 加算方式(通常1点、2点差以上のときはゴールデンボールで2点。勝っている側が決めれば4点差のノックアウト)は**妥当性チェックにのみ使う**(不自然な変化はWARNINGを出し、読み取り値自体は採用する)。比べる基準は表示の最初に出るゴール前のスコアで、それがこれまでに読んだスコアと違えばゴールの見逃しとしてWARNINGを出す。どちらのチームが得点したかは左右で分かるため、チームカラーは不要
+  - DBは`matches.interrupted`(1=「試合終了」を見ないまま中断した試合)と`score_mine`/`score_opponent`(読んだ最後のスコア。結果バナーで確定した試合にも入る)。「試合終了」を確認済みなのに結果バナーを確定できなかった場合(Issue #423)は、やりなおしではないためこの扱いにしない
+  - **スコアの読み取り自体は野良でも行う**(野良でも配置が同じことをfixtures/videosで確認済み)。野良では配信ウィジェットには出さず、最終スコアをDBに残すことと、結果バナーの勝敗との突き合わせに使う(ユーザー要望。読み取り精度を野良の試合ですぐ確かめられるようにするため)。スコアから決まる勝敗が結果バナーと違えばWARNINGを出す(記録は実績のある結果バナーのまま)。野良では中断した試合の記録はせず従来どおり(記録しない・ゴールを持ち越す)だが、読んだスコアは新しい試合へ持ち越さない
+  - 通信切断も同じ遷移になるため、専用部屋では切断された試合もその時点のスコアで記録される(許容、切断の検知は#496)。ダッシュボードでの見せ方は#495で扱う
 
 ### サンプリング戦略(重要)
 
@@ -561,7 +570,7 @@ Issue #339(得点/アシスト・勝率ウィジェットの見た目見直し)�
 src/
 └── nss_tracker/
     ├── capture/            # ffmpegサブプロセス起動・生フレームの継続読み取り/バッファリング
-    ├── detection/          # 画像解析ロジック(banner.py: 勝敗バナー判定, rank_ocr.py: ランクOCR, motion.py: ピクセル差分監視, match_end.py: 「試合終了」バナー検知, matchmaking.py: VS画面検知, vs_rank.py: VS画面ランクOCR, team_color.py: チームカラー検知, virtual_camera.py: OBS仮想カメラのプレースホルダー画像検知)
+    ├── detection/          # 画像解析ロジック(banner.py: 勝敗バナー判定, rank_ocr.py: ランクOCR, motion.py: ピクセル差分監視, match_end.py: 「試合終了」バナー検知, matchmaking.py: VS画面検知, vs_rank.py: VS画面ランクOCR, team_color.py: チームカラー検知, virtual_camera.py: OBS仮想カメラのプレースホルダー画像検知, center_score.py: ゴール後の中央スコア表示の読み取り)
     ├── detection_config.py # detection/配下のROI・色閾値をconfig/detection.tomlから読み込むローダー
     ├── state/              # 試合の状態遷移(バナー表示→ランクアニメ→確定→暗転→マッチング)の管理
     ├── database/           # SQLiteへの読み書き
@@ -575,12 +584,12 @@ src/
     └── web/                # 配信画面向けダッシュボード(server.py: FastAPIアプリ, runner.py: 別スレッドでのuvicorn起動, templates/: Jinja2テンプレート, static/: CSS等の静的ファイル)
 ```
 
-- `detection/`は当面`banner.py` / `rank_ocr.py` / `motion.py` / `league_change.py` / `goal.py` / `match_end.py` / `matchmaking.py` / `vs_rank.py` / `team_color.py` / `virtual_camera.py`のフラット構成とする。追加OCRなど将来の機能追加が必要になった段階で、その都度サブディレクトリに整理し直してよい(先回りして細分化しない)
+- `detection/`は当面`banner.py` / `rank_ocr.py` / `motion.py` / `league_change.py` / `goal.py` / `match_end.py` / `matchmaking.py` / `vs_rank.py` / `team_color.py` / `virtual_camera.py` / `center_score.py`のフラット構成とする。追加OCRなど将来の機能追加が必要になった段階で、その都度サブディレクトリに整理し直してよい(先回りして細分化しない)
 
 ### 検知パラメータ(ROI・色閾値)のconfig化
 
-- `detection/`配下の各モジュール(上記10ファイル全て)が持つROI・HSV色閾値・ピクセル差分閾値、および`state/match_state.py`の検知閾値は、ルート直下`config/detection.toml`(git追跡対象、デフォルト値入り)から読み込む。読み込みは`src/nss_tracker/detection_config.py`の`get_detection_value(section, key, default)`が担当し、各モジュールのモジュールレベル定数の初期化時に1回呼ばれる
-- `config/detection.toml`はモジュールごとに`[banner]` / `[rank_ocr]` / `[league_change]` / `[goal]` / `[motion]` / `[matchmaking]` / `[vs_rank]` / `[team_color]` / `[match_end]` / `[match_state]`のテーブルを持つ。ファイル自体が無い、またはテーブル・キーが無い場合は各モジュール側のPythonデフォルト値(=元々ハードコードされていた値)にフォールバックする
+- `detection/`配下の各モジュール(上記11ファイル全て)が持つROI・HSV色閾値・ピクセル差分閾値、および`state/match_state.py`の検知閾値は、ルート直下`config/detection.toml`(git追跡対象、デフォルト値入り)から読み込む。読み込みは`src/nss_tracker/detection_config.py`の`get_detection_value(section, key, default)`が担当し、各モジュールのモジュールレベル定数の初期化時に1回呼ばれる
+- `config/detection.toml`はモジュールごとに`[banner]` / `[rank_ocr]` / `[league_change]` / `[goal]` / `[motion]` / `[matchmaking]` / `[vs_rank]` / `[team_color]` / `[match_end]` / `[center_score]` / `[match_state]`のテーブルを持つ。ファイル自体が無い、またはテーブル・キーが無い場合は各モジュール側のPythonデフォルト値(=元々ハードコードされていた値)にフォールバックする
   - Issue #388以前は`state/match_state.py`の`DEFAULT_BANNER_CONFIRM_FRAMES`等のフレーム数系デフォルト値を対象外としていた(`main.py`が実際のfpsに応じて動的に再計算して上書きするため、素の値を外に出すと二重管理になるという理由、Issue #49参照)。Issue #388でこれらのデバウンス閾値をすべて実時間(秒)ベースに変更し、fps依存の再計算自体が不要になったため、この除外は撤廃し`[match_state]`の対象に含めた(下記「MatchStateMachineのデバウンス閾値」節参照)。`StabilityMonitor`(ピクセル差分ベースの安定監視、Issue #388の対象外)の`stable_frames_required`は引き続き`main.py`側でfpsに応じて計算しており対象外のまま
 - fixture実測に基づく閾値決定の根拠コメントは、詳細を失わないよう各detectionモジュールのPython定数側に残す(config/detection.toml側は簡潔なコメントのみ)
 - 将来キャプチャ以外のカテゴリの設定が増えた場合も、`config/`配下に種別ごとのファイルを追加していく想定(例: 将来`config/xxx.toml`)。デバイス名・解像度(Issue #30)は値がシンプルなKEY=VALUEで足りるため、従来どおり`.env`(`config.py`)で扱う

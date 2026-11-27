@@ -133,6 +133,11 @@ OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS = 5.0
 # Issue #395: 「試合終了」OCR確認からこの秒数を過ぎても暗転を検知できなければ、
 # 暗転を待たずにOBSシーンを切り替える安全網(通った場合はWARNINGログを出す)
 OBS_SWITCH_TIMEOUT_SECONDS = 30.0
+# Issue #493: 専用部屋でゴールを検知してから中央スコア表示を読み続ける秒数と、
+# 同じスコアが何秒続いたら採用するか(止まった表示は約1.0秒、ゴール前のスコアは約0.4秒)
+CENTER_SCORE_WINDOW_SECONDS = 8.0
+CENTER_SCORE_STABLE_SECONDS = 0.3
+CENTER_SCORE_GAP_SECONDS = 0.5
 LEAGUE_CHANGE_GRACE_SECONDS = 5.0
 RANK_RECHECK_INTERVAL_SECONDS = 0.5
 
@@ -156,3 +161,16 @@ PLACEHOLDER_SAMPLES = [
     [890, 860, 920, 900, 143, 141, 143],
 ]
 PLACEHOLDER_COLOR_TOLERANCE = 15.0
+
+[center_score]
+# Issue #493: ゴール直後に画面中央へ出る大きなスコア表示(左=自チーム、右=相手チーム)。
+# 白い数字の実測範囲(左x644〜734・右x1184〜1274、y283〜392)に余白を足し、幅を112に揃えた
+LEFT_ROI = [635, 274, 747, 405]
+RIGHT_ROI = [1173, 274, 1285, 405]
+WHITE_SAT_MAX = 60
+WHITE_VAL_MIN = 200
+# 止まった表示の数字の高さ(実測109px前後)。拡大・回転の途中のフレームを除く
+DIGIT_HEIGHT_RANGE = [104, 114]
+DIGIT_AREA_MIN = 300
+# テンプレートとの一致度の境目。正しい数字は0.90以上、別の数字は最大0.80(実測)
+MATCH_MIN = 0.90

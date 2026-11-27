@@ -280,6 +280,15 @@ def _record_match_result(conn: sqlite3.Connection, session_id: Optional[int], re
         result.mine_team_color,
         result.opponent_team_color,
     )
+    # Issue #493: 専用部屋でゴール後の中央スコア表示を読めた試合は、そのスコアと
+    # 「試合終了」を見ないまま中断した試合かどうかも出す
+    if result.score is not None or result.interrupted:
+        logger.info(
+            "%d試合目 スコア: %s%s",
+            result.session_match_no,
+            f"{result.score[0]}-{result.score[1]}" if result.score is not None else "未読",
+            "(「試合終了」を見ないまま中断した試合)" if result.interrupted else "",
+        )
     for goal in result.goals:
         goal_id = db.save_goal(
             conn, match_id, goal.scorer_name, goal.assist_name, goal.detected_at, is_own_goal=goal.is_own_goal

@@ -614,6 +614,36 @@ Falseに戻った瞬間、つまりVS画面が視覚的に消えて数フレー�
   見逃す可能性はゼロではない)は、勝敗・ランクを含め試合結果ごと記録されなくなる
 - アプリを試合の途中から起動した場合(その試合のVS画面を確実に見逃す)も、
   その試合は記録されなくなる
+
+Issue #493(専用部屋の「やりなおす」で中断した試合の記録):
+専用部屋では、部屋主が「試合終了」表示を待たずに「やりなおす」を押し、結果バナーが
+出ないまま次のVS画面へ戻ることがある。従来この試合は記録されず、ゴールも次の試合へ
+持ち越されていた(Issue #243の経路)。次のように扱う。
+
+- 中央スコアの読み取りは、野良・専用部屋を問わず行う(野良でも同じ表示が出るため)。
+  野良では最終スコアの記録と、結果バナーの勝敗との突き合わせ(読み取り精度の確認)に使う
+- ゴール検知(`is_goal_event`の候補判定が`goal_confirm_seconds`続いた時点)から
+  `center_score_window_seconds`の間、画面中央のスコア表示を毎フレーム読む
+  (`_check_for_center_score`)。読み方は`detection/center_score.py`のテンプレート
+  マッチングで1回0.2ms程度のため、2層構成の「重い処理を常時回さない」方針には反しない。
+  同じ値が`center_score_stable_seconds`続いたものだけを採用し(`state/center_score_tracker.py`)、
+  読み取り期間の最後に採用されていた値をその試合のスコア(`_match_score`)にする。
+  テンプレートに無い数字(5・6)だけ、OCRを`goal_ocr_executor`へ1回投げる
+- 加算方式(通常1点、2点差以上のときはゴールデンボールで2点)は妥当性チェックにのみ使い、
+  不自然な変化はWARNINGを出すだけで読み取り値を採用する。比べる基準は、表示の最初に出る
+  ゴール前のスコア(読めていれば)。これまでに読んだスコアと違えばゴールの見逃しとして報告する
+- 専用部屋(`config.get_room_type() == "private"`)で「試合終了」を確認しないまま
+  次のVS画面が確定したら、`_finalize_interrupted()`が
+  最後のスコアで勝敗を決め(同点は引き分け、ゴールが無ければ0-0の引き分け)、
+  `MatchResult.interrupted=True`で返す。ゴールはこの中断した試合のものになる。
+  ゴールがあるのにスコアを一度も読めていない場合だけは勝敗を決められないため、
+  WARNINGを出して従来どおりの扱い(記録しない・ゴールを持ち越す)にする
+- 「試合終了」を確認済みの場合は、やりなおしではなく結果バナーの取りこぼし(Issue #423)の
+  ため、この扱いにはしない
+- 野良では中断した試合の記録はせず、従来どおり(記録しない・ゴールを持ち越す)。
+  読んだスコアは前の試合のものなので新しい試合へは持ち越さない
+- 結果バナーで確定した試合にも、読んだスコアを`MatchResult.score`として載せる。
+  スコアから決まる勝敗が結果バナーと違えばWARNINGを出す(記録は結果バナーのまま)
 """
 
 import concurrent.futures
@@ -627,8 +657,11 @@ from typing import Callable, NamedTuple, Optional
 
 import numpy as np
 
-from nss_tracker.config import get_goal_record_mode, is_allowed_player
+from nss_tracker.config import get_goal_record_mode, get_room_type, is_allowed_player
 from nss_tracker.detection.banner import BannerResult, classify_banner
+from nss_tracker.detection.center_score import LEFT_ROI as CENTER_SCORE_LEFT_ROI
+from nss_tracker.detection.center_score import RIGHT_ROI as CENTER_SCORE_RIGHT_ROI
+from nss_tracker.detection.center_score import ocr_digit, read_center_score
 from nss_tracker.detection.goal import (
     confirm_goal_text,
     is_goal_event,
@@ -661,6 +694,7 @@ from nss_tracker.detection.rank_ocr import (
 from nss_tracker.detection.team_color import read_team_colors
 from nss_tracker.detection.vs_rank import SlotRank, read_vs_screen_ranks
 from nss_tracker.detection_config import get_detection_value
+from nss_tracker.state.center_score_tracker import CenterScoreTracker, OcrRequest, Score, is_plausible_transition
 from nss_tracker.timeutil import now_jst
 
 logger = getLogger("nss_tracker.state")
@@ -744,6 +778,18 @@ DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS = get_detection_value(
 DEFAULT_OBS_SWITCH_TIMEOUT_SECONDS = get_detection_value(
     "match_state", "OBS_SWITCH_TIMEOUT_SECONDS", 30.0
 )
+
+# Issue #493: 専用部屋でゴールを検知してから、中央のスコア表示を読み続ける秒数。
+# 実測ではゴール検知(GOAL_CONFIRM_SECONDS経過時点)から表示が消えるまで3秒前後のため、
+# 余裕を持たせている(次のゴールはキックオフを挟むためこの間に起きない)
+DEFAULT_CENTER_SCORE_WINDOW_SECONDS = get_detection_value("match_state", "CENTER_SCORE_WINDOW_SECONDS", 8.0)
+# 同じスコアがこの秒数続いたら採用する。止まった表示は約1.0秒、ゴール前のスコアは
+# 約0.4秒続く(実測)。切り替わり途中・消え際のフレームは一瞬しか続かない
+DEFAULT_CENTER_SCORE_STABLE_SECONDS = get_detection_value("match_state", "CENTER_SCORE_STABLE_SECONDS", 0.3)
+# 数字が見えないフレームを何秒まで挟んでも同じ表示が続いているとみなすか。
+# 検知ループが一時的に遅くなっても数え直しにならないよう、フレーム間隔より十分長くする
+# (同じ値の読み取り同士をつなぐだけなので、長くしても誤った値を採用することは無い)
+DEFAULT_CENTER_SCORE_GAP_SECONDS = get_detection_value("match_state", "CENTER_SCORE_GAP_SECONDS", 0.5)
 
 
 class _Debounce:
@@ -895,6 +941,15 @@ def _run_rank_before_ocr(frame: np.ndarray) -> RankBeforeOcrResult:
     )
 
 
+def _result_from_score(score: Score) -> BannerResult:
+    """中央スコア(左=自チーム、右=相手チーム)から勝敗を決める(Issue #493)。同点は引き分け。"""
+    if score[0] > score[1]:
+        return "win"
+    if score[0] < score[1]:
+        return "lose"
+    return "draw"
+
+
 def _run_goal_ocr(frame: np.ndarray) -> GoalOcrResult:
     """ゴール候補フレームに対するOCR一式(確認・得点者名・アシスト名・オウンゴール判定)を
     まとめて実行する(Issue #327)。
@@ -918,6 +973,19 @@ def _run_goal_ocr(frame: np.ndarray) -> GoalOcrResult:
         assist=read_assist_name(frame),
         is_own_goal=is_own_goal_event(frame),
     )
+
+
+def _run_center_score_ocr(
+    frame: np.ndarray, need_left: bool, need_right: bool
+) -> tuple[Optional[tuple[int, float]], Optional[tuple[int, float]]]:
+    """テンプレートで読めなかった中央スコアの数字をOCRで読む(Issue #493)。
+
+    テンプレートに無い数字(5・6)のための補助。_run_goal_ocr()と同じ理由で
+    モジュール直下に置き、goal_ocr_executor(本番はProcessPoolExecutor)へ投げる。
+    """
+    left = ocr_digit(frame, CENTER_SCORE_LEFT_ROI) if need_left else None
+    right = ocr_digit(frame, CENTER_SCORE_RIGHT_ROI) if need_right else None
+    return left, right
 
 
 class VsScreenEvent(NamedTuple):
@@ -962,6 +1030,12 @@ class MatchResult:
     # (通常はleague_changedと同じ内容になるが、数値ベースのleague_changedが
     # Noneになる場面でもこちらは独立して立ちうる)
     league_change_label_detected: Optional[str] = None
+    # Issue #493: 専用部屋でゴール後の中央スコア表示から読んだ、この試合の最後のスコア
+    # (自チーム, 相手チーム)。読んでいない(野良・ゴール無し・読み取り失敗)ならNone
+    score: Optional[tuple[int, int]] = None
+    # Issue #493: 専用部屋で「やりなおす」等により、「試合終了」を見ないまま次の
+    # VS画面へ戻った試合。resultはscore(無ければ0-0)から決めている
+    interrupted: bool = False
 
 
 class MatchStateMachine:
@@ -982,6 +1056,9 @@ class MatchStateMachine:
         demotion_label_confirm_seconds: float = DEFAULT_DEMOTION_LABEL_CONFIRM_SECONDS,
         obs_switch_delay_after_blackout_seconds: float = DEFAULT_OBS_SWITCH_DELAY_AFTER_BLACKOUT_SECONDS,
         obs_switch_timeout_seconds: float = DEFAULT_OBS_SWITCH_TIMEOUT_SECONDS,
+        center_score_window_seconds: float = DEFAULT_CENTER_SCORE_WINDOW_SECONDS,
+        center_score_stable_seconds: float = DEFAULT_CENTER_SCORE_STABLE_SECONDS,
+        center_score_gap_seconds: float = DEFAULT_CENTER_SCORE_GAP_SECONDS,
         rank_stability_monitor: Optional[StabilityMonitor] = None,
         rank_ocr_executor: Optional["concurrent.futures.Executor"] = None,
         goal_ocr_executor: Optional["concurrent.futures.Executor"] = None,
@@ -993,6 +1070,7 @@ class MatchStateMachine:
         self._vs_screen_lockout_seconds = vs_screen_lockout_seconds
         self._obs_switch_delay_after_blackout_seconds = obs_switch_delay_after_blackout_seconds
         self._obs_switch_timeout_seconds = obs_switch_timeout_seconds
+        self._center_score_window_seconds = center_score_window_seconds
         # Issue #388: 「同じ値が持続しているか」を確認するデバウンスは共通の
         # _Debounceヘルパーに委ねる(モジュールdocstring参照)
         self._banner_debounce = _Debounce(banner_confirm_seconds)
@@ -1123,6 +1201,14 @@ class MatchStateMachine:
         # 「試合終了」「結果」ログは直前に増加させた番号を使い回す(ユーザーと
         # すり合わせ済み。番号がズレるリスクより、見逃しでログ自体が欠落する方を避ける)
         self._session_match_no = 0
+        # Issue #493: 専用部屋でゴール後の中央スコア表示を読むための状態。
+        # _score_window_untilが非Noneの間(ゴール検知からcenter_score_window_seconds)だけ
+        # 毎フレーム読む。_match_scoreは読み終えたゴールまでの、この試合の最新スコア
+        self._score_tracker = CenterScoreTracker(center_score_stable_seconds, center_score_gap_seconds)
+        self._score_window_until: Optional[float] = None
+        self._score_ocr_future: Optional["concurrent.futures.Future"] = None
+        self._score_ocr_request: Optional[OcrRequest] = None
+        self._match_score: Optional[Score] = None
 
     @property
     def current_state(self) -> str:
@@ -1204,10 +1290,15 @@ class MatchStateMachine:
         # 前に取り込む(_track_rank()が帯番号の起点として使うため)
         self._poll_rank_before_ocr()
         if self._state is _State.WATCHING:
-            self._check_for_vs_screen(frame, now)
+            # Issue #493: 専用部屋で「試合終了」を見ないまま次のVS画面が来た場合、
+            # 中断した前の試合の結果がここで返る
+            interrupted = self._check_for_vs_screen(frame, now)
             self._check_for_goal(frame, now)
+            self._check_for_center_score(frame, now)
             self._check_for_match_end(frame, now)
             result = self._watch_for_banner(frame, now)
+            if interrupted is not None:
+                result = interrupted
         elif self._state is _State.TRACKING_RANK:
             result = self._track_rank(frame, now, blackout)
         else:
@@ -1225,6 +1316,8 @@ class MatchStateMachine:
         # Issue #397: VS画面OCRの結果も、状態がWATCHINGから進んでいても
         # 取りこぼさないよう状態に関わらず毎フレーム取り込む
         self._poll_vs_ocr()
+        # Issue #493: 中央スコアのOCR(テンプレートに無い数字の補助)も同じ考え方
+        self._poll_center_score_ocr()
         return result
 
     def _check_pending_obs_switch(
@@ -1348,7 +1441,7 @@ class MatchStateMachine:
         self._pending_obs_switch_started_at = None
         self._pending_obs_switch_min_mean = None
 
-    def _check_for_vs_screen(self, frame: np.ndarray, now: float) -> None:
+    def _check_for_vs_screen(self, frame: np.ndarray, now: float) -> Optional[MatchResult]:
         # Issue #234: VS画面確定直後はロック中(この秒数は新規のVS画面検知自体を
         # 行わない)。演出中の一瞬の判定揺れでis_vs_screenが1フレームだけFalseに
         # なると_vs_recorded_this_matchが即座にリセットされてしまい(下記参照)、
@@ -1356,12 +1449,14 @@ class MatchStateMachine:
         # 不具合の対症療法。ロック中は判定を丸ごとスキップする(Issue #388: カウント
         # ダウン式からnow基準の締切時刻式に変更)
         if self._vs_lockout_until is not None and now < self._vs_lockout_until:
-            return
+            return None
         self._vs_lockout_until = None
         if not is_vs_screen(frame):
             self._vs_screen_debounce.reset()
             self._vs_recorded_this_match = False
-            return
+            return None
+
+        interrupted: Optional[MatchResult] = None
 
         if self._vs_screen_debounce.observe(True, now) and not self._vs_recorded_this_match:
             # Issue #243: 前の試合が結果画面確定(_finalize())前にVS画面が
@@ -1385,13 +1480,22 @@ class MatchStateMachine:
                         "banner_roi_stats()で実測値を確認してください)",
                         self._session_match_no,
                     )
-                logger.info(
-                    "%d試合目: 前の試合が結果画面確定前に次のVS画面を検知しました。"
-                    "前の試合のゴール(%d件)は今回の試合の記録に持ち越されます"
-                    "(通信切断等によるゲーム強制終了でも起こりうるため、必ずしも不具合とは限りません)",
-                    self._session_match_no,
-                    len(self._pending_goals),
-                )
+                elif get_room_type() == "private":
+                    # Issue #493: 専用部屋では、部屋主が「試合終了」を待たずに
+                    # 「やりなおす」を押すとこの経路になる。最後に読んだ中央スコアで
+                    # 中断した試合として記録し、ゴールもその試合のものにする
+                    interrupted = self._finalize_interrupted()
+                if interrupted is None:
+                    # 中断した試合として記録しなかった場合も、読んだスコアは前の試合の
+                    # ものなので新しい試合へ持ち越さない(ゴールは従来どおり持ち越す)
+                    self._reset_center_score()
+                    logger.info(
+                        "%d試合目: 前の試合が結果画面確定前に次のVS画面を検知しました。"
+                        "前の試合のゴール(%d件)は今回の試合の記録に持ち越されます"
+                        "(通信切断等によるゲーム強制終了でも起こりうるため、必ずしも不具合とは限りません)",
+                        self._session_match_no,
+                        len(self._pending_goals),
+                    )
             self._vs_recorded_this_match = True
             self._vs_confirmed_this_match = True
             self._in_match = True
@@ -1430,6 +1534,7 @@ class MatchStateMachine:
             # _rank_ocr_executor(本番はProcessPoolExecutor)へ投げる
             self._vs_ocr_match_no = self._session_match_no
             self._vs_ocr_future = self._rank_ocr_executor.submit(_run_vs_screen_ocr, frame)
+        return interrupted
 
     def _poll_vs_ocr(self, wait: bool = False) -> None:
         """_check_for_vs_screen()が投げたVS画面OCR(Issue #397)の結果を取り込む。
@@ -1505,17 +1610,121 @@ class MatchStateMachine:
             self._goal_recorded_this_event = False
             return
 
-        if (
-            self._goal_debounce.observe(True, now)
-            and not self._goal_recorded_this_event
-            and self._goal_ocr_future is None
-        ):
+        confirmed = self._goal_debounce.observe(True, now)
+        if confirmed and not self._goal_recorded_this_event and self._score_window_until is None:
+            # Issue #493: このあと画面中央に出るスコア表示を読み始める。
+            # 色ベースの候補判定の段階で始める(得点者名のOCR確認を待つと表示を
+            # 見逃すため)。誤検知だった場合はスコア表示が出ないので何も読めないだけ
+            # 野良でも同じ表示が出るため、部屋の種類によらず読む(最終スコアの記録と、
+            # 結果バナーとの食い違いによる読み取り精度の確認に使う)
+            self._score_window_until = now + self._center_score_window_seconds
+            logger.debug("中央スコア表示の読み取りを始めます(%.1f秒間)", self._center_score_window_seconds)
+
+        if confirmed and not self._goal_recorded_this_event and self._goal_ocr_future is None:
             self._goal_recorded_this_event = True
             # Issue #383: 暗転の取りこぼしがCPU競合(PaddleOCR実行中の負荷)と
             # 時間的に重なっていないかを事後に突き合わせられるよう、投入時刻を
             # 出す(完了時刻は_poll_goal_ocr()の「ゴール検知」ログで既に出ている)
             logger.debug("ゴールOCR一式を投入しました(別プロセス、goal-ocr)")
             self._goal_ocr_future = self._goal_ocr_executor.submit(_run_goal_ocr, frame)
+
+    def _check_for_center_score(self, frame: np.ndarray, now: float) -> None:
+        """ゴール検知後の一定時間だけ、中央のスコア表示を毎フレーム読む(Issue #493)。
+
+        テンプレートマッチング(1回0.2ms程度)のため毎フレーム回してよい。テンプレートに
+        無い数字が続いた場合だけ、OCRを別プロセスへ1回投げる。
+        """
+        if self._score_window_until is None:
+            return
+        if now >= self._score_window_until:
+            if self._score_ocr_future is None:
+                self._close_score_window()
+            return
+        request = self._score_tracker.observe(read_center_score(frame), now)
+        if request is not None and self._score_ocr_future is None:
+            logger.debug(
+                "中央スコアにテンプレートと一致しない数字があるためOCRで読みます(読めた側: %s-%s)",
+                "?" if request.known_left is None else request.known_left,
+                "?" if request.known_right is None else request.known_right,
+            )
+            self._score_ocr_request = request
+            self._score_ocr_future = self._goal_ocr_executor.submit(
+                _run_center_score_ocr, frame, request.known_left is None, request.known_right is None
+            )
+
+    def _poll_center_score_ocr(self, wait: bool = False) -> None:
+        """_check_for_center_score()が投げたOCRの結果を取り込む(Issue #493)。"""
+        if self._score_ocr_future is None:
+            return
+        if not wait and not self._score_ocr_future.done():
+            return
+        left, right = self._score_ocr_future.result()
+        request = self._score_ocr_request
+        self._score_ocr_future = None
+        self._score_ocr_request = None
+        adopted = self._score_tracker.apply_ocr(
+            request, left[0] if left is not None else None, right[0] if right is not None else None
+        )
+        if adopted is None:
+            logger.warning(
+                "%d試合目: 中央スコアの数字をOCRでも読めませんでした(OCR結果: 左=%s 右=%s)",
+                self._session_match_no,
+                left,
+                right,
+            )
+        else:
+            logger.debug("中央スコアをOCRで読みました: %d-%d (左=%s 右=%s)", adopted[0], adopted[1], left, right)
+
+    def _close_score_window(self) -> None:
+        """1回のゴールぶんのスコア表示の読み取りを終え、この試合のスコアを更新する(Issue #493)。"""
+        self._score_window_until = None
+        new = self._score_tracker.adopted
+        first = self._score_tracker.first_adopted
+        self._score_tracker.reset()
+        if new is None:
+            logger.warning(
+                "%d試合目: ゴール後の中央スコア表示を読み取れませんでした(この試合のスコアは%sのまま)",
+                self._session_match_no,
+                "未読" if self._match_score is None else f"{self._match_score[0]}-{self._match_score[1]}",
+            )
+            return
+        known = self._match_score if self._match_score is not None else (0, 0)
+        # 表示は「ゴール前のスコア→ゴール後のスコア」の順に出るため、両方読めていれば
+        # その2つで比べる(前のゴールを見逃していても、このゴール単体で確かめられる)。
+        # ゴール前のスコアを読めなかった場合だけ、これまでに読んだスコアと比べる
+        previous = first if first is not None and first != new else known
+        if first is not None and first != new and first != known:
+            logger.warning(
+                "%d試合目: ゴール前のスコア表示(%d-%d)が、これまでに読んだスコア(%d-%d)と違います"
+                "(それまでのゴールの見逃しの可能性)",
+                self._session_match_no,
+                first[0],
+                first[1],
+                known[0],
+                known[1],
+            )
+        # 加算方式は妥当性チェックにのみ使い、読み取り値自体は採用する(絶対値を読む
+        # 方式なので、1回誤読・見逃しても次のゴールで正しい値に戻るため)
+        if not is_plausible_transition(previous, new):
+            logger.warning(
+                "%d試合目: 中央スコアの変化が1回のゴールとして不自然です: %d-%d -> %d-%d"
+                "(読み取り値をそのまま採用します。誤読またはゴールの見逃しの可能性)",
+                self._session_match_no,
+                previous[0],
+                previous[1],
+                new[0],
+                new[1],
+            )
+        self._match_score = new
+        logger.info("%d試合目 スコア: %d-%d", self._session_match_no, new[0], new[1])
+
+    def _reset_center_score(self) -> None:
+        self._score_window_until = None
+        self._score_tracker.reset()
+        self._match_score = None
+        # 実行中のOCRがあっても結果は前の試合のものなので取り込まない
+        self._score_ocr_future = None
+        self._score_ocr_request = None
 
     def _poll_goal_ocr(self, wait: bool = False) -> None:
         """_check_for_goal()が投げたOCR一式(Issue #327)の結果を取り込む。
@@ -1740,6 +1949,7 @@ class MatchStateMachine:
                 self._pending_goals = []
                 self._goal_debounce.reset()
                 self._goal_recorded_this_event = False
+                self._reset_center_score()
                 return None
             self._pending_result = self._banner_candidate
             # Issue #222: バナー確定直後は本来コンパクト表示のはずだが、確定までの
@@ -2013,7 +2223,8 @@ class MatchStateMachine:
 
         return tier_before, tier_before + frac_after
 
-    def _finalize(self, rank_after_tier: Optional[int], rank_after: Optional[float]) -> MatchResult:
+    def _wait_for_match_ocr(self) -> None:
+        """試合結果を組む前に、この試合のOCRの完了を待って取り込む。"""
         # Issue #189/#397: VS画面OCR(_run_vs_screen_ocr)は別プロセスで実行される。
         # 通常は試合が終わる頃には完了しているはずだが(OCR自体は最大16秒、試合は
         # 数分続く)、念のためここで完了を待ってから_pending_vs_*系フィールドを
@@ -2022,15 +2233,80 @@ class MatchStateMachine:
         # Issue #327: ゴール検知OCR(_run_goal_ocr)も同じ理由で完了を待ってから
         # _pending_goalsを読み取る(_poll_goal_ocr()のdocstring参照)
         self._poll_goal_ocr(wait=True)
-        # Issue #430: 試合前ランクも同じ理由で完了を待つ(GRACE満了での確定など、
-        # 暗転を経由しない経路でも取りこぼさないため)
-        self._poll_rank_before_ocr(wait=True)
-        if rank_after is None:
-            logger.info(
-                "%d試合目: 試合終了時点でもランクバッジを読み取れませんでした"
-                "(バッジ非表示、または読み取り失敗の可能性)",
+        # Issue #493: 中央スコアも、読み取り中のゴールがあれば締めてから使う
+        self._poll_center_score_ocr(wait=True)
+        if self._score_window_until is not None:
+            self._close_score_window()
+
+    def _finalize_interrupted(self) -> Optional[MatchResult]:
+        """専用部屋で「試合終了」を見ないまま次のVS画面へ戻った試合を記録する(Issue #493)。
+
+        勝敗は最後に読んだ中央スコアで決める(同点は引き分け)。ゴールが1件も無ければ
+        0-0の引き分け。ゴールがあるのにスコアを1回も読めていない場合は勝敗を決めようが
+        無いため記録しない(Noneを返す。ゴールは従来どおり次の試合へ持ち越される)。
+        """
+        self._wait_for_match_ocr()
+        score = self._match_score
+        if score is None:
+            if self._pending_goals:
+                logger.warning(
+                    "%d試合目: 「試合終了」を見ないまま次のVS画面へ戻りましたが、"
+                    "中央スコアを読めていないため勝敗が分からず、記録しません(ゴール%d件)",
+                    self._session_match_no,
+                    len(self._pending_goals),
+                )
+                return None
+            score = (0, 0)
+        result = _result_from_score(score)
+        logger.info(
+            "%d試合目: 「試合終了」を見ないまま次のVS画面へ戻ったため、中断した試合として記録します"
+            "(スコア%d-%d → %s、ゴール%d件)",
+            self._session_match_no,
+            score[0],
+            score[1],
+            _BANNER_RESULT_LABELS[result],
+            len(self._pending_goals),
+        )
+        match_result = self._build_match_result(result, None, None, interrupted=True)
+        match_result.score = score
+        self._reset_match_state()
+        return match_result
+
+    def _warn_if_score_contradicts_result(self, match_result: MatchResult) -> None:
+        """結果バナーの勝敗と、読んだ中央スコアから決まる勝敗が違えばWARNINGを出す(Issue #493)。
+
+        結果バナーの判定は実績があるため、食い違った場合は中央スコアの読み取り(誤読・
+        ゴールの見逃し)を疑う材料になる。記録する勝敗は結果バナーのまま変えない。
+        """
+        score = match_result.score
+        if score is None:
+            if not match_result.goals:
+                return
+            logger.warning(
+                "%d試合目: ゴールが%d件あるのに中央スコアを一度も読めませんでした",
                 self._session_match_no,
+                len(match_result.goals),
             )
+            return
+        from_score = _result_from_score(score)
+        if from_score != match_result.result:
+            logger.warning(
+                "%d試合目: 中央スコア(%d-%d → %s)が結果バナー(%s)と食い違っています"
+                "(記録は結果バナーのまま。中央スコアの誤読・ゴールの見逃しの可能性)",
+                self._session_match_no,
+                score[0],
+                score[1],
+                _BANNER_RESULT_LABELS[from_score],
+                _BANNER_RESULT_LABELS[match_result.result],
+            )
+
+    def _build_match_result(
+        self,
+        result: BannerResult,
+        rank_after_tier: Optional[int],
+        rank_after: Optional[float],
+        interrupted: bool = False,
+    ) -> MatchResult:
         # league_changedはゲージの溜まり具合を含まない帯番号(整数)同士で判定する。
         # 小数のランク値同士で比較すると、帯は変わっていないのにゲージが
         # 僅かに増減しただけで昇格/降格と誤判定してしまうため
@@ -2051,8 +2327,8 @@ class MatchStateMachine:
         elif self._demotion_confirmed_this_match:
             league_change_label_detected = "down"
 
-        match_result = MatchResult(
-            result=self._pending_result,
+        return MatchResult(
+            result=result,
             rank_before=self._pending_rank_before,
             rank_after=rank_after,
             league_changed=league_changed,
@@ -2064,7 +2340,12 @@ class MatchStateMachine:
             opponent_team_color=self._pending_opponent_team_color,
             session_match_no=self._session_match_no,
             league_change_label_detected=league_change_label_detected,
+            score=self._match_score,
+            interrupted=interrupted,
         )
+
+    def _reset_match_state(self) -> None:
+        """試合単位で持っている状態を次の試合のために片付ける。"""
         self._pending_result = None
         self._pending_rank_before = None
         self._pending_rank_before_tier = None
@@ -2075,6 +2356,7 @@ class MatchStateMachine:
         self._pending_goals = []
         self._goal_debounce.reset()
         self._goal_recorded_this_event = False
+        self._reset_center_score()
         self._pending_vs_mine_ranks = []
         self._pending_vs_opponent_ranks = []
         self._pending_mine_team_color = None
@@ -2086,6 +2368,21 @@ class MatchStateMachine:
         # 十分短く自然に経過しているはずだが、念のため試合終了時点で
         # 明示的に解除し、次の試合の本物のVS画面検知を妨げないようにする
         self._vs_lockout_until = None
+
+    def _finalize(self, rank_after_tier: Optional[int], rank_after: Optional[float]) -> MatchResult:
+        self._wait_for_match_ocr()
+        # Issue #430: 試合前ランクも同じ理由で完了を待つ(GRACE満了での確定など、
+        # 暗転を経由しない経路でも取りこぼさないため)
+        self._poll_rank_before_ocr(wait=True)
+        if rank_after is None:
+            logger.info(
+                "%d試合目: 試合終了時点でもランクバッジを読み取れませんでした"
+                "(バッジ非表示、または読み取り失敗の可能性)",
+                self._session_match_no,
+            )
+        match_result = self._build_match_result(self._pending_result, rank_after_tier, rank_after)
+        self._warn_if_score_contradicts_result(match_result)
+        self._reset_match_state()
         # Issue #190: 「試合終了」バナーをOCRで確認できた試合に限りOBSシーン切替
         # (in_match=False)を行う。確認できなかった試合(実プレイ中の背景誤検知が
         # banner_confirm_secondsを突破した可能性を否定できない)はin_matchをTrueの
