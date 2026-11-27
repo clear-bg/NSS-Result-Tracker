@@ -198,7 +198,7 @@ CREATE TABLE IF NOT EXISTS matches (
                                      -- 遷移になる)。resultは結果バナーではなく、ゴール後の中央スコア
                                      -- 表示(score_mine/score_opponent)から決めている
     score_mine INTEGER,             -- ゴール後の中央スコア表示から読んだ最後のスコア(自チーム)。Issue #493。
-    score_opponent INTEGER,         -- 同、相手チーム。専用部屋の試合でだけ読む(野良・読めなかった試合はNULL)。
+    score_opponent INTEGER,         -- 同、相手チーム。野良・専用部屋とも読む(読めなかった試合はNULL)。
                                      -- ゴールが1件も無いまま中断した試合は0-0
     created_at TEXT NOT NULL,       -- レコード作成時刻(ISO8601, JST)
     updated_at TEXT NOT NULL        -- レコード最終更新時刻(ISO8601, JST)

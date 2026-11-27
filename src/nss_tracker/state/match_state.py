@@ -618,9 +618,10 @@ Falseに戻った瞬間、つまりVS画面が視覚的に消えて数フレー�
 Issue #493(専用部屋の「やりなおす」で中断した試合の記録):
 専用部屋では、部屋主が「試合終了」表示を待たずに「やりなおす」を押し、結果バナーが
 出ないまま次のVS画面へ戻ることがある。従来この試合は記録されず、ゴールも次の試合へ
-持ち越されていた(Issue #243の経路)。専用部屋(`config.get_room_type() == "private"`)の
-ときだけ、次のように扱う。
+持ち越されていた(Issue #243の経路)。次のように扱う。
 
+- 中央スコアの読み取りは、野良・専用部屋を問わず行う(野良でも同じ表示が出るため)。
+  野良では最終スコアの記録と、結果バナーの勝敗との突き合わせ(読み取り精度の確認)に使う
 - ゴール検知(`is_goal_event`の候補判定が`goal_confirm_seconds`続いた時点)から
   `center_score_window_seconds`の間、画面中央のスコア表示を毎フレーム読む
   (`_check_for_center_score`)。読み方は`detection/center_score.py`のテンプレート
@@ -631,14 +632,18 @@ Issue #493(専用部屋の「やりなおす」で中断した試合の記録):
 - 加算方式(通常1点、2点差以上のときはゴールデンボールで2点)は妥当性チェックにのみ使い、
   不自然な変化はWARNINGを出すだけで読み取り値を採用する。比べる基準は、表示の最初に出る
   ゴール前のスコア(読めていれば)。これまでに読んだスコアと違えばゴールの見逃しとして報告する
-- 「試合終了」を確認しないまま次のVS画面が確定したら、`_finalize_interrupted()`が
+- 専用部屋(`config.get_room_type() == "private"`)で「試合終了」を確認しないまま
+  次のVS画面が確定したら、`_finalize_interrupted()`が
   最後のスコアで勝敗を決め(同点は引き分け、ゴールが無ければ0-0の引き分け)、
   `MatchResult.interrupted=True`で返す。ゴールはこの中断した試合のものになる。
   ゴールがあるのにスコアを一度も読めていない場合だけは勝敗を決められないため、
   WARNINGを出して従来どおりの扱い(記録しない・ゴールを持ち越す)にする
 - 「試合終了」を確認済みの場合は、やりなおしではなく結果バナーの取りこぼし(Issue #423)の
   ため、この扱いにはしない
-- 結果バナーで確定した専用部屋の試合にも、読んだスコアを`MatchResult.score`として載せる
+- 野良では中断した試合の記録はせず、従来どおり(記録しない・ゴールを持ち越す)。
+  読んだスコアは前の試合のものなので新しい試合へは持ち越さない
+- 結果バナーで確定した試合にも、読んだスコアを`MatchResult.score`として載せる。
+  スコアから決まる勝敗が結果バナーと違えばWARNINGを出す(記録は結果バナーのまま)
 """
 
 import concurrent.futures
@@ -934,6 +939,15 @@ def _run_rank_before_ocr(frame: np.ndarray) -> RankBeforeOcrResult:
         compact=read_precise_rank(frame, GAUGE_ROI_COMPACT, RANK_NUMBER_ROI_COMPACT),
         enlarged=read_precise_rank(frame, GAUGE_ROI_ENLARGED, RANK_NUMBER_ROI_ENLARGED),
     )
+
+
+def _result_from_score(score: Score) -> BannerResult:
+    """中央スコア(左=自チーム、右=相手チーム)から勝敗を決める(Issue #493)。同点は引き分け。"""
+    if score[0] > score[1]:
+        return "win"
+    if score[0] < score[1]:
+        return "lose"
+    return "draw"
 
 
 def _run_goal_ocr(frame: np.ndarray) -> GoalOcrResult:
@@ -1472,6 +1486,9 @@ class MatchStateMachine:
                     # 中断した試合として記録し、ゴールもその試合のものにする
                     interrupted = self._finalize_interrupted()
                 if interrupted is None:
+                    # 中断した試合として記録しなかった場合も、読んだスコアは前の試合の
+                    # ものなので新しい試合へ持ち越さない(ゴールは従来どおり持ち越す)
+                    self._reset_center_score()
                     logger.info(
                         "%d試合目: 前の試合が結果画面確定前に次のVS画面を検知しました。"
                         "前の試合のゴール(%d件)は今回の試合の記録に持ち越されます"
@@ -1595,12 +1612,13 @@ class MatchStateMachine:
 
         confirmed = self._goal_debounce.observe(True, now)
         if confirmed and not self._goal_recorded_this_event and self._score_window_until is None:
-            # Issue #493: 専用部屋では、このあと画面中央に出るスコア表示を読み始める。
+            # Issue #493: このあと画面中央に出るスコア表示を読み始める。
             # 色ベースの候補判定の段階で始める(得点者名のOCR確認を待つと表示を
             # 見逃すため)。誤検知だった場合はスコア表示が出ないので何も読めないだけ
-            if get_room_type() == "private":
-                self._score_window_until = now + self._center_score_window_seconds
-                logger.debug("中央スコア表示の読み取りを始めます(%.1f秒間)", self._center_score_window_seconds)
+            # 野良でも同じ表示が出るため、部屋の種類によらず読む(最終スコアの記録と、
+            # 結果バナーとの食い違いによる読み取り精度の確認に使う)
+            self._score_window_until = now + self._center_score_window_seconds
+            logger.debug("中央スコア表示の読み取りを始めます(%.1f秒間)", self._center_score_window_seconds)
 
         if confirmed and not self._goal_recorded_this_event and self._goal_ocr_future is None:
             self._goal_recorded_this_event = True
@@ -1704,6 +1722,9 @@ class MatchStateMachine:
         self._score_window_until = None
         self._score_tracker.reset()
         self._match_score = None
+        # 実行中のOCRがあっても結果は前の試合のものなので取り込まない
+        self._score_ocr_future = None
+        self._score_ocr_request = None
 
     def _poll_goal_ocr(self, wait: bool = False) -> None:
         """_check_for_goal()が投げたOCR一式(Issue #327)の結果を取り込む。
@@ -2236,12 +2257,7 @@ class MatchStateMachine:
                 )
                 return None
             score = (0, 0)
-        if score[0] > score[1]:
-            result: BannerResult = "win"
-        elif score[0] < score[1]:
-            result = "lose"
-        else:
-            result = "draw"
+        result = _result_from_score(score)
         logger.info(
             "%d試合目: 「試合終了」を見ないまま次のVS画面へ戻ったため、中断した試合として記録します"
             "(スコア%d-%d → %s、ゴール%d件)",
@@ -2255,6 +2271,34 @@ class MatchStateMachine:
         match_result.score = score
         self._reset_match_state()
         return match_result
+
+    def _warn_if_score_contradicts_result(self, match_result: MatchResult) -> None:
+        """結果バナーの勝敗と、読んだ中央スコアから決まる勝敗が違えばWARNINGを出す(Issue #493)。
+
+        結果バナーの判定は実績があるため、食い違った場合は中央スコアの読み取り(誤読・
+        ゴールの見逃し)を疑う材料になる。記録する勝敗は結果バナーのまま変えない。
+        """
+        score = match_result.score
+        if score is None:
+            if not match_result.goals:
+                return
+            logger.warning(
+                "%d試合目: ゴールが%d件あるのに中央スコアを一度も読めませんでした",
+                self._session_match_no,
+                len(match_result.goals),
+            )
+            return
+        from_score = _result_from_score(score)
+        if from_score != match_result.result:
+            logger.warning(
+                "%d試合目: 中央スコア(%d-%d → %s)が結果バナー(%s)と食い違っています"
+                "(記録は結果バナーのまま。中央スコアの誤読・ゴールの見逃しの可能性)",
+                self._session_match_no,
+                score[0],
+                score[1],
+                _BANNER_RESULT_LABELS[from_score],
+                _BANNER_RESULT_LABELS[match_result.result],
+            )
 
     def _build_match_result(
         self,
@@ -2337,6 +2381,7 @@ class MatchStateMachine:
                 self._session_match_no,
             )
         match_result = self._build_match_result(self._pending_result, rank_after_tier, rank_after)
+        self._warn_if_score_contradicts_result(match_result)
         self._reset_match_state()
         # Issue #190: 「試合終了」バナーをOCRで確認できた試合に限りOBSシーン切替
         # (in_match=False)を行う。確認できなかった試合(実プレイ中の背景誤検知が

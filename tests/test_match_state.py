@@ -3280,23 +3280,67 @@ def test_missed_goal_is_reported_from_pre_goal_score(monkeypatch, caplog):
     assert scenario.machine._match_score == (2, 1)
 
 
-def test_random_room_keeps_previous_behavior(monkeypatch, caplog):
-    """野良では中央スコアを読まず、従来どおりゴールを次の試合へ持ち越す(INFOログ)。"""
+def test_random_room_reads_score_but_does_not_record_interrupted_match(monkeypatch, caplog):
+    """野良でも中央スコアは読むが、中断した試合は記録せず従来どおりゴールを持ち越す。
+    読んだスコアは新しい試合へ持ち越さない。"""
     scenario = _RedoScenario(monkeypatch, room_type="random")
-    calls = {"n": 0}
-
-    def counting_read(frame):
-        calls["n"] += 1
-        return None
-
-    monkeypatch.setattr(match_state_module, "read_center_score", counting_read)
     with caplog.at_level("INFO", logger="nss_tracker.state"):
         scenario.vs_screen()
         scenario.goal((0, 0), (1, 0))
+        assert scenario.machine._match_score == (1, 0)
         scenario.vs_screen()
     assert scenario.results == []
-    assert calls["n"] == 0
     assert "持ち越されます" in caplog.text
+    assert "1試合目 スコア: 1-0" in caplog.text
+    assert scenario.machine._match_score is None
+
+
+def test_random_room_result_carries_score(monkeypatch):
+    """野良の試合でも、結果バナーで確定した試合に読んだスコアを載せる。"""
+    scenario = _RedoScenario(monkeypatch, room_type="random")
+    scenario.vs_screen()
+    scenario.goal((0, 0), (1, 0))
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
+    scenario.step(4)
+    assert len(scenario.results) == 1
+    assert scenario.results[0].score == (1, 0)
+    assert scenario.results[0].interrupted is False
+
+
+def test_score_contradicting_banner_result_logs_warning(monkeypatch, caplog):
+    """中央スコアの勝敗が結果バナーと違えばWARNING。記録は結果バナーのまま。"""
+    scenario = _RedoScenario(monkeypatch, room_type="random")
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        scenario.vs_screen()
+        scenario.goal((0, 0), (1, 0))
+        monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+        scenario.step(4)
+    assert scenario.results[0].result == "lose"
+    assert scenario.results[0].score == (1, 0)
+    assert "結果バナー(負け)と食い違っています" in caplog.text
+
+
+def test_score_matching_banner_result_logs_no_warning(monkeypatch, caplog):
+    scenario = _RedoScenario(monkeypatch, room_type="random")
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        scenario.vs_screen()
+        scenario.goal((0, 0), (0, 1))
+        monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+        scenario.step(4)
+    assert scenario.results[0].result == "lose"
+    assert [r for r in caplog.records if r.levelname == "WARNING"] == []
+
+
+def test_unread_score_with_goals_logs_warning_on_banner_result(monkeypatch, caplog):
+    scenario = _RedoScenario(monkeypatch, room_type="random")
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        scenario.vs_screen()
+        scenario.step(2, goal=True)
+        scenario.step(8, goal=False)  # スコア表示を一度も読めない
+        monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
+        scenario.step(4)
+    assert scenario.results[0].score is None
+    assert "中央スコアを一度も読めませんでした" in caplog.text
 
 
 def test_private_redo_after_match_end_is_not_treated_as_interrupted(monkeypatch, caplog):
