@@ -172,6 +172,12 @@ def test_match_state_machine_matches_expected_metadata(videos_dir, monkeypatch):
             )
 
 
+def _mark_vs_screen_confirmed(machine):
+    """Issue #499: ゴール検知・中央スコアの読み取りはVS画面を確定した試合の中でだけ行うため、
+    VS画面の検知そのものを扱わないゴール検知のテストでは、確定済みの状態から始める。"""
+    machine._vs_confirmed_this_match = True
+
+
 def test_goal_detected_during_watching_is_attached_to_match_result(monkeypatch):
     """ゴール検知の統合ロジック(バッファリング→試合終了時にMatchResultへ payoutされる)を
     実映像に依存せず検証する。個々の検知関数(is_goal_event等)は
@@ -344,6 +350,7 @@ def test_goal_detection_logs_scorer_and_assist_at_info_level(monkeypatch, caplog
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
+    _mark_vs_screen_confirmed(machine)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
@@ -376,6 +383,7 @@ def test_own_goal_sets_is_own_goal_flag_and_logs_all_mode_status(monkeypatch, ca
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
 
     machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
+    _mark_vs_screen_confirmed(machine)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
@@ -409,6 +417,7 @@ def test_own_goal_logs_not_recorded_when_mode_is_not_all(monkeypatch, caplog):
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
+    _mark_vs_screen_confirmed(machine)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
@@ -441,6 +450,7 @@ def test_goal_detection_logs_not_recorded_when_outside_allowlist(monkeypatch, ca
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
+    _mark_vs_screen_confirmed(machine)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
@@ -472,6 +482,7 @@ def test_goal_detection_logs_always_recorded_in_all_mode(monkeypatch, caplog):
     monkeypatch.setenv("GOAL_RECORD_MODE", "all")
 
     machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
+    _mark_vs_screen_confirmed(machine)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
@@ -503,6 +514,7 @@ def test_goal_detection_logs_partial_redact_in_redact_mode(monkeypatch, caplog):
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
 
     machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
+    _mark_vs_screen_confirmed(machine)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
@@ -532,6 +544,7 @@ def test_goal_detection_logs_full_record_in_redact_mode_when_both_allowed(monkey
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
 
     machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
+    _mark_vs_screen_confirmed(machine)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
@@ -563,6 +576,7 @@ def test_goal_detection_logs_no_redact_when_assist_missing_in_redact_mode(monkey
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist_redact")
 
     machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
+    _mark_vs_screen_confirmed(machine)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
 
     with caplog.at_level("INFO", logger="nss_tracker.state"):
@@ -1770,6 +1784,7 @@ def test_goal_banner_shown_continuously_records_only_one_goal(monkeypatch):
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
+    _mark_vs_screen_confirmed(machine)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     for _ in range(10):
         machine.process_frame(frame)
@@ -1792,6 +1807,7 @@ def test_goal_candidate_rejected_by_ocr_is_not_recorded(monkeypatch):
     monkeypatch.setenv("GOAL_RECORD_MODE", "allowlist")
 
     machine = MatchStateMachine(now_fn=FakeClock(), goal_confirm_seconds=2)
+    _mark_vs_screen_confirmed(machine)
     frame = np.zeros((10, 10, 3), dtype=np.uint8)
     for _ in range(10):
         machine.process_frame(frame)
@@ -2182,10 +2198,10 @@ def test_vs_screen_not_confirmed_causes_result_banner_to_be_rejected(monkeypatch
     assert machine.current_state == "watching", "WATCHING状態のまま留まるはず"
 
 
-def test_vs_screen_not_confirmed_discards_buffered_goals(monkeypatch):
-    """Issue #229: VS画面未確認で結果バナーを棄却する際、その誤検知バナーに
-    紐づいてバッファされていた可能性のあるゴール検知も、次の本物の試合に
-    誤って持ち越さないよう破棄することを確認する。
+def test_vs_screen_not_confirmed_does_not_buffer_goals(monkeypatch):
+    """Issue #229/#499: VS画面を確認していない間のゴール演出は、そもそもバッファしない
+    (Issue #229時点では結果バナーの棄却時に破棄していたが、#499でVS画面確定前は
+    ゴール検知自体を行わないようにした)。結果バナーの棄却後も次の試合へ持ち越さない。
 
     is_goal_event/classify_bannerとも最初の数フレームだけ真になるようにし
     (現実の検知に近い単発イベント)、結果バナーが棄却されるちょうどその
@@ -2220,7 +2236,7 @@ def test_vs_screen_not_confirmed_discards_buffered_goals(monkeypatch):
     for _ in range(10):
         machine.process_frame(frame)
         frame_idx["n"] += 1
-    assert len(machine._pending_goals) == 1, "テスト前提: 棄却前にゴールが1件バッファされているはず"
+    assert machine._pending_goals == [], "VS画面を確認していない間のゴールはバッファしないはず"
 
     # frame_idx 10〜12: バナー("win")が閾値2.0秒(Issue #388、FakeClock step=1.0では
     # 3フレーム分のスパン)に達し、VS未確認のため棄却される
@@ -3367,6 +3383,61 @@ def test_normal_private_match_result_carries_score(monkeypatch):
     assert scenario.results[0].result == "lose"
     assert scenario.results[0].score == (0, 1)
     assert scenario.results[0].interrupted is False
+
+
+def _replay_viewer_between_matches(scenario, monkeypatch):
+    """1試合目を結果バナーで確定させたあと、試合の合間のゲーム内リプレイでゴール演出と
+    中央スコア表示が流れる(Issue #499、2026-11-27の配信で発生)。"""
+    scenario.vs_screen()
+    scenario.goal((0, 0), (1, 0))
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "win")
+    scenario.step(4)
+    monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: None)
+    scenario.step(3)
+    assert len(scenario.results) == 1, "テスト前提: 1試合目が結果バナーで確定しているはず"
+    scenario.goal((1, 0), (2, 0))  # リプレイ中のゴール
+
+
+@pytest.mark.parametrize("room_type", ["random", "private"])
+def test_replay_between_matches_is_not_read(monkeypatch, room_type):
+    """Issue #499: 前の試合を確定してから次のVS画面までの間のゴール・中央スコアは読まない。"""
+    scenario = _RedoScenario(monkeypatch, room_type=room_type)
+    _replay_viewer_between_matches(scenario, monkeypatch)
+    assert scenario.machine._pending_goals == []
+    assert scenario.machine._match_score is None
+
+
+def test_replay_between_matches_is_not_carried_into_next_match(monkeypatch, caplog):
+    """Issue #499: リプレイのゴール・スコアが次の試合の記録に混ざらず、
+    次の試合の最初のゴールで見逃しのWARNINGも出ない。"""
+    scenario = _RedoScenario(monkeypatch, room_type="random")
+    with caplog.at_level("INFO", logger="nss_tracker.state"):
+        _replay_viewer_between_matches(scenario, monkeypatch)
+        scenario.vs_screen()
+        scenario.goal((0, 0), (0, 1))
+        monkeypatch.setattr(match_state_module, "classify_banner", lambda frame: "lose")
+        scenario.step(4)
+    assert len(scenario.results) == 2
+    second = scenario.results[1]
+    assert len(second.goals) == 1
+    assert second.score == (0, 1)
+    assert "見逃しの可能性" not in caplog.text
+
+
+def test_private_redo_after_replay_without_goals_is_0_0(monkeypatch):
+    """Issue #499: リプレイを見たあと、ゴール無しのまま「やりなおす」した試合は0-0の引き分け
+    (リプレイのスコアで勝敗を決めない)。"""
+    scenario = _RedoScenario(monkeypatch, room_type="private")
+    _replay_viewer_between_matches(scenario, monkeypatch)
+    scenario.vs_screen()
+    scenario.step(3)
+    scenario.vs_screen()
+    assert len(scenario.results) == 2
+    second = scenario.results[1]
+    assert second.interrupted is True
+    assert second.score == (0, 0)
+    assert second.result == "draw"
+    assert second.goals == []
 
 
 def test_score_resets_between_matches(monkeypatch):
