@@ -5,10 +5,10 @@
 切り出し方は`detection/center_score.py`の読み取りと全く同じ(白い最大連結成分を
 外接矩形で切り出して48x64に縮める)。
 
-画像のスコアはファイル名から読む。`score_2-3.png`・`score_2-3_2.png`のように
-`score_{自チーム}-{相手チーム}`で始まる名前にしておくこと。
+元のスクリーンショットは`fixtures/screenshots/`に`{番号}_center_score_{自チーム}-{相手チーム}_hdr_off.png`
+(同じスコアの2枚目以降は末尾に`_2`等)の名前で置いてある。画像のスコアはこの名前から読む。
 
-    uv run python scripts/build_center_score_templates.py tmp/score_*.png
+    uv run python scripts/build_center_score_templates.py fixtures/screenshots/*_center_score_*.png
 
 既存のテンプレートはすべて消してから作り直す(同じ画像を2回取り込まないため)。
 5・6のサンプルが手に入ったら、これまでの画像と一緒に渡して作り直す。
@@ -33,19 +33,19 @@ from nss_tracker.detection.center_score import (  # noqa: E402
     extract_digit_mask,
 )
 
-_NAME_PATTERN = re.compile(r"^score_(\d)-(\d)")
+_NAME_PATTERN = re.compile(r"^\d+_center_score_(\d)-(\d)_")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("images", nargs="+", type=Path, help="score_{自}-{相手}*.png 形式のスクリーンショット")
+    parser.add_argument("images", nargs="+", type=Path, help="{番号}_center_score_{自}-{相手}_*.png 形式のスクリーンショット")
     args = parser.parse_args()
 
     samples = []
     for path in sorted(args.images):
         match = _NAME_PATTERN.match(path.name)
         if match is None:
-            print(f"ファイル名からスコアを読めません(score_{{自}}-{{相手}}で始めてください): {path}")
+            print(f"ファイル名からスコアを読めません({{番号}}_center_score_{{自}}-{{相手}}_の形にしてください): {path}")
             return 1
         frame = cv2.imread(str(path))
         if frame is None:
