@@ -1293,8 +1293,12 @@ class MatchStateMachine:
             # Issue #493: 専用部屋で「試合終了」を見ないまま次のVS画面が来た場合、
             # 中断した前の試合の結果がここで返る
             interrupted = self._check_for_vs_screen(frame, now)
-            self._check_for_goal(frame, now)
-            self._check_for_center_score(frame, now)
+            # Issue #499: 前の試合を確定してから次のVS画面を確定するまでの間
+            # (試合の合間のゲーム内リプレイ等)のゴール演出・中央スコア表示は、
+            # 次の試合のものではないため読まない
+            if self._vs_confirmed_this_match:
+                self._check_for_goal(frame, now)
+                self._check_for_center_score(frame, now)
             self._check_for_match_end(frame, now)
             result = self._watch_for_banner(frame, now)
             if interrupted is not None:
